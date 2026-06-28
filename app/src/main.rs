@@ -28,9 +28,16 @@ use tokio::sync::Mutex;
 use data_transfer::{
     self,
     messaging::MessageReader,
-    rpc::{SensorField, SingleFieldValue, StartFieldStream},
+    rpc::{
+        SensorField,
+        SingleFieldValue,
+        StartFieldStream,
+        GetMlxSensitivity,
+        SetMlxSensitivity,
+        MlxSensitivityConfig,
+        MlxSensitivityStatus,
+    },
 };
-
 
 #[derive(Debug, Clone)]
 struct SerialPortInfo(serialport::SerialPortInfo);
@@ -58,7 +65,13 @@ enum Message {
     StopFieldStream,
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
-    WroteFile
+    WroteFile,
+    UpdateMlxGain(String),
+    UpdateMlxResolution(String),
+    UpdateMlxHallConf(String),
+    GetMlxSensitivity,
+    SetMlxSensitivity,
+    ReceivedMlxSensitivity(MlxSensitivityStatus),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -95,7 +108,11 @@ struct Context {
     sensors: combo_box::State<SerialPortInfo>,
     ping_args: PingArgs,
     ping_field: Option<SensorField>,
-    sensor_grids: BTreeMap<u8, SensorGrid>
+    sensor_grids: BTreeMap<u8, SensorGrid>,
+    mlx_gain: String,
+    mlx_resolution: String,
+    mlx_hall_conf: String,
+    mlx_status: Option<MlxSensitivityStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +298,77 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
         Message::WroteFile => {
             Task::none()
+        },
+        Message::UpdateMlxGain(s) => {
+            context.mlx_gain = s;
+            Task::none()
+        }
+
+        Message::UpdateMlxResolution(s) => {
+            context.mlx_resolution = s;
+            Task::none()
+        }
+
+        Message::UpdateMlxHallConf(s) => {
+            context.mlx_hall_conf = s;
+            Task::none()
+        }
+
+        Message::GetMlxSensitivity => {
+            if let Some(sw) = &context.sensor_watcher {
+                let client = sw.get_client();
+
+                Task::perform(
+                    async move {
+                        client
+                            .send_resp::<GetMlxSensitivity>(&())
+                            .await
+                            .unwrap()
+                    },
+                    Message::ReceivedMlxSensitivity,
+                )
+            } else {
+                Task::none()
+            }
+        }
+
+        Message::SetMlxSensitivity => {
+            if let Some(sw) = &context.sensor_watcher {
+                let gain = context.mlx_gain.parse::<u8>().unwrap_or(255);
+                let resolution = context.mlx_resolution.parse::<u8>().unwrap_or(255);
+                let hall_conf = context.mlx_hall_conf.parse::<u8>().unwrap_or(255);
+
+                let config = MlxSensitivityConfig {
+                    gain,
+                    resolution,
+                    hall_conf,
+                };
+
+                let client = sw.get_client();
+
+                Task::perform(
+                    async move {
+                        client
+                            .send_resp::<SetMlxSensitivity>(&config)
+                            .await
+                            .unwrap()
+                    },
+                    Message::ReceivedMlxSensitivity,
+                )
+            } else {
+                Task::none()
+            }
+        }
+
+        Message::ReceivedMlxSensitivity(status) => {
+            if status.ok {
+                context.mlx_gain = status.gain.to_string();
+                context.mlx_resolution = status.resolution.to_string();
+                context.mlx_hall_conf = status.hall_conf.to_string();
+            }
+
+            context.mlx_status = Some(status);
+            Task::none()
         }
     }
 }
@@ -316,10 +404,49 @@ fn view(context: &Context) -> Element<'_, Message> {
             ]
         ]
     );
+    let mlx_status_text = match &context.mlx_status {
+        Some(status) => format!(
+            "Status: ok={}, gain={}, resolution={}, hall_conf={}",
+            status.ok, status.gain, status.resolution, status.hall_conf
+        ),
+        None => "Status: not read yet".to_string(),
+    };
 
+    let mlx_widget = container(
+        column![
+            text("MLX90393 sensitivity"),
+            row![
+                text("Gain 0-7: "),
+                text_input("0..7", &context.mlx_gain)
+                    .on_input(Message::UpdateMlxGain),
+            ],
+            row![
+                text("Resolution 0-3: "),
+                text_input("0=16bit, 3=19bit", &context.mlx_resolution)
+                    .on_input(Message::UpdateMlxResolution),
+            ],
+            row![
+                text("Hall conf 0/1: "),
+                text_input("0=2-phase, 1=4-phase", &context.mlx_hall_conf)
+                    .on_input(Message::UpdateMlxHallConf),
+            ],
+            row![
+                button("Get MLX sensitivity").on_press(Message::GetMlxSensitivity),
+                button("Apply MLX sensitivity").on_press(Message::SetMlxSensitivity),
+            ],
+            text(mlx_status_text),
+        ]
+    );
     
 
-    column![serial_selector, ping_widget, stream_widget].padding(10).into()
+    column![
+        serial_selector,
+        ping_widget,
+        stream_widget,
+        mlx_widget,
+    ]
+    .padding(10)
+    .into()
 }
 
 #[tokio::main]
