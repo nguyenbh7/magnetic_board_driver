@@ -2,7 +2,13 @@ use crate::app::{Context, SpawnCtx, AppTx};
 use defmt::info;
 use postcard_rpc::header::VarHeader;
 use postcard_rpc::server::Sender;
-use data_transfer::rpc::{SensorField, MagneticTopic, StartFieldStream};
+use data_transfer::rpc::{
+    SensorField,
+    MagneticTopic,
+    StartFieldStream,
+    MlxSensitivityConfig,
+    MlxSensitivityStatus,
+};
 use embassy_executor;
 use portable_atomic::{AtomicBool, Ordering};
 
@@ -12,6 +18,38 @@ use crate::N;
 pub fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
     info!("ping");
     rqst
+}
+
+pub fn get_mlx_sensitivity_handler(
+    _context: &mut Context,
+    _header: VarHeader,
+    _rqst: (),
+) -> MlxSensitivityStatus {
+    info!("get mlx sensitivity");
+
+    MlxSensitivityStatus {
+        ok: true,
+        gain: 0,
+        resolution: 0,
+        hall_conf: 0,
+    }
+}
+
+pub fn set_mlx_sensitivity_handler(
+    _context: &mut Context,
+    _header: VarHeader,
+    rqst: MlxSensitivityConfig,
+) -> MlxSensitivityStatus {
+    info!("set mlx sensitivity");
+
+    let valid = rqst.gain <= 7 && rqst.resolution <= 3 && rqst.hall_conf <= 1;
+
+    MlxSensitivityStatus {
+        ok: valid,
+        gain: rqst.gain,
+        resolution: rqst.resolution,
+        hall_conf: rqst.hall_conf,
+    }
 }
 
 

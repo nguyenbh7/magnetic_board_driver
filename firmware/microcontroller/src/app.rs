@@ -1,11 +1,25 @@
 #![no_std]
 #![no_main]
 
-use crate::handlers::{ping_handler, single_request_handler, stream_field, stop_stream};
+use crate::handlers::{
+    ping_handler,
+    single_request_handler,
+    stream_field,
+    stop_stream,
+    get_mlx_sensitivity_handler,
+    set_mlx_sensitivity_handler,
+};
 use crate::mlx90393::sensorgroup::SensorGroup;
 use data_transfer::rpc::{
-    PingEndpoint, SingleFieldValue, StartFieldStream, StopFieldStream, ENDPOINT_LIST,
-    TOPICS_IN_LIST, TOPICS_OUT_LIST,
+    PingEndpoint,
+    SingleFieldValue,
+    StartFieldStream,
+    StopFieldStream,
+    GetMlxSensitivity,
+    SetMlxSensitivity,
+    ENDPOINT_LIST,
+    TOPICS_IN_LIST,
+    TOPICS_OUT_LIST,
 };
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_stm32::exti::ExtiInput;
@@ -102,7 +116,9 @@ define_dispatch! {
         | PingEndpoint              | blocking  | ping_handler                  |
         | SingleFieldValue          | async     | single_request_handler        |
         | StartFieldStream          | spawn     | stream_field                  |
-        | StopFieldStream           | blocking  | stop_stream                    |
+        | StopFieldStream           | blocking  | stop_stream                   |
+        | GetMlxSensitivity         | blocking  | get_mlx_sensitivity_handler   |
+        | SetMlxSensitivity         | blocking  | set_mlx_sensitivity_handler   |
     };
 
     // Topics IN are messages we receive from the client, but that we do not reply

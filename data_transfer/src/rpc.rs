@@ -16,6 +16,23 @@ pub struct SensorField {
     pub time: u64,
 }
 
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct MlxSensitivityConfig {
+    pub gain: u8,       // 0..7
+    pub resolution: u8, // 0..3, later map to 16/17/18/19-bit
+    pub hall_conf: u8,  // 0 = 2-phase, 1 = 4-phase
+}
+
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct MlxSensitivityStatus {
+    pub ok: bool,
+    pub gain: u8,
+    pub resolution: u8,
+    pub hall_conf: u8,
+}
+
 endpoints! {
     list = ENDPOINT_LIST;
     | EndpointTy                | RequestTy     | ResponseTy            | Path              |
@@ -24,6 +41,8 @@ endpoints! {
     | SingleFieldValue          | (u32, u32)    | SensorField           | "bfield/single"   |
     | StartFieldStream          | ()            | ()                    | "bfield/start"    |
     | StopFieldStream           | ()            | ()                    | "bfield/stop"     |
+    | GetMlxSensitivity         | ()            | MlxSensitivityStatus  | "mlx/sensitivity/get" |
+    | SetMlxSensitivity  | MlxSensitivityConfig | MlxSensitivityStatus  | "mlx/sensitivity/set" |
 }
 
 
