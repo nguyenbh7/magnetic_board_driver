@@ -21,7 +21,7 @@ pub fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u3
 }
 
 pub fn get_mlx_sensitivity_handler(
-    _context: &mut Context,
+    context: &mut Context,
     _header: VarHeader,
     _rqst: (),
 ) -> MlxSensitivityStatus {
@@ -29,20 +29,27 @@ pub fn get_mlx_sensitivity_handler(
 
     MlxSensitivityStatus {
         ok: true,
-        gain: 0,
-        resolution: 0,
-        hall_conf: 0,
+        gain: context.mlx_sensitivity.gain,
+        resolution: context.mlx_sensitivity.resolution,
+        hall_conf: context.mlx_sensitivity.hall_conf,
     }
 }
 
 pub fn set_mlx_sensitivity_handler(
-    _context: &mut Context,
+    context: &mut Context,
     _header: VarHeader,
     rqst: MlxSensitivityConfig,
 ) -> MlxSensitivityStatus {
     info!("set mlx sensitivity");
 
-    let valid = rqst.gain <= 7 && rqst.resolution <= 3 && rqst.hall_conf <= 1;
+    let valid =
+        rqst.gain <= 7
+        && rqst.resolution <= 3
+        && matches!(rqst.hall_conf, 0x0 | 0xC);
+
+    if valid {
+        context.mlx_sensitivity = rqst.clone();
+    }
 
     MlxSensitivityStatus {
         ok: valid,

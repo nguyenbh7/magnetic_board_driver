@@ -17,6 +17,7 @@ use data_transfer::rpc::{
     StopFieldStream,
     GetMlxSensitivity,
     SetMlxSensitivity,
+    MlxSensitivityConfig,
     ENDPOINT_LIST,
     TOPICS_IN_LIST,
     TOPICS_OUT_LIST,
@@ -53,6 +54,7 @@ type SensorGroupDefault = Mutex<CriticalSectionRawMutex, SensorGroup<
 
 pub struct Context {
     pub sensor_groups: &'static [SensorGroupDefault; N],
+    pub mlx_sensitivity: MlxSensitivityConfig,
 }
 
 pub struct SpawnCtx {

@@ -20,7 +20,7 @@ use std::io::{BufWriter, Write};
 use std::fs::File;
 
 use crate::sensor_monitor::{SensorSubscription, SensorWatcher};
-use iced::widget::{button, column, combo_box, container, row, text, text_input};
+use iced::widget::{button, column, combo_box, container, row, text, text_input, pick_list};
 use iced::{Element, Task};
 use std::fmt::{Display, format};
 use std::sync::Arc;
@@ -119,6 +119,26 @@ struct Context {
 pub enum Error {
     DialogClosed,
     IoError(tokio::io::ErrorKind),
+}
+
+const MLX_HALL_CONF_DEFAULT_LABEL: &str = "0xC = Default Sampling";
+const MLX_HALL_CONF_FAST_LABEL: &str = "0x0 = Faster Sampling";
+
+fn hall_conf_label_to_value(label: &str) -> u8 {
+    match label {
+        MLX_HALL_CONF_FAST_LABEL => 0x0,
+        MLX_HALL_CONF_DEFAULT_LABEL => 0xC,
+        "" => 0xC,
+        _ => 0xC,
+    }
+}
+
+fn hall_conf_value_to_label(value: u8) -> &'static str {
+    match value {
+        0x0 => MLX_HALL_CONF_FAST_LABEL,
+        0xC => MLX_HALL_CONF_DEFAULT_LABEL,
+        _ => MLX_HALL_CONF_DEFAULT_LABEL,
+    }
 }
 
 fn open_file(
@@ -336,7 +356,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             if let Some(sw) = &context.sensor_watcher {
                 let gain = context.mlx_gain.parse::<u8>().unwrap_or(255);
                 let resolution = context.mlx_resolution.parse::<u8>().unwrap_or(255);
-                let hall_conf = context.mlx_hall_conf.parse::<u8>().unwrap_or(255);
+                let hall_conf = hall_conf_label_to_value(&context.mlx_hall_conf);
 
                 let config = MlxSensitivityConfig {
                     gain,
@@ -361,13 +381,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::ReceivedMlxSensitivity(status) => {
-            if status.ok {
-                context.mlx_gain = status.gain.to_string();
-                context.mlx_resolution = status.resolution.to_string();
-                context.mlx_hall_conf = status.hall_conf.to_string();
-            }
-
+            context.mlx_gain = status.gain.to_string();
+            context.mlx_resolution = status.resolution.to_string();
+            context.mlx_hall_conf = hall_conf_value_to_label(status.hall_conf).to_string();
             context.mlx_status = Some(status);
+
             Task::none()
         }
     }
@@ -416,19 +434,29 @@ fn view(context: &Context) -> Element<'_, Message> {
         column![
             text("MLX90393 sensitivity"),
             row![
-                text("Gain 0-7: "),
+                text("Gain 0–7 (higher = more sensitive, saturates sooner)"),
                 text_input("0..7", &context.mlx_gain)
                     .on_input(Message::UpdateMlxGain),
             ],
             row![
-                text("Resolution 0-3: "),
+                text("Resolution 0–3 (higher = finer digital resolution, usually slower)"),
                 text_input("0=16bit, 3=19bit", &context.mlx_resolution)
                     .on_input(Message::UpdateMlxResolution),
             ],
             row![
-                text("Hall conf 0/1: "),
-                text_input("0=2-phase, 1=4-phase", &context.mlx_hall_conf)
-                    .on_input(Message::UpdateMlxHallConf),
+                text("Hall Conf"),
+                pick_list(
+                    vec![
+                        MLX_HALL_CONF_DEFAULT_LABEL.to_string(),
+                        MLX_HALL_CONF_FAST_LABEL.to_string(),
+                    ],
+                    Some(if context.mlx_hall_conf.is_empty() {
+                        MLX_HALL_CONF_DEFAULT_LABEL.to_string()
+                    } else {
+                        context.mlx_hall_conf.clone()
+                    }),
+                    Message::UpdateMlxHallConf,
+                )
             ],
             row![
                 button("Get MLX sensitivity").on_press(Message::GetMlxSensitivity),

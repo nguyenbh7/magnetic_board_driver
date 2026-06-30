@@ -266,7 +266,14 @@ async fn main(spawner: Spawner) {
     static PACKET_RX_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0u8; 256]);
     
     
-    let context = Context { sensor_groups };
+    let context = Context {
+        sensor_groups,
+        mlx_sensitivity: data_transfer::rpc::MlxSensitivityConfig {
+            gain: 0,
+            resolution: 0,
+            hall_conf: 0xC,
+},
+    };
 
     let dispatcher = MyApp::new(context, spawner.into());
     let vkk = dispatcher.min_key_len();
