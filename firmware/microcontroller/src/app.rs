@@ -120,7 +120,7 @@ define_dispatch! {
         | StartFieldStream          | spawn     | stream_field                  |
         | StopFieldStream           | blocking  | stop_stream                   |
         | GetMlxSensitivity         | blocking  | get_mlx_sensitivity_handler   |
-        | SetMlxSensitivity         | blocking  | set_mlx_sensitivity_handler   |
+        | SetMlxSensitivity         | async  | set_mlx_sensitivity_handler   |
     };
 
     // Topics IN are messages we receive from the client, but that we do not reply

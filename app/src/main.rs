@@ -434,12 +434,12 @@ fn view(context: &Context) -> Element<'_, Message> {
         column![
             text("MLX90393 sensitivity"),
             row![
-                text("Gain 0–7 (higher = more sensitive, saturates sooner)"),
+                text("Gain 0–7 (0 = max range; 7 = highest sensitivity, saturates sooner)"),
                 text_input("0..7", &context.mlx_gain)
                     .on_input(Message::UpdateMlxGain),
             ],
             row![
-                text("Resolution 0–3 (higher = finer digital resolution, usually slower)"),
+                text("Resolution 0–3 (0 = finest/smallest range; 2–3 = largest range, 3 is coarser)"),
                 text_input("0=16bit, 3=19bit", &context.mlx_resolution)
                     .on_input(Message::UpdateMlxResolution),
             ],

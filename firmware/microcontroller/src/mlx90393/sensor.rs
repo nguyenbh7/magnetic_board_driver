@@ -6,7 +6,7 @@ use data_transfer::memory::{Register, TempRef};
 
 use bitflags::bitflags;
 use data_transfer::conversions::MagneticField;
-use data_transfer::memory::{Gain, HallConf, Res3D, TemperatureCompensation};
+use data_transfer::memory::{Gain, HallConf, Res3D, Resolution, TemperatureCompensation};
 //use bitvec::prelude::*;
 use defmt::{info, Format};
 //use embassy_stm32::i2c::Error;
@@ -78,6 +78,175 @@ pub struct MLXSettings {
 }
 
 impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
+    pub async fn write_register_raw(&mut self, location: u8, data: [u8; 2]) -> Status {
+        let command = Command::write_register(data, location);
+
+        // WR is not just a normal measurement read. Give the chip time to apply it.
+        let (status, _data) = self.run_command_with_wait(command, 20).await;
+        Timer::after_millis(50).await;
+
+        status
+    }
+
+    pub async fn read_sensitivity_values(&mut self) -> Option<(u8, u8, u8)> {
+        let reg0 = self.read_register::<0x00>().await;
+        let gain = reg0.gain().as_u8();
+        let hall_conf = reg0.hall_conf()?.as_raw_u8();
+
+        Timer::after_millis(20).await;
+
+        let reg2 = self.read_register::<0x02>().await;
+        let resolution = reg2.resolution();
+
+        let res_x = resolution.x.as_u8();
+        let res_y = resolution.y.as_u8();
+        let res_z = resolution.z.as_u8();
+
+        if res_x == res_y && res_y == res_z {
+            Some((gain, res_x, hall_conf))
+        } else {
+            None
+        }
+    }
+
+    pub async fn set_sensitivity_registers(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        if gain > 7 || resolution > 3 || !matches!(hall_conf, 0x0 | 0xC) {
+            return false;
+        }
+
+        for _attempt in 0..3 {
+            let _ = self.run_command(Command::exit()).await;
+            Timer::after_millis(10).await;
+
+            let mut reg0 = self.read_register::<0x00>().await.bytes();
+            reg0[1] = (reg0[1] & 0b1000_0000)
+                | ((gain & 0x07) << 4)
+                | (hall_conf & 0x0F);
+
+            let status0 = self.write_register_raw(0x00, reg0).await;
+            Timer::after_millis(20).await;
+
+            let mut reg2 = self.read_register::<0x02>().await.bytes();
+
+            reg2[1] = (reg2[1] & !0b1110_0000)
+                | ((resolution & 0x03) << 5)
+                | ((resolution & 0x01) << 7);
+
+            reg2[0] = (reg2[0] & !0b0000_0111)
+                | ((resolution & 0x03) << 1)
+                | ((resolution >> 1) & 0x01);
+
+            let status2 = self.write_register_raw(0x02, reg2).await;
+            Timer::after_millis(20).await;
+
+            let readback = self.read_sensitivity_values().await;
+            let readback_ok = matches!(
+                readback,
+                Some((read_gain, read_resolution, read_hall_conf))
+                    if read_gain == gain
+                        && read_resolution == resolution
+                        && read_hall_conf == hall_conf
+            );
+
+            if !status0.error && !status2.error && readback_ok {
+                self.update_cached_sensitivity(gain, resolution, hall_conf);
+                return self.state.is_some();
+            }
+
+            Timer::after_millis(50).await;
+        }
+
+        false
+    }
+
+
+    pub async fn write_register_raw_fast(&mut self, location: u8, data: [u8; 2]) -> Status {
+        let command = Command::write_register(data, location);
+
+        let (status, _data) = self.run_command_with_wait(command, 10).await;
+        Timer::after_millis(10).await;
+
+        status
+    }
+
+    pub async fn set_sensitivity_registers_fast(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        if gain > 7 || resolution > 3 || !matches!(hall_conf, 0x0 | 0xC) {
+            return false;
+        }
+
+        let _ = self.run_command(Command::exit()).await;
+        Timer::after_millis(5).await;
+
+        let mut reg0 = self.read_register::<0x00>().await.bytes();
+        reg0[1] = (reg0[1] & 0b1000_0000)
+            | ((gain & 0x07) << 4)
+            | (hall_conf & 0x0F);
+
+        let status0 = self.write_register_raw_fast(0x00, reg0).await;
+
+        let mut reg2 = self.read_register::<0x02>().await.bytes();
+
+        reg2[1] = (reg2[1] & !0b1110_0000)
+            | ((resolution & 0x03) << 5)
+            | ((resolution & 0x01) << 7);
+
+        reg2[0] = (reg2[0] & !0b0000_0111)
+            | ((resolution & 0x03) << 1)
+            | ((resolution >> 1) & 0x01);
+
+        let status2 = self.write_register_raw_fast(0x02, reg2).await;
+
+        if !status0.error && !status2.error {
+            self.update_cached_sensitivity(gain, resolution, hall_conf);
+            return self.state.is_some();
+        }
+
+        false
+    }
+
+    fn update_cached_sensitivity(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) {
+        let Some(mut state) = self.state else {
+            return;
+        };
+
+        let Some(gain) = Self::gain_from_u8(gain) else {
+            return;
+        };
+
+        let Some(resolution) = Self::resolution_from_u8(resolution) else {
+            return;
+        };
+
+        let Some(hall_configuration) = Self::hall_conf_from_u8(hall_conf) else {
+            return;
+        };
+
+        state.gain = gain;
+        state.resolution = Res3D {
+            x: resolution,
+            y: resolution,
+            z: resolution,
+        };
+        state.hall_configuration = hall_configuration;
+
+        self.state = Some(state);
+    }
+
     pub fn new(address: u8, interrupt: Option<P>, i2c: I) -> Self {
         Self {
             address,
@@ -446,6 +615,38 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
     pub async fn has_measured(&mut self) {
         if let Some(interrupt) = &mut self.interrupt {
             let _ = interrupt.wait_for_high().await;
+        }
+    }
+
+    fn gain_from_u8(value: u8) -> Option<Gain> {
+        match value {
+            0 => Some(Gain::ZERO),
+            1 => Some(Gain::ONE),
+            2 => Some(Gain::TWO),
+            3 => Some(Gain::THREE),
+            4 => Some(Gain::FOUR),
+            5 => Some(Gain::FIVE),
+            6 => Some(Gain::SIX),
+            7 => Some(Gain::SEVEN),
+            _ => None,
+        }
+    }
+
+    fn resolution_from_u8(value: u8) -> Option<Resolution> {
+        match value {
+            0 => Some(Resolution::BIT19),
+            1 => Some(Resolution::BIT18),
+            2 => Some(Resolution::BIT17),
+            3 => Some(Resolution::BIT16),
+            _ => None,
+        }
+    }
+
+    fn hall_conf_from_u8(value: u8) -> Option<HallConf> {
+        match value {
+            0x0 => Some(HallConf::TWOPHASE),
+            0xC => Some(HallConf::FOURPHASE),
+            _ => None,
         }
     }
 }

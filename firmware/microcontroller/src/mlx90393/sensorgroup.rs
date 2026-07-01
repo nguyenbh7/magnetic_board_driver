@@ -30,8 +30,31 @@ impl From<messaging::Error> for Error {
 }
 
 impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
+    pub async fn set_sensitivity(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        self.mlx
+            .set_sensitivity_registers(gain, resolution, hall_conf)
+            .await
+    }
+    pub async fn set_sensitivity_fast(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        self.mlx
+            .set_sensitivity_registers_fast(gain, resolution, hall_conf)
+            .await
+    }
+    pub async fn read_sensitivity(&mut self) -> Option<(u8, u8, u8)> {
+        self.mlx.read_sensitivity_values().await
+    }
     pub async fn new(address: u8, i2c: I, position: (f32, f32, f32)) -> Self
-where {
+        where {
         let mlx = MLX90393::new(address, None, i2c);
         Self::from_mlx(mlx, position).await
     }
@@ -129,6 +152,43 @@ pub struct SensorGroup<I, P, const N: usize = 16> {
 }
 
 impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
+    pub async fn set_sensitivity_all(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        let mut all_ok = true;
+
+        for sensor in self.sensors.iter_mut() {
+            let ok = sensor
+                .set_sensitivity(gain, resolution, hall_conf)
+                .await;
+            all_ok = all_ok && ok;
+        }
+
+        all_ok
+    }
+
+    pub async fn set_sensitivity_all_fast(
+        &mut self,
+        gain: u8,
+        resolution: u8,
+        hall_conf: u8,
+    ) -> bool {
+        let mut all_ok = true;
+
+        for sensor in self.sensors.iter_mut() {
+            let ok = sensor
+                .set_sensitivity_fast(gain, resolution, hall_conf)
+                .await;
+
+            all_ok = all_ok && ok;
+        }
+
+        all_ok
+    }
+
     pub async fn get_message(&mut self, index: usize) -> Result<rpc::SensorField, ()> {
         let sensor = self.sensors.get_mut(index).ok_or(())?;
         let message = sensor.get_message().await?;

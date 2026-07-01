@@ -205,19 +205,45 @@ impl MagneticValue {
         hallconf: HallConf,
         axis: Axis,
     ) -> Option<Self> {
-        let flip_msb = match (temp_comp, resolution) {
+        let raw = *value?;
+
+        let counts: i32 = match (temp_comp, resolution) {
+            // TCMP disabled, RES=0/1:
+            // Datasheet: two's complement, 0 uT = 0 LSB.
             (TemperatureCompensation::Disabled, Resolution::BIT19)
-            | (TemperatureCompensation::Disabled, Resolution::BIT18) => Some(1),
-            (TemperatureCompensation::Enabled, Resolution::BIT19 | Resolution::BIT18)
-            | (TemperatureCompensation::Disabled, Resolution::BIT17 | Resolution::BIT16) => {
-                Some(-1)
+            | (TemperatureCompensation::Disabled, Resolution::BIT18) => {
+                i16::from_be_bytes(raw) as i32
             }
-            _ => None,
-        }?;
-        let value_to_i16 = i16::from_be_bytes(*value?) * flip_msb;
+
+            // TCMP disabled, RES=2:
+            // Datasheet: unsigned, 0 uT = 2^15 LSB.
+            (TemperatureCompensation::Disabled, Resolution::BIT17) => {
+                u16::from_be_bytes(raw) as i32 - 32768
+            }
+
+            // TCMP disabled, RES=3:
+            // Datasheet: unsigned, 0 uT = 2^14 LSB.
+            (TemperatureCompensation::Disabled, Resolution::BIT16) => {
+                u16::from_be_bytes(raw) as i32 - 16384
+            }
+
+            // TCMP enabled, RES=0/1:
+            // Datasheet: unsigned, 0 uT = 2^15 LSB.
+            (TemperatureCompensation::Enabled, Resolution::BIT19)
+            | (TemperatureCompensation::Enabled, Resolution::BIT18) => {
+                u16::from_be_bytes(raw) as i32 - 32768
+            }
+
+            // Datasheet marks TCMP enabled with RES=2/3 as N/A.
+            (TemperatureCompensation::Enabled, Resolution::BIT17)
+            | (TemperatureCompensation::Enabled, Resolution::BIT16) => {
+                return None;
+            }
+        };
+
         let sensitivity = SensitivityPerBit::new(axis, gain, resolution, hallconf);
 
-        Some(Self::uT(sensitivity.value * f64::from(value_to_i16)))
+        Some(Self::uT(sensitivity.value * f64::from(counts)))
     }
     pub fn value(&self) -> f64 {
         match self {

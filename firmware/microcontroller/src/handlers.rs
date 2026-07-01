@@ -35,7 +35,7 @@ pub fn get_mlx_sensitivity_handler(
     }
 }
 
-pub fn set_mlx_sensitivity_handler(
+pub async fn set_mlx_sensitivity_handler(
     context: &mut Context,
     _header: VarHeader,
     rqst: MlxSensitivityConfig,
@@ -47,18 +47,63 @@ pub fn set_mlx_sensitivity_handler(
         && rqst.resolution <= 3
         && matches!(rqst.hall_conf, 0x0 | 0xC);
 
-    if valid {
+    if !valid {
+        return MlxSensitivityStatus {
+            ok: false,
+            gain: rqst.gain,
+            resolution: rqst.resolution,
+            hall_conf: rqst.hall_conf,
+        };
+    }
+
+    // CURRENT CONNECTED-BOARD MODE:
+    // Your app output is board_id=1, so only apply to board index 1.
+    // This updates all 16 sensors on that one connected board.
+    let connected_board_index = 1usize;
+
+    let mut all_ok = true;
+    let mut representative_readback = (255, 255, 255);
+
+    {
+        let mut group = context.sensor_groups[connected_board_index].lock().await;
+
+        for sensor_index in 0..group.num_sensors() {
+            let sensor = &mut group.sensors[sensor_index];
+
+            let write_ok = sensor
+                .set_sensitivity(rqst.gain, rqst.resolution, rqst.hall_conf)
+                .await;
+
+            let readback = sensor
+                .read_sensitivity()
+                .await
+                .unwrap_or((255, 255, 255));
+
+            let readback_ok =
+                readback.0 == rqst.gain
+                && readback.1 == rqst.resolution
+                && readback.2 == rqst.hall_conf;
+
+            if sensor_index == 0 {
+                representative_readback = readback;
+            }
+
+            all_ok = all_ok && write_ok && readback_ok;
+        }
+    }
+
+    if all_ok {
         context.mlx_sensitivity = rqst.clone();
     }
 
+    // Returned values are readback from board 1 sensor 0.
     MlxSensitivityStatus {
-        ok: valid,
-        gain: rqst.gain,
-        resolution: rqst.resolution,
-        hall_conf: rqst.hall_conf,
+        ok: all_ok,
+        gain: representative_readback.0,
+        resolution: representative_readback.1,
+        hall_conf: representative_readback.2,
     }
 }
-
 
 pub fn stop_stream(context: &mut Context, _header: VarHeader, _rqst: ()) {
     let was_busy = core::array::from_fn::<_, N, _>(|i| context.sensor_groups[i].try_lock().is_err()).contains(&true);

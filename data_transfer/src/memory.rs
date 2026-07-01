@@ -11,6 +11,10 @@ impl<const R: u8> Register<R> {
     pub fn new(data: [u8; 2]) -> Self {
         Self { data }
     }
+
+    pub fn bytes(&self) -> [u8; 2] {
+        self.data
+    }
 }
 
 impl Register<0x00> {
@@ -463,6 +467,32 @@ impl CustomerMemoryArea {
                 position: 0,
                 length: 16,
             },
+        }
+    }
+}
+
+impl Gain {
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+impl Resolution {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Resolution::BIT19 => 0,
+            Resolution::BIT18 => 1,
+            Resolution::BIT17 => 2,
+            Resolution::BIT16 => 3,
+        }
+    }
+}
+
+impl HallConf {
+    pub fn as_raw_u8(self) -> u8 {
+        match self {
+            HallConf::TWOPHASE => 0x0,
+            HallConf::FOURPHASE => 0xC,
         }
     }
 }
