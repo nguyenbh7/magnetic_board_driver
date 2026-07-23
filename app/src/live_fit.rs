@@ -11,7 +11,7 @@ pub struct BoardLiveFits {
     presence: BoardPresence,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BoardLiveFitState {
     current_frame: BoardFrameAccumulator,
     result: Option<FitResult>,
@@ -24,6 +24,32 @@ pub struct BoardLiveFitState {
     start_time_us: Option<u64>,
     last_fit_time_us: Option<u64>,
     displacement_history: VecDeque<DisplacementPoint>,
+
+    magnet_preset: MagnetPreset,
+    magnet_effective_scale: f64,
+    use_known_magnet_prior: bool,
+}
+
+impl Default for BoardLiveFitState {
+    fn default() -> Self {
+        Self {
+            current_frame: BoardFrameAccumulator::default(),
+            result: None,
+            calibrated_moment_norm: None,
+
+            latest_raw_samples: Vec::new(),
+            background: None,
+
+            origin: None,
+            start_time_us: None,
+            last_fit_time_us: None,
+            displacement_history: VecDeque::new(),
+
+            magnet_preset: MagnetPreset::ThickD54N52,
+            magnet_effective_scale: 1.0,
+            use_known_magnet_prior: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,6 +86,55 @@ struct Sample {
     sensor_index: u8,
     position: [f64; 3],
     field: [f64; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagnetPreset {
+    ThinD52N52,
+    ThickD54N52,
+}
+
+impl MagnetPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ThinD52N52 => "Thin D52-N52",
+            Self::ThickD54N52 => "Thick D54-N52",
+        }
+    }
+
+    pub fn diameter_mm(self) -> f64 {
+        7.94
+    }
+
+    pub fn thickness_mm(self) -> f64 {
+        match self {
+            Self::ThinD52N52 => 3.17,
+            Self::ThickD54N52 => 6.35,
+        }
+    }
+
+    pub fn br_t(self) -> f64 {
+        1.48
+    }
+
+    pub fn moment_norm_app(self) -> f64 {
+        let radius_m = (self.diameter_mm() * 1.0e-3) / 2.0;
+        let thickness_m = self.thickness_mm() * 1.0e-3;
+        let volume_m3 = std::f64::consts::PI * radius_m * radius_m * thickness_m;
+        let mu0 = 4.0 * std::f64::consts::PI * 1.0e-7;
+
+        let moment_si = self.br_t() * volume_m3 / mu0;
+
+        // The app's dipole matrix uses mm^-3 and field units of mT.
+        // B_mT = A_mm * moment_app, so moment_app = 1e5 * moment_si.
+        1.0e5 * moment_si
+    }
+}
+
+impl Default for MagnetPreset {
+    fn default() -> Self {
+        Self::ThickD54N52
+    }
 }
 
 impl BoardLiveFits {
@@ -194,8 +269,13 @@ impl BoardLiveFitState {
             return;
         }
 
-        let fit_result = if let Some(calibrated_moment_norm) = self.calibrated_moment_norm {
-            fit_dipole_grid_fixed_moment_norm(&samples, calibrated_moment_norm)
+        let fit_result = if self.use_known_magnet_prior {
+            let target_moment_norm =
+                self.magnet_preset.moment_norm_app() * self.magnet_effective_scale;
+
+            fit_dipole_grid_moment_norm_prior(&samples, target_moment_norm)
+        } else if let Some(calibrated_moment_norm) = self.calibrated_moment_norm {
+            fit_dipole_grid_moment_norm_prior(&samples, calibrated_moment_norm)
         } else {
             fit_dipole_grid(&samples)
         };
@@ -263,7 +343,17 @@ impl BoardLiveFitState {
             return;
         }
 
-        self.calibrated_moment_norm = Some(result.moment_norm);
+        if self.use_known_magnet_prior {
+            let model_moment_norm = self.magnet_preset.moment_norm_app();
+
+            if model_moment_norm.is_finite() && model_moment_norm > 1.0e-12 {
+                self.magnet_effective_scale = result.moment_norm / model_moment_norm;
+            }
+
+            self.calibrated_moment_norm = None;
+        } else {
+            self.calibrated_moment_norm = Some(result.moment_norm);
+        }
 
         self.reset_displacement();
     }
