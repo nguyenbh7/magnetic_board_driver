@@ -353,13 +353,19 @@ fn fit_dipole_grid_with(
     ];
 
     let passes = [
-        (8.0, 2.0, 36.0),
-        (4.0, 2.0, 28.0),
-        (2.0, 2.0, 20.0),
-        (1.0, 2.0, 14.0),
+        // Coarse/global passes.
+        (8.0, 2.0, 36.0, false),
+        (4.0, 2.0, 28.0, false),
+        (2.0, 2.0, 20.0, false),
+        (1.0, 2.0, 14.0, false),
+
+        // Fine/local passes to reduce threshold/jump behavior.
+        (0.5, 2.0, 14.0, true),
+        (0.25, 2.0, 14.0, true),
+        (0.10, 2.0, 14.0, true),
     ];
 
-    for (step, z_min, z_max) in passes {
+    for (step, z_min, z_max, local_z) in passes {
         let x_min = center[0] - 3.0 * step;
         let x_max = center[0] + 3.0 * step;
         let y_min = center[1] - 3.0 * step;
@@ -371,9 +377,21 @@ fn fit_dipole_grid_with(
             let mut y = y_min.max(min_y - 10.0);
 
             while y <= y_max.min(max_y + 10.0) {
-                let mut z = z_min;
+                let z_start = if local_z {
+                    (center[2] - 3.0 * step).max(z_min)
+                } else {
+                    z_min
+                };
 
-                while z <= z_max {
+                let z_stop = if local_z {
+                    (center[2] + 3.0 * step).min(z_max)
+                } else {
+                    z_max
+                };
+
+                let mut z = z_start;
+
+                while z <= z_stop {
                     let candidate_pos = [x, y, z];
 
                     if let Some(candidate) = evaluate(samples, candidate_pos) {
