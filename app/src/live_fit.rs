@@ -90,7 +90,7 @@ impl BoardLiveFits {
                 board_id: *board_id,
                 seen_sensors: board.current_frame.fields.len(),
                 result: board.result.clone(),
-                displacement_plot_text: board.displacement_plot_text(),
+                displacement_history: board.displacement_history.iter().cloned().collect(),
             })
             .collect()
     }
@@ -117,7 +117,7 @@ pub struct BoardFitSummary {
     pub board_id: u16,
     pub seen_sensors: usize,
     pub result: Option<FitResult>,
-    pub displacement_plot_text: String,
+    pub displacement_history: Vec<DisplacementPoint>,
 }
 
 impl BoardLiveFitState {

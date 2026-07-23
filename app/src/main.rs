@@ -11,6 +11,8 @@ use postcard_rpc::host_client::{HostClient, Subscription};
 use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
+mod displacement_plot;
+use displacement_plot::displacement_plot;
 mod live_fit;
 use live_fit::BoardLiveFits;
 use rfd::FileHandle;
@@ -486,45 +488,46 @@ fn view(context: &Context) -> Element<'_, Message> {
         None => "Status: not read yet".to_string(),
     };
 
-    let live_fit_summary_text = {
+    let live_fit_widget = {
         let summaries = context.live_fits.board_summaries();
 
-        if summaries.is_empty() {
-            "Live magnet fits: no detected boards".to_string()
-        } else {
-            summaries
-                .into_iter()
-                .map(|summary| {
-                    match summary.result {
-                        Some(result) => format!(
-                            "Board {}\nLive fit: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}\n{}",
-                            summary.board_id,
-                            result.position.0,
-                            result.position.1,
-                            result.position.2,
-                            result.residual_rms,
-                            result.n_sensors,
-                            summary.displacement_plot_text,
-                        ),
-                        None => format!(
-                            "Board {}\nLive fit: waiting for completed frame; seen {}/16 sensors\n{}",
-                            summary.board_id,
-                            summary.seen_sensors,
-                            summary.displacement_plot_text,
-                        ),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        }
-    };
-
-    let live_fit_widget = container(
-        column![
-            text("Live magnet fits by board"),
-            text(live_fit_summary_text),
+        let mut live_fit_content = column![
+            text("Live magnet fits by board")
         ]
-    );
+        .spacing(8);
+
+        if summaries.is_empty() {
+            live_fit_content = live_fit_content.push(text("No detected boards"));
+        } else {
+            for summary in summaries {
+                let fit_text = match &summary.result {
+                    Some(result) => format!(
+                        "Board {}: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}",
+                        summary.board_id,
+                        result.position.0,
+                        result.position.1,
+                        result.position.2,
+                        result.residual_rms,
+                        result.n_sensors,
+                    ),
+                    None => format!(
+                        "Board {}: waiting for completed frame; seen {}/16 sensors",
+                        summary.board_id,
+                        summary.seen_sensors,
+                    ),
+                };
+
+                live_fit_content = live_fit_content
+                    .push(text(fit_text))
+                    .push(displacement_plot(
+                        summary.board_id,
+                        summary.displacement_history,
+                    ));
+            }
+        }
+
+        container(live_fit_content)
+    };
 
     let mlx_widget = container(
         column![
