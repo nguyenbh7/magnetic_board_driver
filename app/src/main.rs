@@ -485,13 +485,6 @@ fn view(context: &Context) -> Element<'_, Message> {
             ]
         ]
     );
-    let mlx_status_text = match &context.mlx_status {
-        Some(status) => format!(
-            "Status: ok={}, gain={}, resolution={}, hall_conf={}",
-            status.ok, status.gain, status.resolution, status.hall_conf
-        ),
-        None => "Status: not read yet".to_string(),
-    };
 
     let live_fit_widget = {
         let summaries = context.live_fits.board_summaries();
@@ -545,41 +538,75 @@ fn view(context: &Context) -> Element<'_, Message> {
         container(live_fit_content)
     };
 
+    let mlx_status_text = match &context.mlx_status {
+        Some(status) => format!(
+            "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
+            status.ok,
+            status.gain,
+            status.resolution,
+            status.hall_conf,
+        ),
+        None => "Current: not read yet".to_string(),
+    };
+
+    let selected_hall_conf = Some(if context.mlx_hall_conf.is_empty() {
+        MLX_HALL_CONF_DEFAULT_LABEL.to_string()
+    } else {
+        context.mlx_hall_conf.clone()
+    });
+
     let mlx_widget = container(
         column![
-            text("MLX90393 sensitivity"),
             row![
-                text("Gain 0–7 (0 = max range; 7 = highest sensitivity, saturates sooner)"),
-                text_input("0..7", &context.mlx_gain)
-                    .on_input(Message::UpdateMlxGain),
-            ],
+                text("MLX90393 sensitivity"),
+                text(mlx_status_text),
+            ]
+            .spacing(16),
+
+            text("Changes are applied to the detected sensor boards."),
+
             row![
-                text("Resolution 0–3 (0 = finest/smallest range; 2–3 = largest range, 3 is coarser)"),
-                text_input("0=16bit, 3=19bit", &context.mlx_resolution)
-                    .on_input(Message::UpdateMlxResolution),
-            ],
-            row![
-                text("Hall Conf"),
+                column![
+                    text("Gain"),
+                    text_input("0..7", &context.mlx_gain)
+                        .on_input(Message::UpdateMlxGain),
+                    text("0 = max range, 7 = highest sensitivity")
+                ]
+                .spacing(4),
+
+                column![
+                    text("Resolution"),
+                    text_input("0..3", &context.mlx_resolution)
+                        .on_input(Message::UpdateMlxResolution),
+                    text("0 = finest/smallest range, 3 = coarser")
+                ]
+                .spacing(4),
+            ]
+            .spacing(18),
+
+            column![
+                text("Hall configuration"),
                 pick_list(
                     vec![
                         MLX_HALL_CONF_DEFAULT_LABEL.to_string(),
                         MLX_HALL_CONF_FAST_LABEL.to_string(),
                     ],
-                    Some(if context.mlx_hall_conf.is_empty() {
-                        MLX_HALL_CONF_DEFAULT_LABEL.to_string()
-                    } else {
-                        context.mlx_hall_conf.clone()
-                    }),
+                    selected_hall_conf,
                     Message::UpdateMlxHallConf,
-                )
-            ],
+                ),
+                text("Default is stable; faster sampling may reduce per-frame delay.")
+            ]
+            .spacing(4),
+
             row![
-                button("Get MLX sensitivity").on_press(Message::GetMlxSensitivity),
-                button("Apply MLX sensitivity").on_press(Message::SetMlxSensitivity),
-            ],
-            text(mlx_status_text),
+                button("Read from board").on_press(Message::GetMlxSensitivity),
+                button("Apply to detected boards").on_press(Message::SetMlxSensitivity),
+            ]
+            .spacing(12),
         ]
-    );
+        .spacing(10)
+    )
+    .padding(10);
     
     column![
         serial_selector,
