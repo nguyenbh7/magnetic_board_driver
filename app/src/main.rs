@@ -11,6 +11,8 @@ use postcard_rpc::host_client::{HostClient, Subscription};
 use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
+mod live_fit;
+use live_fit::LiveFitState;
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
@@ -32,6 +34,9 @@ use data_transfer::{
         SensorField,
         SingleFieldValue,
         StartFieldStream,
+        GetBoardPresence,
+        BoardPresence,
+        MAX_SENSOR_BOARDS,
         GetMlxSensitivity,
         SetMlxSensitivity,
         MlxSensitivityConfig,
@@ -59,6 +64,7 @@ enum Message {
     GetField,
     RecievedField(data_transfer::rpc::SensorField),
     RecievedStreamField(data_transfer::rpc::SensorField),
+    ReceivedBoardPresence(BoardPresence),
     StartFieldStream,
     FieldStreamStarted,
     FieldStreamStopped,
@@ -109,6 +115,8 @@ struct Context {
     ping_args: PingArgs,
     ping_field: Option<SensorField>,
     sensor_grids: BTreeMap<u8, SensorGrid>,
+    board_presence: BoardPresence,
+    live_fit: LiveFitState,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -141,6 +149,30 @@ fn hall_conf_value_to_label(value: u8) -> &'static str {
     }
 }
 
+fn board_presence_text(presence: &BoardPresence) -> String {
+    let mut lines = Vec::new();
+
+    for board_index in 0..MAX_SENSOR_BOARDS {
+        if presence.board_mask & (1u8 << board_index) == 0 {
+            continue;
+        }
+
+        let sensor_count = presence.sensor_masks[board_index].count_ones();
+
+        lines.push(format!(
+            "Board {}: {}/16 sensors",
+            board_index,
+            sensor_count,
+        ));
+    }
+
+    if lines.is_empty() {
+        "Connected boards: none detected".to_string()
+    } else {
+        format!("Connected boards:\n{}", lines.join("\n"))
+    }
+}
+
 fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
@@ -165,6 +197,13 @@ async fn get_single_value(board: u32, sensor: u32, client: HostClient<WireError>
 
 async fn start_field_stream(client: HostClient<WireError>) -> () {
     client.send_resp::<StartFieldStream>(&()).await.unwrap()
+}
+
+async fn get_board_presence(client: HostClient<WireError>) -> BoardPresence {
+    client
+        .send_resp::<GetBoardPresence>(&())
+        .await
+        .unwrap_or_default()
 }
 
 async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscription> {
@@ -192,6 +231,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
     match message {
         Message::PortSelected(serial_port_info) => {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
+            context.board_presence = BoardPresence::default();
             Task::none()
         }
         Message::UpdatePorts => {
@@ -230,24 +270,25 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
         }
         Message::RecievedField(sensor_field) => {
+            context.live_fit.update(sensor_field.clone());
             context.ping_field = Some(sensor_field);
             Task::none()
         },
         Message::RecievedStreamField(sensor_field) => {
+            context.live_fit.update(sensor_field.clone());
             context.ping_field = Some(sensor_field.clone());
+
             match &context.file_writer {
                 Some(w) => {
                     let wr = w.clone();
                     Task::perform(
                         (move || {
-
                             async move {
                                 println!("Test");
                                 let sensor_field = sensor_field.clone();
-                                let val = write_data(&*wr, &sensor_field).await;
+                                let _val = write_data(&*wr, &sensor_field).await;
                             }
-                        } 
-                        )(),
+                        })(),
                         |_| Message::WroteFile
                     )
                 },
@@ -255,22 +296,34 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     Task::none()
                 },
             }
-
         },
         Message::StartFieldStream => {
-            {
-                if let Some(sw) = &context.sensor_watcher {
-                    let client = sw.get_client();
-                    Task::perform(
-                        start_field_stream(client), 
-                        |()| Message::FieldStreamStarted,
-                    )
-                } else {
-                    Task::none()
-                }                
-            }
+            if let Some(sw) = &context.sensor_watcher {
+                let client = sw.get_client();
 
-        },
+                Task::perform(
+                    get_board_presence(client),
+                    Message::ReceivedBoardPresence,
+                )
+            } else {
+                Task::none()
+            }
+        }
+        Message::ReceivedBoardPresence(presence) => {
+            println!("Detected board presence: {:#?}", presence);
+            context.board_presence = presence;
+
+            if let Some(sw) = &context.sensor_watcher {
+                let client = sw.get_client();
+
+                Task::perform(
+                    start_field_stream(client),
+                    |()| Message::FieldStreamStarted,
+                )
+            } else {
+                Task::none()
+            }
+        }
         Message::FieldStreamStarted => {
             if let Some(sw) = &mut context.sensor_watcher {
                 let mut client = sw.get_client();
@@ -415,6 +468,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         column![
             row![button("Start Field Stream").on_press(Message::StartFieldStream)],
             row![button("Stop Field Stream").on_press(Message::StopFieldStream)],
+            text(board_presence_text(&context.board_presence)),
             row![
                 text("File output: "),
                 text_input("File", &context.ping_args.sensor),
@@ -429,6 +483,28 @@ fn view(context: &Context) -> Element<'_, Message> {
         ),
         None => "Status: not read yet".to_string(),
     };
+
+    let live_fit_text = match context.live_fit.result() {
+        Some(result) => format!(
+            "Live fit: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}",
+            result.position.0,
+            result.position.1,
+            result.position.2,
+            result.residual_rms,
+            result.n_sensors,
+        ),
+        None => format!(
+            "Live fit: waiting for enough sensors; seen {}",
+            context.live_fit.n_sensors()
+        ),
+    };
+
+    let live_fit_widget = container(
+        column![
+            text("Live magnet fit"),
+            text(live_fit_text),
+        ]
+    );
 
     let mlx_widget = container(
         column![
@@ -466,11 +542,11 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
     );
     
-
     column![
         serial_selector,
         ping_widget,
         stream_widget,
+        live_fit_widget,
         mlx_widget,
     ]
     .padding(10)
