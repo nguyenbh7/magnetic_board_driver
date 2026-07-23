@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, VecDeque};
 
 use data_transfer::rpc::{BoardPresence, SensorField};
 
-const EXPECTED_SENSORS_PER_BOARD: usize = 16;
 const MAX_HISTORY_POINTS: usize = 600;
 
 #[derive(Debug, Clone, Default)]
@@ -83,9 +82,12 @@ impl BoardLiveFits {
             return;
         }
 
-        let board = self.boards.entry(field.board_id).or_default();
+        let board_id = field.board_id;
+        let expected_sensor_count = self.expected_sensor_count(board_id).unwrap_or(16);
 
-        if let Some(frame) = board.current_frame.update(field) {
+        let board = self.boards.entry(board_id).or_default();
+
+        if let Some(frame) = board.current_frame.update(field, expected_sensor_count) {
             board.update_from_completed_frame(frame);
         }
     }
@@ -96,6 +98,7 @@ impl BoardLiveFits {
             .map(|(board_id, board)| BoardFitSummary {
                 board_id: *board_id,
                 seen_sensors: board.current_frame.fields.len(),
+                expected_sensors: self.expected_sensor_count(*board_id).unwrap_or(16),
                 result: board.result.clone(),
                 displacement_history: board.displacement_history.iter().cloned().collect(),
             })
@@ -117,12 +120,26 @@ impl BoardLiveFits {
 
         self.presence.sensor_masks[board_index] & (1u16 << sensor_index) != 0
     }
+
+    fn expected_sensor_count(&self, board_id: u16) -> Option<usize> {
+        let board_index = board_id as usize;
+        let sensor_mask = *self.presence.sensor_masks.get(board_index)?;
+
+        let count = sensor_mask.count_ones() as usize;
+
+        if count == 0 {
+            None
+        } else {
+            Some(count)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct BoardFitSummary {
     pub board_id: u16,
     pub seen_sensors: usize,
+    pub expected_sensors: usize,
     pub result: Option<FitResult>,
     pub displacement_history: Vec<DisplacementPoint>,
 }
@@ -173,30 +190,7 @@ impl BoardLiveFitState {
         }
     }
 
-    fn displacement_plot_text(&self) -> String {
-        if self.displacement_history.len() < 2 {
-            return "Displacement plot: waiting for fitted motion history".to_string();
-        }
-
-        let points: Vec<_> = self.displacement_history.iter().collect();
-        let values: Vec<f64> = points.iter().map(|p| p.displacement_mm).collect();
-
-        let t0 = points.first().unwrap().time_s;
-        let t1 = points.last().unwrap().time_s;
-        let y_last = values.last().copied().unwrap_or(0.0);
-        let y_max = values.iter().copied().fold(0.0_f64, f64::max);
-
-        format!(
-            "Displacement vs time: {}\n{:.1}s → {:.1}s, current={:.2} mm, max={:.2} mm",
-            sparkline(&values),
-            t0,
-            t1,
-            y_last,
-            y_max,
-        )
-    }
-
-        fn reset_displacement(&mut self) {
+    fn reset_displacement(&mut self) {
         self.displacement_history.clear();
 
         if let Some(result) = &self.result {
@@ -218,7 +212,7 @@ impl BoardLiveFitState {
 }
 
 impl BoardFrameAccumulator {
-    fn update(&mut self, field: SensorField) -> Option<CompletedBoardFrame> {
+    fn update(&mut self, field: SensorField, expected_sensor_count: usize,) -> Option<CompletedBoardFrame> {
         if self.fields.is_empty() {
             self.frame_start_time_us = Some(field.time);
         }
@@ -226,7 +220,7 @@ impl BoardFrameAccumulator {
         self.frame_end_time_us = Some(field.time);
         self.fields.insert(field.address, field);
 
-        if self.fields.len() < EXPECTED_SENSORS_PER_BOARD {
+        if self.fields.len() < expected_sensor_count {
             return None;
         }
 

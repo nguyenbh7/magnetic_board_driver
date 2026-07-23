@@ -27,6 +27,7 @@ use crate::sensor_monitor::{SensorSubscription, SensorWatcher};
 use iced::widget::{
     button, column, combo_box, container, pick_list, row, scrollable, text, text_input,
 };
+use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::{Element, Length, Task};
 use std::fmt::{Display, format};
 use std::sync::Arc;
@@ -136,6 +137,7 @@ pub enum Error {
 
 const MLX_HALL_CONF_DEFAULT_LABEL: &str = "0xC = Default Sampling";
 const MLX_HALL_CONF_FAST_LABEL: &str = "0x0 = Faster Sampling";
+const DASHBOARD_MIN_WIDTH: f32 = 980.0;
 
 fn hall_conf_label_to_value(label: &str) -> u8 {
     match label {
@@ -510,8 +512,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                         result.n_sensors,
                     ),
                     None => format!(
-                        "Waiting for completed frame; seen {}/16 sensors",
+                        "Waiting for completed frame; seen {}/{} sensors",
                         summary.seen_sensors,
+                        summary.expected_sensors,
                     ),
                 };
 
@@ -610,7 +613,7 @@ fn view(context: &Context) -> Element<'_, Message> {
     )
     .padding(10);
     
-    let dashboard = scrollable(
+    let dashboard_content = container(
         column![
             stream_widget,
             live_fit_widget,
@@ -618,7 +621,15 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
         .spacing(12)
     )
-    .height(Length::Fill);
+    .width(Length::Fixed(DASHBOARD_MIN_WIDTH));
+
+    let dashboard = scrollable(dashboard_content)
+        .direction(Direction::Both {
+            vertical: Scrollbar::default(),
+            horizontal: Scrollbar::default(),
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
 
     column![
         serial_selector,
