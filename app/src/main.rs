@@ -18,7 +18,7 @@ mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
-use live_fit::BoardLiveFits;
+use live_fit::{BoardLiveFits, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
@@ -76,6 +76,10 @@ enum Message {
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
     CaptureBoardBackground(u16),
+    SelectBoardMagnetPreset {
+        board_id: u16,
+        preset: MagnetPreset,
+    },
 
     SelectDashboardTab(DashboardTab),
     SelectSensorTrace {
@@ -309,6 +313,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::CaptureBoardBackground(board_id) => {
             context.live_fits.capture_board_background(board_id);
+            Task::none()
+        }
+        Message::SelectBoardMagnetPreset { board_id, preset } => {
+            context.live_fits.set_board_magnet_preset(board_id, preset);
             Task::none()
         }
         Message::RecievedField(sensor_field) => {
@@ -577,6 +585,22 @@ fn view(context: &Context) -> Element<'_, Message> {
                     ),
                 };
 
+                let board_id = summary.board_id;
+                let magnet_options = MagnetPreset::ALL.to_vec();
+
+                let mode_text = if summary.use_known_magnet_prior {
+                    "Mode: known magnet prior, free orientation"
+                } else if summary.is_calibrated {
+                    "Mode: calibrated strength prior, free orientation"
+                } else {
+                    "Mode: free moment"
+                };
+
+                let target_text = summary
+                    .target_moment_norm
+                    .map(|target| format!("Target moment: {:.3e} mT·mm³", target))
+                    .unwrap_or_else(|| "Target moment: none".to_string());
+
                 let board_card = container(
                     column![
                         row![
@@ -589,11 +613,26 @@ fn view(context: &Context) -> Element<'_, Message> {
                                 .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
                         ]
                         .spacing(12),
-                        text(if summary.is_calibrated {
-                            "Mode: calibrated fixed strength, free orientation"
-                        } else {
-                            "Mode: free moment"
-                        }),
+
+                        row![
+                            text("Magnet:"),
+                            pick_list(
+                                magnet_options,
+                                Some(summary.magnet_preset),
+                                move |preset| Message::SelectBoardMagnetPreset {
+                                    board_id,
+                                    preset,
+                                },
+                            ),
+                            text(format!(
+                                "Effective scale: {:.3}×",
+                                summary.magnet_effective_scale,
+                            )),
+                            text(target_text),
+                        ]
+                        .spacing(12),
+
+                        text(mode_text),
                         text(if summary.has_background {
                             "Background: captured"
                         } else {

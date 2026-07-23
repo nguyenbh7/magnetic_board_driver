@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 
 use data_transfer::rpc::{BoardPresence, SensorField};
 
 const MAX_HISTORY_POINTS: usize = 600;
 const UT_PER_MT: f64 = 1000.0;
+const MOMENT_NORM_PRIOR_WEIGHT_MT: f64 = 0.25;
 
 #[derive(Debug, Clone, Default)]
 pub struct BoardLiveFits {
@@ -63,6 +65,7 @@ struct BoardFrameAccumulator {
 pub struct FitResult {
     pub position: (f64, f64, f64),
     pub residual_rms: f64,
+    pub objective_score: f64,
     pub n_sensors: usize,
     pub moment: (f64, f64, f64),
     pub moment_norm: f64,
@@ -128,6 +131,19 @@ impl MagnetPreset {
         // The app's dipole matrix uses mm^-3 and field units of mT.
         // B_mT = A_mm * moment_app, so moment_app = 1e5 * moment_si.
         1.0e5 * moment_si
+    }
+}
+
+impl MagnetPreset {
+    pub const ALL: [MagnetPreset; 2] = [
+        MagnetPreset::ThinD52N52,
+        MagnetPreset::ThickD54N52,
+    ];
+}
+
+impl fmt::Display for MagnetPreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
     }
 }
 
@@ -198,6 +214,14 @@ impl BoardLiveFits {
                 displacement_history: board.displacement_history.iter().cloned().collect(),
                 is_calibrated: board.calibrated_moment_norm.is_some(),
                 has_background: board.background.is_some(),
+                magnet_preset: board.magnet_preset,
+                magnet_effective_scale: board.magnet_effective_scale,
+                use_known_magnet_prior: board.use_known_magnet_prior,
+                target_moment_norm: if board.use_known_magnet_prior {
+                    Some(board.magnet_preset.moment_norm_app() * board.magnet_effective_scale)
+                } else {
+                    board.calibrated_moment_norm
+                },
             })
             .collect()
     }
@@ -232,6 +256,14 @@ impl BoardLiveFits {
             Some(count)
         }
     }
+    pub fn set_board_magnet_preset(&mut self, board_id: u16, preset: MagnetPreset) {
+        if let Some(board) = self.boards.get_mut(&board_id) {
+            board.magnet_preset = preset;
+            board.magnet_effective_scale = 1.0;
+            board.calibrated_moment_norm = None;
+            board.reset_displacement();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -243,8 +275,11 @@ pub struct BoardFitSummary {
     pub displacement_history: Vec<DisplacementPoint>,
     pub is_calibrated: bool,
     pub has_background: bool,
+    pub magnet_preset: MagnetPreset,
+    pub magnet_effective_scale: f64,
+    pub use_known_magnet_prior: bool,
+    pub target_moment_norm: Option<f64>,
 }
-
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
         let raw_samples: Vec<_> = frame
@@ -492,12 +527,12 @@ fn fit_dipole_grid(samples: &[Sample]) -> Option<FitResult> {
     fit_dipole_grid_with(samples, evaluate_position)
 }
 
-fn fit_dipole_grid_fixed_moment_norm(
+fn fit_dipole_grid_moment_norm_prior(
     samples: &[Sample],
-    fixed_moment_norm: f64,
+    target_moment_norm: f64,
 ) -> Option<FitResult> {
     fit_dipole_grid_with(samples, |samples, magnet_pos| {
-        evaluate_position_fixed_moment_norm(samples, magnet_pos, fixed_moment_norm)
+        evaluate_position_moment_norm_prior(samples, magnet_pos, target_moment_norm)
     })
 }
 
@@ -561,7 +596,7 @@ fn fit_dipole_grid_with(
                         let is_better = best
                             .as_ref()
                             .map(|(best_result, _)| {
-                                candidate.residual_rms < best_result.residual_rms
+                                candidate.objective_score < best_result.objective_score
                             })
                             .unwrap_or(true);
 
@@ -652,68 +687,34 @@ fn evaluate_position(samples: &[Sample], magnet_pos: [f64; 3]) -> Option<FitResu
     Some(FitResult {
         position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
         residual_rms,
+        objective_score: residual_rms,
         n_sensors: samples.len(),
         moment: (moment[0], moment[1], moment[2]),
         moment_norm,
     })
 }
 
-fn evaluate_position_fixed_moment_norm(
+fn evaluate_position_moment_norm_prior(
     samples: &[Sample],
     magnet_pos: [f64; 3],
-    fixed_moment_norm: f64,
+    target_moment_norm: f64,
 ) -> Option<FitResult> {
-    if !fixed_moment_norm.is_finite() || fixed_moment_norm <= 1.0e-12 {
+    if !target_moment_norm.is_finite() || target_moment_norm <= 1.0e-12 {
         return None;
     }
 
-    // First solve the best free moment at this candidate position.
-    // We use only its direction, not its magnitude.
-    let free_fit = evaluate_position(samples, magnet_pos)?;
+    let mut result = evaluate_position(samples, magnet_pos)?;
 
-    let free_moment = [
-        free_fit.moment.0,
-        free_fit.moment.1,
-        free_fit.moment.2,
-    ];
-
-    let free_norm = free_fit.moment_norm;
-
-    if !free_norm.is_finite() || free_norm <= 1.0e-12 {
+    if !result.moment_norm.is_finite() || result.moment_norm <= 1.0e-12 {
         return None;
     }
 
-    let scale = fixed_moment_norm / free_norm;
+    let log_ratio = (result.moment_norm / target_moment_norm).ln();
+    let moment_penalty = MOMENT_NORM_PRIOR_WEIGHT_MT * log_ratio * log_ratio;
 
-    let moment = [
-        free_moment[0] * scale,
-        free_moment[1] * scale,
-        free_moment[2] * scale,
-    ];
+    result.objective_score = result.residual_rms + moment_penalty;
 
-    let mut sum_sq = 0.0;
-    let mut n_components = 0usize;
-
-    for sample in samples {
-        let a = dipole_matrix(sample.position, magnet_pos)?;
-        let pred = mat_vec_mul(a, moment);
-
-        for i in 0..3 {
-            let r = pred[i] - sample.field[i];
-            sum_sq += r * r;
-            n_components += 1;
-        }
-    }
-
-    let residual_rms = (sum_sq / n_components as f64).sqrt();
-
-    Some(FitResult {
-        position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
-        residual_rms,
-        n_sensors: samples.len(),
-        moment: (moment[0], moment[1], moment[2]),
-        moment_norm: fixed_moment_norm,
-    })
+    Some(result)
 }
 
 fn dipole_matrix(sensor_pos: [f64; 3], magnet_pos: [f64; 3]) -> Option<[[f64; 3]; 3]> {
