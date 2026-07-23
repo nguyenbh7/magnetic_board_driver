@@ -8,12 +8,14 @@ const MAX_HISTORY_POINTS: usize = 600;
 pub struct BoardLiveFits {
     boards: BTreeMap<u16, BoardLiveFitState>,
     presence: BoardPresence,
+    calibrated_moment: Option<[f64; 3]>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct BoardLiveFitState {
     current_frame: BoardFrameAccumulator,
     result: Option<FitResult>,
+    calibrated_moment: Option<[f64; 3]>,
 
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
@@ -33,6 +35,8 @@ pub struct FitResult {
     pub position: (f64, f64, f64),
     pub residual_rms: f64,
     pub n_sensors: usize,
+    pub moment: (f64, f64, f64),
+    pub moment_norm: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +81,12 @@ impl BoardLiveFits {
         }
     }
 
+    pub fn calibrate_board_magnet(&mut self, board_id: u16) {
+        if let Some(board) = self.boards.get_mut(&board_id) {
+            board.calibrate_current_magnet();
+        }
+    }
+
     pub fn update(&mut self, field: SensorField) {
         if !self.is_expected_field(&field) {
             return;
@@ -101,6 +111,7 @@ impl BoardLiveFits {
                 expected_sensors: self.expected_sensor_count(*board_id).unwrap_or(16),
                 result: board.result.clone(),
                 displacement_history: board.displacement_history.iter().cloned().collect(),
+                is_calibrated: board.calibrated_moment.is_some(),
             })
             .collect()
     }
@@ -116,7 +127,9 @@ impl BoardLiveFits {
             return false;
         }
 
-        let sensor_index = address_to_sensor_index(field.address);
+        let Some(sensor_index) = address_to_sensor_index(field.address) else {
+            return false;
+        };
 
         self.presence.sensor_masks[board_index] & (1u16 << sensor_index) != 0
     }
@@ -142,6 +155,7 @@ pub struct BoardFitSummary {
     pub expected_sensors: usize,
     pub result: Option<FitResult>,
     pub displacement_history: Vec<DisplacementPoint>,
+    pub is_calibrated: bool,
 }
 
 impl BoardLiveFitState {
@@ -156,7 +170,13 @@ impl BoardLiveFitState {
             return;
         }
 
-        if let Some(result) = fit_dipole_grid(&samples) {
+        let fit_result = if let Some(calibrated_moment) = self.calibrated_moment {
+            fit_dipole_grid_fixed_moment(&samples, calibrated_moment)
+        } else {
+            fit_dipole_grid(&samples)
+        };
+
+        if let Some(result) = fit_result {
             let frame_mid_time_us =
                 frame.frame_start_time_us
                     + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
@@ -209,6 +229,20 @@ impl BoardLiveFitState {
             self.last_fit_time_us = None;
         }
     }
+
+    fn calibrate_current_magnet(&mut self) {
+        let Some(result) = &self.result else {
+            return;
+        };
+
+        self.calibrated_moment = Some([
+            result.moment.0,
+            result.moment.1,
+            result.moment.2,
+        ]);
+
+        self.reset_displacement();
+    }
 }
 
 impl BoardFrameAccumulator {
@@ -239,8 +273,14 @@ impl BoardFrameAccumulator {
     }
 }
 
-fn address_to_sensor_index(address: u8) -> u8 {
-    address & 0x0F
+fn address_to_sensor_index(address: u8) -> Option<u8> {
+    let normalized = address & !0b0100_0000;
+
+    if (0x0C..=0x1B).contains(&normalized) {
+        Some(normalized - 0x0C)
+    } else {
+        None
+    }
 }
 
 fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
@@ -286,6 +326,22 @@ fn sparkline(values: &[f64]) -> String {
 }
 
 fn fit_dipole_grid(samples: &[Sample]) -> Option<FitResult> {
+    fit_dipole_grid_with(samples, evaluate_position)
+}
+
+fn fit_dipole_grid_fixed_moment(
+    samples: &[Sample],
+    fixed_moment: [f64; 3],
+) -> Option<FitResult> {
+    fit_dipole_grid_with(samples, |samples, magnet_pos| {
+        evaluate_position_fixed_moment(samples, magnet_pos, fixed_moment)
+    })
+}
+
+fn fit_dipole_grid_with(
+    samples: &[Sample],
+    mut evaluate: impl FnMut(&[Sample], [f64; 3]) -> Option<FitResult>,
+) -> Option<FitResult> {
     let (min_x, max_x, min_y, max_y) = sensor_bounds(samples)?;
 
     let mut best: Option<(FitResult, [f64; 3])> = None;
@@ -310,14 +366,17 @@ fn fit_dipole_grid(samples: &[Sample]) -> Option<FitResult> {
         let y_max = center[1] + 3.0 * step;
 
         let mut x = x_min.max(min_x - 10.0);
+
         while x <= x_max.min(max_x + 10.0) {
             let mut y = y_min.max(min_y - 10.0);
+
             while y <= y_max.min(max_y + 10.0) {
                 let mut z = z_min;
+
                 while z <= z_max {
                     let candidate_pos = [x, y, z];
 
-                    if let Some(candidate) = evaluate_position(samples, candidate_pos) {
+                    if let Some(candidate) = evaluate(samples, candidate_pos) {
                         let is_better = best
                             .as_ref()
                             .map(|(best_result, _)| {
@@ -403,10 +462,54 @@ fn evaluate_position(samples: &[Sample], magnet_pos: [f64; 3]) -> Option<FitResu
 
     let residual_rms = (sum_sq / n_components as f64).sqrt();
 
+    let moment_norm = (
+        moment[0] * moment[0]
+            + moment[1] * moment[1]
+            + moment[2] * moment[2]
+    ).sqrt();
+
     Some(FitResult {
         position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
         residual_rms,
         n_sensors: samples.len(),
+        moment: (moment[0], moment[1], moment[2]),
+        moment_norm,
+    })
+}
+
+fn evaluate_position_fixed_moment(
+    samples: &[Sample],
+    magnet_pos: [f64; 3],
+    moment: [f64; 3],
+) -> Option<FitResult> {
+    let mut sum_sq = 0.0;
+    let mut n_components = 0usize;
+
+    for sample in samples {
+        let a = dipole_matrix(sample.position, magnet_pos)?;
+        let pred = mat_vec_mul(a, moment);
+
+        for i in 0..3 {
+            let r = pred[i] - sample.field[i];
+            sum_sq += r * r;
+            n_components += 1;
+        }
+    }
+
+    let residual_rms = (sum_sq / n_components as f64).sqrt();
+
+    let moment_norm = (
+        moment[0] * moment[0]
+            + moment[1] * moment[1]
+            + moment[2] * moment[2]
+    ).sqrt();
+
+    Some(FitResult {
+        position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
+        residual_rms,
+        n_sensors: samples.len(),
+        moment: (moment[0], moment[1], moment[2]),
+        moment_norm,
     })
 }
 

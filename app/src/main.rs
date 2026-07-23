@@ -74,6 +74,7 @@ enum Message {
     RecievedStreamField(data_transfer::rpc::SensorField),
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
+    CalibrateBoardMagnet(u16),
 
     SelectDashboardTab(DashboardTab),
     SelectSensorTrace {
@@ -300,6 +301,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 Task::none()
             }
 
+        }
+        Message::CalibrateBoardMagnet(board_id) => {
+            context.live_fits.calibrate_board_magnet(board_id);
+            Task::none()
         }
         Message::RecievedField(sensor_field) => {
             context.live_fits.update(sensor_field.clone());
@@ -552,12 +557,13 @@ fn view(context: &Context) -> Element<'_, Message> {
             for summary in summaries {
                 let fit_text = match &summary.result {
                     Some(result) => format!(
-                        "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.2} uT    Sensors: {}",
+                        "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.2} uT    Sensors: {}    Fit scale: {:.3e}",
                         result.position.0,
                         result.position.1,
                         result.position.2,
                         result.residual_rms,
                         result.n_sensors,
+                        result.moment_norm,
                     ),
                     None => format!(
                         "Waiting for completed frame; seen {}/{} sensors",
@@ -572,8 +578,15 @@ fn view(context: &Context) -> Element<'_, Message> {
                             text(format!("Board {}", summary.board_id)),
                             button("Reset displacement zero")
                                 .on_press(Message::ResetBoardDisplacement(summary.board_id)),
+                            button("Calibrate magnet / set zero")
+                                .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
                         ]
                         .spacing(12),
+                        text(if summary.is_calibrated {
+                            "Mode: calibrated fixed moment"
+                        } else {
+                            "Mode: free moment"
+                        }),
                         text(fit_text),
                         displacement_plot(
                             summary.board_id,
