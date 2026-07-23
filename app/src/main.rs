@@ -13,6 +13,10 @@ use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod displacement_plot;
 use displacement_plot::displacement_plot;
+mod sensor_trace;
+mod sensor_trace_plot;
+use sensor_trace::SensorTraceState;
+use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
 use live_fit::BoardLiveFits;
 use rfd::FileHandle;
@@ -71,6 +75,13 @@ enum Message {
     RecievedStreamField(data_transfer::rpc::SensorField),
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
+
+    SelectDashboardTab(DashboardTab),
+    SelectSensorTrace {
+        board_id: u16,
+        sensor_index: u8,
+    },
+
     StartFieldStream,
     FieldStreamStarted,
     FieldStreamStopped,
@@ -84,6 +95,13 @@ enum Message {
     GetMlxSensitivity,
     SetMlxSensitivity,
     ReceivedMlxSensitivity(MlxSensitivityStatus),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum DashboardTab {
+    #[default]
+    LiveFits,
+    SensorTraces,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +139,8 @@ struct Context {
     ping_args: PingArgs,
     ping_field: Option<SensorField>,
     sensor_grids: BTreeMap<u8, SensorGrid>,
+    sensor_traces: SensorTraceState,
+    dashboard_tab: DashboardTab,
     board_presence: BoardPresence,
     live_fits: BoardLiveFits,
     mlx_gain: String,
@@ -222,10 +242,10 @@ async fn write_data(writer: &Mutex<BufWriter<File>>, field: &SensorField) {
     let mut writer = writer.lock().await;
     let mut data = [0; SensorField::POSTCARD_MAX_SIZE];
     let val = postcard::to_slice(field, &mut data);
-    println!("{:#?}", val);
+    //println!("{:#?}", val);
 
     let val = writer.write_all(&mut data);
-    println!("{:#?}", val);
+    //println!("{:#?}", val);
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -234,12 +254,14 @@ async fn stop_field_stream(client: HostClient<WireError>) -> () {
 
 fn update(context: &mut Context, message: Message) -> Task<Message> {
 
-    println!("{:#?}", message);
+    //println!("{:#?}", message);
     match message {
         Message::PortSelected(serial_port_info) => {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
+            context.sensor_traces = SensorTraceState::default();
+            context.dashboard_tab = DashboardTab::LiveFits;
             Task::none()
         }
         Message::UpdatePorts => {
@@ -279,11 +301,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::RecievedField(sensor_field) => {
             context.live_fits.update(sensor_field.clone());
+            context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
             Task::none()
         },
         Message::RecievedStreamField(sensor_field) => {
             context.live_fits.update(sensor_field.clone());
+            context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field.clone());
 
             match &context.file_writer {
@@ -292,7 +316,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     Task::perform(
                         (move || {
                             async move {
-                                println!("Test");
+                                //println!("Test");
                                 let sensor_field = sensor_field.clone();
                                 let _val = write_data(&*wr, &sensor_field).await;
                             }
@@ -319,8 +343,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::ReceivedBoardPresence(presence) => {
             println!("Detected board presence: {:#?}", presence);
+
             context.board_presence = presence;
             context.live_fits.set_presence(context.board_presence.clone());
+            context.sensor_traces.set_presence(context.board_presence.clone());
 
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
@@ -339,17 +365,16 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::FieldStreamStarted => {
             if let Some(sw) = &mut context.sensor_watcher {
-                let mut client = sw.get_client();
+                let client = sw.get_client();
+
                 Task::future(field_subscribe(client)).and_then(|sub| {
-                    Task::run(sub, |f| {
-                        println!("Revieved field: {}", f.field.x.unwrap().value());
-                        Message::RecievedStreamField(f)
-                    })
+                    Task::run(sub, Message::RecievedStreamField)
                 })
-            }  else {
+            } else {
                 Task::none()
             }
         }
+
         Message::StopFieldStream => {
                 if let Some(sw) = &context.sensor_watcher {
                     let client = sw.get_client();
@@ -454,6 +479,19 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             Task::none()
         }
+
+        Message::SelectDashboardTab(tab) => {
+            context.dashboard_tab = tab;
+            Task::none()
+        }
+
+        Message::SelectSensorTrace {
+            board_id,
+            sensor_index,
+        } => {
+            context.sensor_traces.select_sensor(board_id, sensor_index);
+            Task::none()
+        }
     }
 }
 
@@ -543,6 +581,60 @@ fn view(context: &Context) -> Element<'_, Message> {
         container(live_fit_content)
     };
 
+    let sensor_trace_widget = {
+        let summaries = context.sensor_traces.board_summaries();
+
+        let mut trace_content = column![
+            text("Sensor field traces"),
+            text("Select one sensor per board to plot Bx, By, and Bz over time.")
+        ]
+        .spacing(12);
+
+        if summaries.is_empty() {
+            trace_content = trace_content.push(text("No detected boards"));
+        } else {
+            for summary in summaries {
+                let board_id = summary.board_id;
+                let sensor_options = summary.available_sensors.clone();
+                let selected_sensor = summary.selected_sensor_index;
+
+                let selected_text = selected_sensor
+                    .map(|sensor| format!("Sensor {}", sensor))
+                    .unwrap_or_else(|| "No sensor selected".to_string());
+
+                let board_card = container(
+                    column![
+                        row![
+                            text(format!("Board {}", board_id)),
+                            text("Sensor index"),
+                            pick_list(
+                                sensor_options,
+                                selected_sensor,
+                                move |sensor_index| Message::SelectSensorTrace {
+                                    board_id,
+                                    sensor_index,
+                                },
+                            ),
+                            text(selected_text),
+                        ]
+                        .spacing(12),
+                        sensor_trace_plot(
+                            board_id,
+                            selected_sensor,
+                            summary.selected_trace,
+                        ),
+                    ]
+                    .spacing(8)
+                )
+                .padding(10);
+
+                trace_content = trace_content.push(board_card);
+            }
+        }
+
+        container(trace_content)
+    };
+
     let mlx_status_text = match &context.mlx_status {
         Some(status) => format!(
             "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
@@ -612,11 +704,23 @@ fn view(context: &Context) -> Element<'_, Message> {
         .spacing(10)
     )
     .padding(10);
+
+    let tab_selector = row![
+        button("Live fits").on_press(Message::SelectDashboardTab(DashboardTab::LiveFits)),
+        button("Sensor traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
+    ]
+    .spacing(8);
+
+    let active_dashboard_widget = match context.dashboard_tab {
+        DashboardTab::LiveFits => live_fit_widget,
+        DashboardTab::SensorTraces => sensor_trace_widget,
+    };
     
     let dashboard_content = container(
         column![
             stream_widget,
-            live_fit_widget,
+            tab_selector,
+            active_dashboard_widget,
             mlx_widget,
         ]
         .spacing(12)
