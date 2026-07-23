@@ -17,6 +17,9 @@ pub struct BoardLiveFitState {
     result: Option<FitResult>,
     calibrated_moment: Option<[f64; 3]>,
 
+    latest_raw_samples: Vec<Sample>,
+    background: Option<BTreeMap<u8, [f64; 3]>>,
+
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
     last_fit_time_us: Option<u64>,
@@ -54,6 +57,7 @@ struct CompletedBoardFrame {
 
 #[derive(Debug, Clone)]
 struct Sample {
+    sensor_index: u8,
     position: [f64; 3],
     field: [f64; 3],
 }
@@ -87,6 +91,12 @@ impl BoardLiveFits {
         }
     }
 
+    pub fn capture_board_background(&mut self, board_id: u16) {
+        if let Some(board) = self.boards.get_mut(&board_id) {
+            board.capture_background_from_latest_frame();
+        }
+    }
+
     pub fn update(&mut self, field: SensorField) {
         if !self.is_expected_field(&field) {
             return;
@@ -112,6 +122,7 @@ impl BoardLiveFits {
                 result: board.result.clone(),
                 displacement_history: board.displacement_history.iter().cloned().collect(),
                 is_calibrated: board.calibrated_moment.is_some(),
+                has_background: board.background.is_some(),
             })
             .collect()
     }
@@ -156,15 +167,28 @@ pub struct BoardFitSummary {
     pub result: Option<FitResult>,
     pub displacement_history: Vec<DisplacementPoint>,
     pub is_calibrated: bool,
+    pub has_background: bool,
 }
 
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
-        let samples: Vec<_> = frame
+        let raw_samples: Vec<_> = frame
             .fields
             .iter()
             .filter_map(sensor_field_to_sample)
             .collect();
+
+        if raw_samples.len() < 6 {
+            return;
+        }
+
+        self.latest_raw_samples = raw_samples.clone();
+
+        let samples = if let Some(background) = &self.background {
+            subtract_background_samples(&raw_samples, background)
+        } else {
+            raw_samples
+        };
 
         if samples.len() < 6 {
             return;
@@ -243,6 +267,30 @@ impl BoardLiveFitState {
 
         self.reset_displacement();
     }
+
+    fn capture_background_from_latest_frame(&mut self) {
+        if self.latest_raw_samples.is_empty() {
+            return;
+        }
+
+        let background = self
+            .latest_raw_samples
+            .iter()
+            .map(|sample| (sample.sensor_index, sample.field))
+            .collect::<BTreeMap<_, _>>();
+
+        self.background = Some(background);
+
+        // Existing calibration and displacement zero are no longer valid
+        // because the field model changed from raw to background-subtracted.
+        self.calibrated_moment = None;
+        self.result = None;
+        self.origin = None;
+        self.start_time_us = None;
+        self.last_fit_time_us = None;
+        self.displacement_history.clear();
+    }
+
 }
 
 impl BoardFrameAccumulator {
@@ -284,11 +332,14 @@ fn address_to_sensor_index(address: u8) -> Option<u8> {
 }
 
 fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
+    let sensor_index = address_to_sensor_index(field.address)?;
+
     let bx = field.field.x?.value() / UT_PER_MT;
     let by = field.field.y?.value() / UT_PER_MT;
     let bz = field.field.z?.value() / UT_PER_MT;
 
     Some(Sample {
+        sensor_index,
         position: [
             field.position.0 as f64,
             field.position.1 as f64,
@@ -296,6 +347,28 @@ fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
         ],
         field: [bx, by, bz],
     })
+}
+
+fn subtract_background_samples(
+    samples: &[Sample],
+    background: &BTreeMap<u8, [f64; 3]>,
+) -> Vec<Sample> {
+    samples
+        .iter()
+        .filter_map(|sample| {
+            let background_field = background.get(&sample.sensor_index)?;
+
+            Some(Sample {
+                sensor_index: sample.sensor_index,
+                position: sample.position,
+                field: [
+                    sample.field[0] - background_field[0],
+                    sample.field[1] - background_field[1],
+                    sample.field[2] - background_field[2],
+                ],
+            })
+        })
+        .collect()
 }
 
 fn sparkline(values: &[f64]) -> String {

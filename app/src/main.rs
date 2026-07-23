@@ -75,6 +75,7 @@ enum Message {
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
+    CaptureBoardBackground(u16),
 
     SelectDashboardTab(DashboardTab),
     SelectSensorTrace {
@@ -304,6 +305,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::CalibrateBoardMagnet(board_id) => {
             context.live_fits.calibrate_board_magnet(board_id);
+            Task::none()
+        }
+        Message::CaptureBoardBackground(board_id) => {
+            context.live_fits.capture_board_background(board_id);
             Task::none()
         }
         Message::RecievedField(sensor_field) => {
@@ -576,6 +581,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                     column![
                         row![
                             text(format!("Board {}", summary.board_id)),
+                            button("Capture no-magnet background")
+                                .on_press(Message::CaptureBoardBackground(summary.board_id)),
                             button("Reset displacement zero")
                                 .on_press(Message::ResetBoardDisplacement(summary.board_id)),
                             button("Calibrate magnet / set zero")
@@ -586,6 +593,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                             "Mode: calibrated fixed moment"
                         } else {
                             "Mode: free moment"
+                        }),
+                        text(if summary.has_background {
+                            "Background: captured"
+                        } else {
+                            "Background: not captured"
                         }),
                         text(fit_text),
                         displacement_plot(
