@@ -1,11 +1,31 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
-use data_transfer::rpc::SensorField;
+use data_transfer::rpc::{BoardPresence, SensorField};
+
+const EXPECTED_SENSORS_PER_BOARD: usize = 16;
+const MAX_HISTORY_POINTS: usize = 600;
 
 #[derive(Debug, Clone, Default)]
-pub struct LiveFitState {
-    latest: BTreeMap<(u16, u8), SensorField>,
+pub struct BoardLiveFits {
+    boards: BTreeMap<u16, BoardLiveFitState>,
+    presence: BoardPresence,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BoardLiveFitState {
+    current_frame: BoardFrameAccumulator,
     result: Option<FitResult>,
+
+    origin: Option<(f64, f64, f64)>,
+    start_time_us: Option<u64>,
+    displacement_history: VecDeque<DisplacementPoint>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BoardFrameAccumulator {
+    fields: BTreeMap<u8, SensorField>,
+    frame_start_time_us: Option<u64>,
+    frame_end_time_us: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -16,36 +36,189 @@ pub struct FitResult {
 }
 
 #[derive(Debug, Clone)]
+pub struct DisplacementPoint {
+    pub time_s: f64,
+    pub displacement_mm: f64,
+}
+
+#[derive(Debug, Clone)]
+struct CompletedBoardFrame {
+    fields: Vec<SensorField>,
+    frame_start_time_us: u64,
+    frame_end_time_us: u64,
+}
+
+#[derive(Debug, Clone)]
 struct Sample {
     position: [f64; 3],
     field: [f64; 3],
 }
 
-impl LiveFitState {
-    pub fn update(&mut self, field: SensorField) {
-        self.latest.insert((field.board_id, field.address), field);
+impl BoardLiveFits {
+    pub fn set_presence(&mut self, presence: BoardPresence) {
+        self.presence = presence;
 
-        let samples = self.samples();
+        self.boards.retain(|board_id, _| {
+            let index = *board_id as usize;
+            index < self.presence.sensor_masks.len()
+                && self.presence.board_mask & (1u8 << index) != 0
+        });
 
-        if samples.len() >= 6 {
-            self.result = fit_dipole_grid(&samples);
+        for board_index in 0..self.presence.sensor_masks.len() {
+            if self.presence.board_mask & (1u8 << board_index) != 0 {
+                self.boards.entry(board_index as u16).or_default();
+            }
         }
     }
 
-    pub fn result(&self) -> Option<&FitResult> {
-        self.result.as_ref()
+    pub fn update(&mut self, field: SensorField) {
+        if !self.is_expected_field(&field) {
+            return;
+        }
+
+        let board = self.boards.entry(field.board_id).or_default();
+
+        if let Some(frame) = board.current_frame.update(field) {
+            board.update_from_completed_frame(frame);
+        }
     }
 
-    pub fn n_sensors(&self) -> usize {
-        self.latest.len()
-    }
-
-    fn samples(&self) -> Vec<Sample> {
-        self.latest
-            .values()
-            .filter_map(sensor_field_to_sample)
+    pub fn board_summaries(&self) -> Vec<BoardFitSummary> {
+        self.boards
+            .iter()
+            .map(|(board_id, board)| BoardFitSummary {
+                board_id: *board_id,
+                seen_sensors: board.current_frame.fields.len(),
+                result: board.result.clone(),
+                displacement_plot_text: board.displacement_plot_text(),
+            })
             .collect()
     }
+
+    fn is_expected_field(&self, field: &SensorField) -> bool {
+        let board_index = field.board_id as usize;
+
+        if board_index >= self.presence.sensor_masks.len() {
+            return false;
+        }
+
+        if self.presence.board_mask & (1u8 << board_index) == 0 {
+            return false;
+        }
+
+        let sensor_index = address_to_sensor_index(field.address);
+
+        self.presence.sensor_masks[board_index] & (1u16 << sensor_index) != 0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BoardFitSummary {
+    pub board_id: u16,
+    pub seen_sensors: usize,
+    pub result: Option<FitResult>,
+    pub displacement_plot_text: String,
+}
+
+impl BoardLiveFitState {
+    fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
+        let samples: Vec<_> = frame
+            .fields
+            .iter()
+            .filter_map(sensor_field_to_sample)
+            .collect();
+
+        if samples.len() < 6 {
+            return;
+        }
+
+        if let Some(result) = fit_dipole_grid(&samples) {
+            let frame_mid_time_us =
+                frame.frame_start_time_us
+                    + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
+
+            self.record_displacement(frame_mid_time_us, &result);
+            self.result = Some(result);
+        }
+    }
+
+    fn record_displacement(&mut self, time_us: u64, result: &FitResult) {
+        let position = result.position;
+
+        let origin = *self.origin.get_or_insert(position);
+        let start_time_us = *self.start_time_us.get_or_insert(time_us);
+
+        let dx = position.0 - origin.0;
+        let dy = position.1 - origin.1;
+        let dz = position.2 - origin.2;
+
+        let displacement_mm = (dx * dx + dy * dy + dz * dz).sqrt();
+        let time_s = time_us.saturating_sub(start_time_us) as f64 / 1_000_000.0;
+
+        self.displacement_history.push_back(DisplacementPoint {
+            time_s,
+            displacement_mm,
+        });
+
+        while self.displacement_history.len() > MAX_HISTORY_POINTS {
+            self.displacement_history.pop_front();
+        }
+    }
+
+    fn displacement_plot_text(&self) -> String {
+        if self.displacement_history.len() < 2 {
+            return "Displacement plot: waiting for fitted motion history".to_string();
+        }
+
+        let points: Vec<_> = self.displacement_history.iter().collect();
+        let values: Vec<f64> = points.iter().map(|p| p.displacement_mm).collect();
+
+        let t0 = points.first().unwrap().time_s;
+        let t1 = points.last().unwrap().time_s;
+        let y_last = values.last().copied().unwrap_or(0.0);
+        let y_max = values.iter().copied().fold(0.0_f64, f64::max);
+
+        format!(
+            "Displacement vs time: {}\n{:.1}s → {:.1}s, current={:.2} mm, max={:.2} mm",
+            sparkline(&values),
+            t0,
+            t1,
+            y_last,
+            y_max,
+        )
+    }
+}
+
+impl BoardFrameAccumulator {
+    fn update(&mut self, field: SensorField) -> Option<CompletedBoardFrame> {
+        if self.fields.is_empty() {
+            self.frame_start_time_us = Some(field.time);
+        }
+
+        self.frame_end_time_us = Some(field.time);
+        self.fields.insert(field.address, field);
+
+        if self.fields.len() < EXPECTED_SENSORS_PER_BOARD {
+            return None;
+        }
+
+        let fields = std::mem::take(&mut self.fields)
+            .into_values()
+            .collect::<Vec<_>>();
+
+        let frame_start_time_us = self.frame_start_time_us.take().unwrap_or(0);
+        let frame_end_time_us = self.frame_end_time_us.take().unwrap_or(frame_start_time_us);
+
+        Some(CompletedBoardFrame {
+            fields,
+            frame_start_time_us,
+            frame_end_time_us,
+        })
+    }
+}
+
+fn address_to_sensor_index(address: u8) -> u8 {
+    address & 0x0F
 }
 
 fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
@@ -63,12 +236,38 @@ fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
     })
 }
 
+fn sparkline(values: &[f64]) -> String {
+    const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+    if values.is_empty() {
+        return String::new();
+    }
+
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    if (max - min).abs() < 1.0e-12 {
+        return "▁".repeat(values.len().min(80));
+    }
+
+    let stride = (values.len() / 80).max(1);
+
+    values
+        .iter()
+        .step_by(stride)
+        .map(|value| {
+            let normalized = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+            let index = (normalized * (BARS.len() as f64 - 1.0)).round() as usize;
+            BARS[index]
+        })
+        .collect()
+}
+
 fn fit_dipole_grid(samples: &[Sample]) -> Option<FitResult> {
     let (min_x, max_x, min_y, max_y) = sensor_bounds(samples)?;
 
     let mut best: Option<(FitResult, [f64; 3])> = None;
 
-    // Coarse-to-fine grid search.
     let mut center = [
         0.5 * (min_x + max_x),
         0.5 * (min_y + max_y),

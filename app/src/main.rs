@@ -12,7 +12,7 @@ use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod live_fit;
-use live_fit::LiveFitState;
+use live_fit::BoardLiveFits;
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
@@ -116,7 +116,7 @@ struct Context {
     ping_field: Option<SensorField>,
     sensor_grids: BTreeMap<u8, SensorGrid>,
     board_presence: BoardPresence,
-    live_fit: LiveFitState,
+    live_fits: BoardLiveFits,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -232,6 +232,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::PortSelected(serial_port_info) => {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
+            context.live_fits = BoardLiveFits::default();
             Task::none()
         }
         Message::UpdatePorts => {
@@ -270,12 +271,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
         }
         Message::RecievedField(sensor_field) => {
-            context.live_fit.update(sensor_field.clone());
+            context.live_fits.update(sensor_field.clone());
             context.ping_field = Some(sensor_field);
             Task::none()
         },
         Message::RecievedStreamField(sensor_field) => {
-            context.live_fit.update(sensor_field.clone());
+            context.live_fits.update(sensor_field.clone());
             context.ping_field = Some(sensor_field.clone());
 
             match &context.file_writer {
@@ -312,6 +313,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::ReceivedBoardPresence(presence) => {
             println!("Detected board presence: {:#?}", presence);
             context.board_presence = presence;
+            context.live_fits.set_presence(context.board_presence.clone());
 
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
@@ -484,25 +486,43 @@ fn view(context: &Context) -> Element<'_, Message> {
         None => "Status: not read yet".to_string(),
     };
 
-    let live_fit_text = match context.live_fit.result() {
-        Some(result) => format!(
-            "Live fit: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}",
-            result.position.0,
-            result.position.1,
-            result.position.2,
-            result.residual_rms,
-            result.n_sensors,
-        ),
-        None => format!(
-            "Live fit: waiting for enough sensors; seen {}",
-            context.live_fit.n_sensors()
-        ),
+    let live_fit_summary_text = {
+        let summaries = context.live_fits.board_summaries();
+
+        if summaries.is_empty() {
+            "Live magnet fits: no detected boards".to_string()
+        } else {
+            summaries
+                .into_iter()
+                .map(|summary| {
+                    match summary.result {
+                        Some(result) => format!(
+                            "Board {}\nLive fit: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}\n{}",
+                            summary.board_id,
+                            result.position.0,
+                            result.position.1,
+                            result.position.2,
+                            result.residual_rms,
+                            result.n_sensors,
+                            summary.displacement_plot_text,
+                        ),
+                        None => format!(
+                            "Board {}\nLive fit: waiting for completed frame; seen {}/16 sensors\n{}",
+                            summary.board_id,
+                            summary.seen_sensors,
+                            summary.displacement_plot_text,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        }
     };
 
     let live_fit_widget = container(
         column![
-            text("Live magnet fit"),
-            text(live_fit_text),
+            text("Live magnet fits by board"),
+            text(live_fit_summary_text),
         ]
     );
 
