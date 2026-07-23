@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use data_transfer::rpc::{BoardPresence, SensorField};
 
 const MAX_HISTORY_POINTS: usize = 600;
+const UT_PER_MT: f64 = 1000.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct BoardLiveFits {
@@ -284,9 +285,9 @@ fn address_to_sensor_index(address: u8) -> Option<u8> {
 }
 
 fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
-    let bx = field.field.x?.value();
-    let by = field.field.y?.value();
-    let bz = field.field.z?.value();
+    let bx = field.field.x?.value() / UT_PER_MT;
+    let by = field.field.y?.value() / UT_PER_MT;
+    let bz = field.field.z?.value() / UT_PER_MT;
 
     Some(Sample {
         position: [

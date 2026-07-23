@@ -557,7 +557,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             for summary in summaries {
                 let fit_text = match &summary.result {
                     Some(result) => format!(
-                        "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.2} uT    Sensors: {}    Fit scale: {:.3e}",
+                        "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.4} mT    Sensors: {}    Fit scale: {:.3e}",
                         result.position.0,
                         result.position.1,
                         result.position.2,

@@ -4,6 +4,7 @@ use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Th
 use crate::sensor_trace::SensorTracePoint;
 
 const PLOT_HEIGHT: f32 = 220.0;
+const UT_PER_MT: f64 = 1000.0;
 
 #[derive(Debug, Clone)]
 pub struct SensorTracePlot {
@@ -65,7 +66,7 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
 
         draw_label(
             &mut frame,
-            "Magnetic field (uT)",
+            "Magnetic field (mT)",
             Point::new(plot_left, 3.0),
             11.0,
             label_color,
@@ -106,7 +107,7 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             x_max = x_min + 1.0;
         }
 
-        let (mut y_min, mut y_max) = field_bounds(&self.points);
+        let (mut y_min, mut y_max) = field_bounds_mt(&self.points);
 
         if y_min > 0.0 {
             y_min = 0.0;
@@ -124,8 +125,8 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width)
         };
 
-        let map_y = |field_ut: f64| {
-            plot_bottom - (((field_ut - y_min) / (y_max - y_min)) as f32 * plot_height)
+        let map_y = |field_mt: f64| {
+            plot_bottom - (((field_mt - y_min) / (y_max - y_min)) as f32 * plot_height)
         };
 
         for i in 0..=4 {
@@ -150,7 +151,7 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             );
 
             let y = plot_bottom - frac * plot_height;
-            let field_ut = y_min + (y_max - y_min) * frac as f64;
+            let field_mt = y_min + (y_max - y_min) * frac as f64;
 
             frame.stroke(
                 &canvas::Path::line(Point::new(plot_left, y), Point::new(plot_right, y)),
@@ -161,7 +162,7 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
 
             draw_label(
                 &mut frame,
-                format!("{:.0}", field_ut),
+                format!("{:.3}", field_mt),
                 Point::new(plot_left - 66.0, y - 7.0),
                 10.0,
                 label_color,
@@ -201,9 +202,9 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
                 .with_width(1.0),
         );
 
-        draw_series(&mut frame, &self.points, |p| p.bx_ut, map_x, map_y, bx_color);
-        draw_series(&mut frame, &self.points, |p| p.by_ut, map_x, map_y, by_color);
-        draw_series(&mut frame, &self.points, |p| p.bz_ut, map_x, map_y, bz_color);
+        draw_series(&mut frame, &self.points, |p| p.bx_mt, map_x, map_y, bx_color);
+        draw_series(&mut frame, &self.points, |p| p.by_mt, map_x, map_y, by_color);
+        draw_series(&mut frame, &self.points, |p| p.bz_mt, map_x, map_y, bz_color);
 
         draw_legend(&mut frame, plot_right - 130.0, plot_top + 4.0, bx_color, "Bx");
         draw_legend(&mut frame, plot_right - 86.0, plot_top + 4.0, by_color, "By");
@@ -213,8 +214,10 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             draw_label(
                 &mut frame,
                 format!(
-                    "latest: Bx={:.1}, By={:.1}, Bz={:.1} uT",
-                    last.bx_ut, last.by_ut, last.bz_ut
+                    "latest: Bx={:.4}, By={:.4}, Bz={:.4} mT",
+                    last.bx_mt,
+                    last.by_mt,
+                    last.bz_mt,
                 ),
                 Point::new(plot_left + 8.0, plot_top + 4.0),
                 11.0,
@@ -226,21 +229,22 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
     }
 }
 
-fn field_bounds(points: &[SensorTracePoint]) -> (f64, f64) {
+fn field_bounds_mt(points: &[SensorTracePoint]) -> (f64, f64) {
     let mut min_value = f64::INFINITY;
     let mut max_value = f64::NEG_INFINITY;
 
     for point in points {
-        for value in [point.bx_ut, point.by_ut, point.bz_ut] {
-            min_value = min_value.min(value);
-            max_value = max_value.max(value);
+        for value_ut in [point.bx_mt, point.by_mt, point.bz_mt] {
+            let value_mt = value_ut ;
+            min_value = min_value.min(value_mt);
+            max_value = max_value.max(value_mt);
         }
     }
 
     if !min_value.is_finite() || !max_value.is_finite() {
-        (-1.0, 1.0)
+        (-0.001, 0.001)
     } else if (max_value - min_value).abs() < 1.0e-9 {
-        (min_value - 1.0, max_value + 1.0)
+        (min_value - 0.001, max_value + 0.001)
     } else {
         (min_value, max_value)
     }

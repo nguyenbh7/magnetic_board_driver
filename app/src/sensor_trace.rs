@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use data_transfer::rpc::{BoardPresence, SensorField};
 
 const MAX_TRACE_POINTS: usize = 600;
+const UT_PER_MT: f64 = 1000.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct SensorTraceState {
@@ -25,9 +26,9 @@ struct SensorTraceHistory {
 #[derive(Debug, Clone)]
 pub struct SensorTracePoint {
     pub time_s: f64,
-    pub bx_ut: f64,
-    pub by_ut: f64,
-    pub bz_ut: f64,
+    pub bx_mt: f64,
+    pub by_mt: f64,
+    pub bz_mt: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -180,8 +181,8 @@ fn address_to_sensor_index(address: u8) -> Option<u8> {
 fn sensor_field_to_trace_point(field: &SensorField) -> Option<SensorTracePoint> {
     Some(SensorTracePoint {
         time_s: 0.0,
-        bx_ut: field.field.x?.value(),
-        by_ut: field.field.y?.value(),
-        bz_ut: field.field.z?.value(),
+        bx_mt: field.field.x?.value() / UT_PER_MT,
+        by_mt: field.field.y?.value() / UT_PER_MT,
+        bz_mt: field.field.z?.value() / UT_PER_MT,
     })
 }
