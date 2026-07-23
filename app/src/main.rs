@@ -31,7 +31,6 @@ use crate::sensor_monitor::{SensorSubscription, SensorWatcher};
 use iced::widget::{
     button, column, combo_box, container, pick_list, row, scrollable, text, text_input,
 };
-use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::{Element, Length, Task};
 use std::fmt::{Display, format};
 use std::sync::Arc;
@@ -83,7 +82,7 @@ enum Message {
     },
 
     StartFieldStream,
-    FieldStreamStarted,
+    FieldStreamStarted(Result<(), String>),
     FieldStreamStopped,
     StopFieldStream,
     SelectFile,
@@ -102,6 +101,7 @@ enum DashboardTab {
     #[default]
     LiveFits,
     SensorTraces,
+    Both,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -157,7 +157,6 @@ pub enum Error {
 
 const MLX_HALL_CONF_DEFAULT_LABEL: &str = "0xC = Default Sampling";
 const MLX_HALL_CONF_FAST_LABEL: &str = "0x0 = Faster Sampling";
-const DASHBOARD_MIN_WIDTH: f32 = 980.0;
 
 fn hall_conf_label_to_value(label: &str) -> u8 {
     match label {
@@ -222,8 +221,11 @@ async fn get_single_value(board: u32, sensor: u32, client: HostClient<WireError>
     client.send_resp::<SingleFieldValue>(&args).await.unwrap()
 }
 
-async fn start_field_stream(client: HostClient<WireError>) -> () {
-    client.send_resp::<StartFieldStream>(&()).await.unwrap()
+async fn start_field_stream(client: HostClient<WireError>) -> Result<(), String> {
+    client
+        .send_resp::<StartFieldStream>(&())
+        .await
+        .map_err(|err| format!("{err:?}"))
 }
 
 async fn get_board_presence(client: HostClient<WireError>) -> BoardPresence {
@@ -353,7 +355,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
                 Task::perform(
                     start_field_stream(client),
-                    |()| Message::FieldStreamStarted,
+                    Message::FieldStreamStarted,
                 )
             } else {
                 Task::none()
@@ -363,7 +365,15 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits.reset_displacement(board_id);
             Task::none()
         }
-        Message::FieldStreamStarted => {
+        Message::FieldStreamStarted(result) => {
+            if let Err(err) = result {
+                eprintln!("Failed to start field stream: {err}");
+
+                // Most common cause: the firmware stream task is already running
+                // or has not fully exited after Stop.
+                return Task::none();
+            }
+
             if let Some(sw) = &mut context.sensor_watcher {
                 let client = sw.get_client();
 
@@ -708,12 +718,22 @@ fn view(context: &Context) -> Element<'_, Message> {
     let tab_selector = row![
         button("Live fits").on_press(Message::SelectDashboardTab(DashboardTab::LiveFits)),
         button("Sensor traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
+        button("Both").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
     ]
     .spacing(8);
 
     let active_dashboard_widget = match context.dashboard_tab {
         DashboardTab::LiveFits => live_fit_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
+        DashboardTab::Both => {
+            container(
+                row![
+                    live_fit_widget.width(Length::FillPortion(1)),
+                    sensor_trace_widget.width(Length::FillPortion(1)),
+                ]
+                .spacing(12)
+            )
+        }
     };
     
     let dashboard_content = container(
@@ -725,13 +745,9 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
         .spacing(12)
     )
-    .width(Length::Fixed(DASHBOARD_MIN_WIDTH));
+    .width(Length::Fill);
 
     let dashboard = scrollable(dashboard_content)
-        .direction(Direction::Both {
-            vertical: Scrollbar::default(),
-            horizontal: Scrollbar::default(),
-        })
         .width(Length::Fill)
         .height(Length::Fill);
 
