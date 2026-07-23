@@ -41,9 +41,9 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
             return vec![frame.into_geometry()];
         }
 
-        let plot_left = 62.0;
+        let plot_left = 86.0;
         let plot_right = width - 18.0;
-        let plot_top = 14.0;
+        let plot_top = 18.0;
         let plot_bottom = height - 42.0;
 
         let plot_width = (plot_right - plot_left).max(1.0);
@@ -57,7 +57,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
         draw_label(
             &mut frame,
             "Displacement (mm)",
-            Point::new(4.0, plot_top - 18.0),
+            Point::new(plot_left, 2.0),
             11.0,
             label_color,
         );
@@ -172,7 +172,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
             draw_label(
                 &mut frame,
                 format!("{:.2}", displacement),
-                Point::new(16.0, y - 7.0),
+                Point::new(plot_left - 58.0, y - 7.0),
                 10.0,
                 label_color,
             );
