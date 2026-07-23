@@ -8,13 +8,16 @@ use data_transfer::rpc::{
     StartFieldStream,
     MlxSensitivityConfig,
     MlxSensitivityStatus,
+    BoardPresence,
 };
+use data_transfer::rpc::GetBoardPresence;
 use embassy_executor;
 use portable_atomic::{AtomicBool, Ordering};
 
-use embassy_futures::join::join_array;
+//use embassy_futures::join::join_array;
 use embassy_time::{Duration, Ticker};
 use crate::N; 
+const BOARD_PRESENT_MIN_SENSORS: u32 = 1;
 pub fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
     info!("ping");
     rqst
@@ -33,6 +36,16 @@ pub fn get_mlx_sensitivity_handler(
         resolution: context.mlx_sensitivity.resolution,
         hall_conf: context.mlx_sensitivity.hall_conf,
     }
+}
+
+pub async fn get_board_presence_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    _rqst: (),
+) -> BoardPresence {
+    let presence = detect_board_presence_from_context(context).await;
+    context.board_presence = presence.clone();
+    presence
 }
 
 pub async fn set_mlx_sensitivity_handler(
@@ -134,8 +147,9 @@ pub async fn stream_field(
     _rqst: (),
     sender: Sender<AppTx>,
 ) {
-    let seq = 0u8;
+    let mut seq = 0u8;
     let mut ticker = Ticker::every(Duration::from_millis(0));
+
     if sender
         .reply::<StartFieldStream>(header.seq_no, &())
         .await
@@ -144,28 +158,47 @@ pub async fn stream_field(
         defmt::error!("Failed to reply, stopping accel");
         return;
     }
+
+    let presence = detect_board_presence_from_spawn(&context).await;
+
+    info!(
+        "Detected boards: mask={} sensor_masks={:?}",
+        presence.board_mask,
+        presence.sensor_masks
+    );
+
     while !STOP.load(Ordering::Acquire) {
-        {
+        for board_index in 0..N {
+            if presence.board_mask & (1u8 << board_index) == 0 {
+                continue;
+            }
 
-            let sensors = core::array::from_fn( |i| context.sensor_groups[i].lock());
-            let mut sensors: [_; N] = join_array(sensors).await;
+            let sensor_mask = presence.sensor_masks[board_index];
+            let mut sg = context.sensor_groups[board_index].lock().await;
 
-            for sg in &mut sensors {
-                for i in 0..sg.num_sensors() {
-                    ticker.next().await;
-                    let message = sg.get_message(i).await.unwrap();
-                    info!("{}", message);
-                    if sender
-                        .publish::<MagneticTopic>(seq.into(), &message)
-                        .await
-                        .is_err()
-        {
-            defmt::error!("Send error!");
-            break;
-        }
-                    seq.wrapping_add(1);
+            for sensor_index in 0..sg.num_sensors() {
+                if sensor_mask & (1u16 << sensor_index) == 0 {
+                    continue;
                 }
 
+                ticker.next().await;
+
+                let Ok(message) = sg.get_message(sensor_index).await else {
+                    continue;
+                };
+
+                info!("{}", message);
+
+                if sender
+                    .publish::<MagneticTopic>(seq.into(), &message)
+                    .await
+                    .is_err()
+                {
+                    defmt::error!("Send error!");
+                    break;
+                }
+
+                seq = seq.wrapping_add(1);
             }
         }
     }
@@ -173,4 +206,38 @@ pub async fn stream_field(
     STOP.store(false, Ordering::Release);
 }
 
- 
+async fn detect_board_presence_from_context(context: &mut Context) -> BoardPresence {
+    let mut presence = BoardPresence::default();
+
+    for board_index in 0..N {
+        let mut group = context.sensor_groups[board_index].lock().await;
+        let sensor_mask = group.detect_sensor_mask().await;
+        let present_count = sensor_mask.count_ones();
+
+        presence.sensor_masks[board_index] = sensor_mask;
+
+        if present_count >= BOARD_PRESENT_MIN_SENSORS {
+            presence.board_mask |= 1u8 << board_index;
+        }
+    }
+
+    presence
+}
+
+async fn detect_board_presence_from_spawn(context: &SpawnCtx) -> BoardPresence {
+    let mut presence = BoardPresence::default();
+
+    for board_index in 0..N {
+        let mut group = context.sensor_groups[board_index].lock().await;
+        let sensor_mask = group.detect_sensor_mask().await;
+        let present_count = sensor_mask.count_ones();
+
+        presence.sensor_masks[board_index] = sensor_mask;
+
+        if present_count >= BOARD_PRESENT_MIN_SENSORS {
+            presence.board_mask |= 1u8 << board_index;
+        }
+    }
+
+    presence
+}

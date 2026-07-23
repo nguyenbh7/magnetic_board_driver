@@ -272,7 +272,8 @@ async fn main(spawner: Spawner) {
             gain: 0,
             resolution: 0,
             hall_conf: 0xC,
-},
+        },
+        board_presence: data_transfer::rpc::BoardPresence::default(),
     };
 
     let dispatcher = MyApp::new(context, spawner.into());

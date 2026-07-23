@@ -109,6 +109,20 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
         }
     }
 
+    pub async fn probe(&mut self) -> bool {
+        let command = Command::read_register(0x00);
+        let commands = command.write_command();
+        let mut buffer = command.read_buffer();
+
+        match self.i2c.write_read(self.address, &commands, &mut buffer).await {
+            Ok(()) => {
+                let status = Status::from_u8(&buffer[0]);
+                !status.error
+            }
+            Err(_) => false,
+        }
+    }
+
     pub async fn set_sensitivity_registers(
         &mut self,
         gain: u8,

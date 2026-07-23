@@ -33,6 +33,15 @@ pub struct MlxSensitivityStatus {
     pub hall_conf: u8,
 }
 
+pub const MAX_SENSOR_BOARDS: usize = 3;
+
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct BoardPresence {
+    pub board_mask: u8,
+    pub sensor_masks: [u16; MAX_SENSOR_BOARDS],
+}
+
 endpoints! {
     list = ENDPOINT_LIST;
     | EndpointTy                | RequestTy     | ResponseTy            | Path              |
@@ -43,6 +52,7 @@ endpoints! {
     | StopFieldStream           | ()            | ()                    | "bfield/stop"     |
     | GetMlxSensitivity         | ()            | MlxSensitivityStatus  | "mlx/sensitivity/get" |
     | SetMlxSensitivity  | MlxSensitivityConfig | MlxSensitivityStatus  | "mlx/sensitivity/set" |
+    | GetBoardPresence        | ()            | BoardPresence        | "boards/presence" |
 }
 
 

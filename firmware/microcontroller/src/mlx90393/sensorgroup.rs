@@ -30,6 +30,9 @@ impl From<messaging::Error> for Error {
 }
 
 impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
+    pub async fn is_present(&mut self) -> bool {
+        self.mlx.probe().await
+    }
     pub async fn set_sensitivity(
         &mut self,
         gain: u8,
@@ -152,6 +155,17 @@ pub struct SensorGroup<I, P, const N: usize = 16> {
 }
 
 impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
+    pub async fn detect_sensor_mask(&mut self) -> u16 {
+        let mut mask = 0u16;
+
+        for sensor_index in 0..self.num_sensors() {
+            if self.sensors[sensor_index].is_present().await {
+                mask |= 1u16 << sensor_index;
+            }
+        }
+
+        mask
+    }
     pub async fn set_sensitivity_all(
         &mut self,
         gain: u8,

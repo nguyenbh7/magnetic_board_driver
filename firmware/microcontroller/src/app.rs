@@ -8,6 +8,7 @@ use crate::handlers::{
     stop_stream,
     get_mlx_sensitivity_handler,
     set_mlx_sensitivity_handler,
+    get_board_presence_handler,
 };
 use crate::mlx90393::sensorgroup::SensorGroup;
 use data_transfer::rpc::{
@@ -17,7 +18,9 @@ use data_transfer::rpc::{
     StopFieldStream,
     GetMlxSensitivity,
     SetMlxSensitivity,
+    GetBoardPresence,
     MlxSensitivityConfig,
+    BoardPresence,
     ENDPOINT_LIST,
     TOPICS_IN_LIST,
     TOPICS_OUT_LIST,
@@ -55,6 +58,7 @@ type SensorGroupDefault = Mutex<CriticalSectionRawMutex, SensorGroup<
 pub struct Context {
     pub sensor_groups: &'static [SensorGroupDefault; N],
     pub mlx_sensitivity: MlxSensitivityConfig,
+    pub board_presence: BoardPresence,
 }
 
 pub struct SpawnCtx {
@@ -121,6 +125,7 @@ define_dispatch! {
         | StopFieldStream           | blocking  | stop_stream                   |
         | GetMlxSensitivity         | blocking  | get_mlx_sensitivity_handler   |
         | SetMlxSensitivity         | async  | set_mlx_sensitivity_handler   |
+        | GetBoardPresence        | async     | get_board_presence_handler |
     };
 
     // Topics IN are messages we receive from the client, but that we do not reply
