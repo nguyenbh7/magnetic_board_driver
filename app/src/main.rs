@@ -590,7 +590,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                         ]
                         .spacing(12),
                         text(if summary.is_calibrated {
-                            "Mode: calibrated fixed moment"
+                            "Mode: calibrated fixed strength, free orientation"
                         } else {
                             "Mode: free moment"
                         }),

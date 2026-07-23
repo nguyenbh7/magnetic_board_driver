@@ -15,7 +15,7 @@ pub struct BoardLiveFits {
 pub struct BoardLiveFitState {
     current_frame: BoardFrameAccumulator,
     result: Option<FitResult>,
-    calibrated_moment: Option<[f64; 3]>,
+    calibrated_moment_norm: Option<f64>,
 
     latest_raw_samples: Vec<Sample>,
     background: Option<BTreeMap<u8, [f64; 3]>>,
@@ -121,7 +121,7 @@ impl BoardLiveFits {
                 expected_sensors: self.expected_sensor_count(*board_id).unwrap_or(16),
                 result: board.result.clone(),
                 displacement_history: board.displacement_history.iter().cloned().collect(),
-                is_calibrated: board.calibrated_moment.is_some(),
+                is_calibrated: board.calibrated_moment_norm.is_some(),
                 has_background: board.background.is_some(),
             })
             .collect()
@@ -194,8 +194,8 @@ impl BoardLiveFitState {
             return;
         }
 
-        let fit_result = if let Some(calibrated_moment) = self.calibrated_moment {
-            fit_dipole_grid_fixed_moment(&samples, calibrated_moment)
+        let fit_result = if let Some(calibrated_moment_norm) = self.calibrated_moment_norm {
+            fit_dipole_grid_fixed_moment_norm(&samples, calibrated_moment_norm)
         } else {
             fit_dipole_grid(&samples)
         };
@@ -259,11 +259,11 @@ impl BoardLiveFitState {
             return;
         };
 
-        self.calibrated_moment = Some([
-            result.moment.0,
-            result.moment.1,
-            result.moment.2,
-        ]);
+        if !result.moment_norm.is_finite() || result.moment_norm <= 1.0e-12 {
+            return;
+        }
+
+        self.calibrated_moment_norm = Some(result.moment_norm);
 
         self.reset_displacement();
     }
@@ -283,7 +283,7 @@ impl BoardLiveFitState {
 
         // Existing calibration and displacement zero are no longer valid
         // because the field model changed from raw to background-subtracted.
-        self.calibrated_moment = None;
+        self.calibrated_moment_norm = None;
         self.result = None;
         self.origin = None;
         self.start_time_us = None;
@@ -402,12 +402,12 @@ fn fit_dipole_grid(samples: &[Sample]) -> Option<FitResult> {
     fit_dipole_grid_with(samples, evaluate_position)
 }
 
-fn fit_dipole_grid_fixed_moment(
+fn fit_dipole_grid_fixed_moment_norm(
     samples: &[Sample],
-    fixed_moment: [f64; 3],
+    fixed_moment_norm: f64,
 ) -> Option<FitResult> {
     fit_dipole_grid_with(samples, |samples, magnet_pos| {
-        evaluate_position_fixed_moment(samples, magnet_pos, fixed_moment)
+        evaluate_position_fixed_moment_norm(samples, magnet_pos, fixed_moment_norm)
     })
 }
 
@@ -568,11 +568,39 @@ fn evaluate_position(samples: &[Sample], magnet_pos: [f64; 3]) -> Option<FitResu
     })
 }
 
-fn evaluate_position_fixed_moment(
+fn evaluate_position_fixed_moment_norm(
     samples: &[Sample],
     magnet_pos: [f64; 3],
-    moment: [f64; 3],
+    fixed_moment_norm: f64,
 ) -> Option<FitResult> {
+    if !fixed_moment_norm.is_finite() || fixed_moment_norm <= 1.0e-12 {
+        return None;
+    }
+
+    // First solve the best free moment at this candidate position.
+    // We use only its direction, not its magnitude.
+    let free_fit = evaluate_position(samples, magnet_pos)?;
+
+    let free_moment = [
+        free_fit.moment.0,
+        free_fit.moment.1,
+        free_fit.moment.2,
+    ];
+
+    let free_norm = free_fit.moment_norm;
+
+    if !free_norm.is_finite() || free_norm <= 1.0e-12 {
+        return None;
+    }
+
+    let scale = fixed_moment_norm / free_norm;
+
+    let moment = [
+        free_moment[0] * scale,
+        free_moment[1] * scale,
+        free_moment[2] * scale,
+    ];
+
     let mut sum_sq = 0.0;
     let mut n_components = 0usize;
 
@@ -589,18 +617,12 @@ fn evaluate_position_fixed_moment(
 
     let residual_rms = (sum_sq / n_components as f64).sqrt();
 
-    let moment_norm = (
-        moment[0] * moment[0]
-            + moment[1] * moment[1]
-            + moment[2] * moment[2]
-    ).sqrt();
-
     Some(FitResult {
         position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
         residual_rms,
         n_sensors: samples.len(),
         moment: (moment[0], moment[1], moment[2]),
-        moment_norm,
+        moment_norm: fixed_moment_norm,
     })
 }
 
