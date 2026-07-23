@@ -98,15 +98,17 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
         self.mlx
             .set_single_measurmenet::<true, true, true, true>()
             .await;
-        Timer::after_millis(50).await;
-        let (_status, field) = self.mlx.get_field::<true, true, true, true>().await;
-        //debug!("{:#?}", status);
-        //if status.is_some_and(|val| !val.burst_mode) {
-        //self.mlx.set_burst::<true, true, true, true>().await;
-        //}
+
+        let (status, field) = self.mlx.get_field::<true, true, true, true>().await;
+
+        if status.error {
+            return Err(());
+        }
+
         let time = Instant::now().as_micros();
         let message =
             field.map(|f| messaging::Message::new(f, self.position, self.mlx.address, time));
+
         message.ok_or(())
     }
 
