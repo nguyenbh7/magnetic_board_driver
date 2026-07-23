@@ -1,10 +1,9 @@
-use data_transfer::rpc::SensorField;
 use iced::widget::canvas;
 use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Theme};
 
 use crate::live_fit::DisplacementPoint;
 
-const PLOT_HEIGHT: f32 = 220.0;
+const PLOT_HEIGHT: f32 = 180.0;
 
 #[derive(Debug, Clone)]
 pub struct DisplacementPlot {
@@ -44,7 +43,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
 
         let plot_left = 62.0;
         let plot_right = width - 18.0;
-        let plot_top = 24.0;
+        let plot_top = 14.0;
         let plot_bottom = height - 42.0;
 
         let plot_width = (plot_right - plot_left).max(1.0);
@@ -54,14 +53,6 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
         let grid_color = Color::from_rgb8(210, 210, 210);
         let label_color = Color::from_rgb8(80, 80, 80);
         let line_color = Color::from_rgb8(40, 95, 180);
-
-        draw_label(
-            &mut frame,
-            format!("Board {} displacement", self.board_id),
-            Point::new(plot_left, 2.0),
-            13.0,
-            label_color,
-        );
 
         draw_label(
             &mut frame,
@@ -126,7 +117,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
             .map(|p| p.displacement_mm)
             .fold(0.0_f64, f64::max);
 
-        let y_max = nice_axis_max(raw_y_max.max(1.0));
+        let y_max = nice_axis_max((raw_y_max * 1.10).max(1.0));
 
         let map_x = |time_s: f64| {
             plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width)

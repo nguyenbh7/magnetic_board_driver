@@ -18,6 +18,7 @@ pub struct BoardLiveFitState {
 
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
+    last_fit_time_us: Option<u64>,
     displacement_history: VecDeque<DisplacementPoint>,
 }
 
@@ -68,6 +69,12 @@ impl BoardLiveFits {
             if self.presence.board_mask & (1u8 << board_index) != 0 {
                 self.boards.entry(board_index as u16).or_default();
             }
+        }
+    }
+
+    pub fn reset_displacement(&mut self, board_id: u16) {
+        if let Some(board) = self.boards.get_mut(&board_id) {
+            board.reset_displacement();
         }
     }
 
@@ -137,6 +144,7 @@ impl BoardLiveFitState {
                 frame.frame_start_time_us
                     + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
 
+            self.last_fit_time_us = Some(frame_mid_time_us);
             self.record_displacement(frame_mid_time_us, &result);
             self.result = Some(result);
         }
@@ -186,6 +194,26 @@ impl BoardLiveFitState {
             y_last,
             y_max,
         )
+    }
+
+        fn reset_displacement(&mut self) {
+        self.displacement_history.clear();
+
+        if let Some(result) = &self.result {
+            self.origin = Some(result.position);
+            self.start_time_us = self.last_fit_time_us;
+
+            if self.last_fit_time_us.is_some() {
+                self.displacement_history.push_back(DisplacementPoint {
+                    time_s: 0.0,
+                    displacement_mm: 0.0,
+                });
+            }
+        } else {
+            self.origin = None;
+            self.start_time_us = None;
+            self.last_fit_time_us = None;
+        }
     }
 }
 

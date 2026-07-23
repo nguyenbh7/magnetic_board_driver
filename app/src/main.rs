@@ -67,6 +67,7 @@ enum Message {
     RecievedField(data_transfer::rpc::SensorField),
     RecievedStreamField(data_transfer::rpc::SensorField),
     ReceivedBoardPresence(BoardPresence),
+    ResetBoardDisplacement(u16),
     StartFieldStream,
     FieldStreamStarted,
     FieldStreamStopped,
@@ -328,6 +329,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 Task::none()
             }
         }
+        Message::ResetBoardDisplacement(board_id) => {
+            context.live_fits.reset_displacement(board_id);
+            Task::none()
+        }
         Message::FieldStreamStarted => {
             if let Some(sw) = &mut context.sensor_watcher {
                 let mut client = sw.get_client();
@@ -494,7 +499,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         let mut live_fit_content = column![
             text("Live magnet fits by board")
         ]
-        .spacing(8);
+        .spacing(12);
 
         if summaries.is_empty() {
             live_fit_content = live_fit_content.push(text("No detected boards"));
@@ -502,8 +507,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             for summary in summaries {
                 let fit_text = match &summary.result {
                     Some(result) => format!(
-                        "Board {}: x={:.2}, y={:.2}, z={:.2}, residual RMS={:.2} uT, sensors={}",
-                        summary.board_id,
+                        "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.2} uT    Sensors: {}",
                         result.position.0,
                         result.position.1,
                         result.position.2,
@@ -511,18 +515,30 @@ fn view(context: &Context) -> Element<'_, Message> {
                         result.n_sensors,
                     ),
                     None => format!(
-                        "Board {}: waiting for completed frame; seen {}/16 sensors",
-                        summary.board_id,
+                        "Waiting for completed frame; seen {}/16 sensors",
                         summary.seen_sensors,
                     ),
                 };
 
-                live_fit_content = live_fit_content
-                    .push(text(fit_text))
-                    .push(displacement_plot(
-                        summary.board_id,
-                        summary.displacement_history,
-                    ));
+                let board_card = container(
+                    column![
+                        row![
+                            text(format!("Board {}", summary.board_id)),
+                            button("Reset displacement zero")
+                                .on_press(Message::ResetBoardDisplacement(summary.board_id)),
+                        ]
+                        .spacing(12),
+                        text(fit_text),
+                        displacement_plot(
+                            summary.board_id,
+                            summary.displacement_history,
+                        ),
+                    ]
+                    .spacing(6)
+                )
+                .padding(10);
+
+                live_fit_content = live_fit_content.push(board_card);
             }
         }
 
