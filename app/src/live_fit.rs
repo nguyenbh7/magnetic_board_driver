@@ -9,7 +9,6 @@ const UT_PER_MT: f64 = 1000.0;
 pub struct BoardLiveFits {
     boards: BTreeMap<u16, BoardLiveFitState>,
     presence: BoardPresence,
-    calibrated_moment: Option<[f64; 3]>,
 }
 
 #[derive(Debug, Clone, Default)]

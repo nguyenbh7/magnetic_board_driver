@@ -4,7 +4,6 @@ use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Th
 use crate::sensor_trace::SensorTracePoint;
 
 const PLOT_HEIGHT: f32 = 220.0;
-const UT_PER_MT: f64 = 1000.0;
 
 #[derive(Debug, Clone)]
 pub struct SensorTracePlot {
@@ -117,7 +116,7 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             y_max = 0.0;
         }
 
-        let y_range = (y_max - y_min).abs().max(1.0);
+        let y_range = (y_max - y_min).abs().max(0.001);
         y_min -= 0.10 * y_range;
         y_max += 0.10 * y_range;
 
@@ -234,8 +233,7 @@ fn field_bounds_mt(points: &[SensorTracePoint]) -> (f64, f64) {
     let mut max_value = f64::NEG_INFINITY;
 
     for point in points {
-        for value_ut in [point.bx_mt, point.by_mt, point.bz_mt] {
-            let value_mt = value_ut ;
+        for value_mt in [point.bx_mt, point.by_mt, point.bz_mt] {
             min_value = min_value.min(value_mt);
             max_value = max_value.max(value_mt);
         }
