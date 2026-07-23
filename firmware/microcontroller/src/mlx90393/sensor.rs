@@ -592,12 +592,34 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
         //info!("{}", status);
     }
 
-    pub async fn get_field<const X: bool, const Y: bool, const Z: bool, const TEMP: bool>(
+    pub async fn get_field<
+        const X: bool,
+        const Y: bool,
+        const Z: bool,
+        const TEMP: bool,
+    >(
         &mut self,
     ) -> (Status, Option<MagneticField>) {
         let state = self.state;
         let (status, mbits) = self.get_measurement::<X, Y, Z, TEMP>().await;
-        //info!("{:#?}", status);
+
+        if let Some(state) = state {
+            info!(
+                "RAW MLX addr={} gain={:?} res_x={:?} res_y={:?} res_z={:?} hall={:?} temp_comp={:?} x={:?} y={:?} z={:?} temp={:?}",
+                self.address,
+                state.gain,
+                state.resolution.x,
+                state.resolution.y,
+                state.resolution.z,
+                state.hall_configuration,
+                state.temperature_compensation,
+                mbits.x,
+                mbits.y,
+                mbits.z,
+                mbits.temp,
+            );
+        }
+
         let field = state.and_then(|state| {
             MagneticField::from_mbits(
                 mbits,

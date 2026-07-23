@@ -117,13 +117,15 @@ impl RunCommand<RR, 2, 3> for CommandData<RR> {
     }
 }
 
+// firmware/microcontroller/src/mlx90393/commands.rs
+
 impl RunCommand<WR, 4, 1> for CommandData<WR> {
     fn write_command(&self) -> [u8; 4] {
         [
-            0b01100000,
-            self.command.D[1],
+            0b0110_0000,
             self.command.D[0],
-            (self.command.location << 2),
+            self.command.D[1],
+            self.command.location << 2,
         ]
     }
 }
