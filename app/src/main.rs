@@ -24,8 +24,10 @@ use std::io::{BufWriter, Write};
 use std::fs::File;
 
 use crate::sensor_monitor::{SensorSubscription, SensorWatcher};
-use iced::widget::{button, column, combo_box, container, row, text, text_input, pick_list};
-use iced::{Element, Task};
+use iced::widget::{
+    button, column, combo_box, container, pick_list, row, scrollable, text, text_input,
+};
+use iced::{Element, Length, Task};
 use std::fmt::{Display, format};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -608,13 +610,22 @@ fn view(context: &Context) -> Element<'_, Message> {
     )
     .padding(10);
     
+    let dashboard = scrollable(
+        column![
+            stream_widget,
+            live_fit_widget,
+            mlx_widget,
+        ]
+        .spacing(12)
+    )
+    .height(Length::Fill);
+
     column![
         serial_selector,
         ping_widget,
-        stream_widget,
-        live_fit_widget,
-        mlx_widget,
+        dashboard,
     ]
+    .spacing(10)
     .padding(10)
     .into()
 }
