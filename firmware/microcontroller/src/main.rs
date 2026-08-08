@@ -53,6 +53,32 @@ bind_interrupts!(
 
 pub const N: usize = 3;
 
+const SENSOR_GRID_SIDE_LENGTH_MM: f32 = 13.5;
+const SENSOR_GRID_POINTS_PER_SIDE: usize = 4;
+const SENSOR_GRID_PITCH_MM: f32 =
+    SENSOR_GRID_SIDE_LENGTH_MM / (SENSOR_GRID_POINTS_PER_SIDE as f32 - 1.0);
+
+/// Return the verified physical position for one acquisition-order sensor index.
+///
+/// Sensor indices 0..15 correspond to addresses 0x0C..0x1B on boards A/B.
+/// The physical ordering matches the original Pi setup and the validated
+/// `gk_analysis` geometry:
+///
+/// row y=-6.75: x=+6.75, +2.25, -2.25, -6.75
+/// row y=-2.25: x=+6.75, +2.25, -2.25, -6.75
+/// row y=+2.25: x=+6.75, +2.25, -2.25, -6.75
+/// row y=+6.75: x=+6.75, +2.25, -2.25, -6.75
+fn sensor_grid_position_mm(index: usize) -> (f32, f32, f32) {
+    let row = index / SENSOR_GRID_POINTS_PER_SIDE;
+    let column = index % SENSOR_GRID_POINTS_PER_SIDE;
+    let half_side = SENSOR_GRID_SIDE_LENGTH_MM / 2.0;
+
+    let x = half_side - SENSOR_GRID_PITCH_MM * column as f32;
+    let y = -half_side + SENSOR_GRID_PITCH_MM * row as f32;
+
+    (x, y, 0.0)
+}
+
 type SensorGroupDefault =Mutex<CriticalSectionRawMutex, SensorGroup<
         I2cDevice<
             'static,
@@ -231,12 +257,7 @@ async fn main(spawner: Spawner) {
         core::array::from_fn(|_| I2cDevice::new(i2c_bus3))
     };
 
-    let sensor_grid_side_length = 13.5;
-    let positions: [_; 16]  = core::array::from_fn(
-        |i|{
-            let step = sensor_grid_side_length/4.0;
-            (-sensor_grid_side_length/2.0+step*((i / 4) as f32),-sensor_grid_side_length/2.0+step*((i % 4) as f32), 0.0)
-        });
+    let positions: [_; 16] = core::array::from_fn(sensor_grid_position_mm);
     
     let sensor_groups = {
         let sensor_builders_a: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), positions[i]));
