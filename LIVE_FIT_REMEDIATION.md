@@ -6,10 +6,11 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 
 ## Acquisition / sensor pipeline
 
-- [ ] **1. Fix the firmware 4x4 sensor geometry and address ordering.**
+- [x] **1. Fix the firmware 4x4 sensor geometry and address ordering.**
   - Use the verified 13.5 mm square with 4.5 mm pitch.
-  - Address order `0x0C..0x1B` must map to rows with `y = -6.75, -2.25, 2.25, 6.75 mm` and, within each row, `x = 6.75, 2.25, -2.25, -6.75 mm`.
-  - Boards A/B/C must share the same physical index-to-position mapping; Board C's address bit remapping must not change its physical sensor index.
+  - Address order `0x0C..0x1B` maps to rows with `y = -6.75, -2.25, 2.25, 6.75 mm` and, within each row, `x = 6.75, 2.25, -2.25, -6.75 mm`.
+  - Boards A/B/C share the same physical index-to-position mapping; Board C's address bit remapping does not change its physical sensor index.
+  - Implemented in `firmware/microcontroller/src/main.rs` via `sensor_grid_position_mm()` and a 4.5 mm pitch derived from the 13.5 mm side length.
 
 - [ ] **2. Establish and enforce a known-good MLX90393 acquisition configuration.**
   - Start from the Old-Pi baseline for comparison: gain 4, resolution register value 0, HALLCONF 0x0C, OSR 2, DIG_FILT 4.
