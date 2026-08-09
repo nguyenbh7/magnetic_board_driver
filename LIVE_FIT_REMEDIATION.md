@@ -4,6 +4,17 @@ This branch (`agent-live-fit-fixes`) tracks fixes identified by comparing the cu
 
 The order is intentional: make the acquisition geometry and sensor data trustworthy before changing the fitter.
 
+## Current progress
+
+- Completed: **1. sensor geometry/address ordering**.
+- Completed: **2. known-good MLX90393 acquisition configuration**.
+- Current next item: **3. sensitivity/configuration reporting and resolution naming**.
+- Firmware hardware workflow is documented in `WSL_FLASH_AND_RUN.md`.
+- Canonical firmware flash command is `cd firmware && cargo run --release`.
+- The unoptimized firmware dev profile is not suitable for this hardware path: both the untouched baseline branch and this branch HardFault during the existing 16-sensor async construction path when run without `--release`.
+- Item 2 hardware validation passed in release mode: startup completed through the RPC server with no MLX baseline-verification failure.
+- Temporary boot diagnostics and per-sensor success logs have been removed; normal firmware startup is back to the original two `Hello World!` messages, while MLX baseline failures remain visible.
+
 ## Acquisition / sensor pipeline
 
 - [x] **1. Fix the firmware 4x4 sensor geometry and address ordering.**
@@ -21,6 +32,7 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - WSL software verification passed: `cargo test -p data_transfer` and firmware compilation both passed.
   - Hardware verification passed in the firmware release profile: the controller completed sensor initialization and reached the RPC server without an MLX baseline-verification failure.
   - Firmware must be run with `cargo run --release`; the unoptimized dev profile HardFaults during the existing 16-sensor async construction path even on the untouched baseline branch.
+  - Successful per-sensor baseline messages were removed after validation to keep normal startup output concise; baseline verification failures are still logged.
 
 - [ ] **3. Fix sensitivity/configuration reporting and naming.**
   - Make `GetMlxSensitivity` query actual sensor state rather than returning only the cached startup struct.
