@@ -154,6 +154,18 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
             // Keep cached state synchronized with whatever the hardware actually
             // accepted so subsequent reads do not use stale timing/scaling.
             sensor.mlx.set_measurement_configuration().await;
+        } else if let Some((gain, resolution, hall_conf, osr, dig_filt)) =
+            sensor.read_acquisition_configuration().await
+        {
+            info!(
+                "MLX addr={} Old-Pi baseline verified gain={} resolution={} hall_conf={} osr={} dig_filt={}",
+                sensor.mlx.address,
+                gain,
+                resolution,
+                hall_conf,
+                osr,
+                dig_filt,
+            );
         }
 
         //sensor.mlx.set_burst::<true, true, true, true>().await;
