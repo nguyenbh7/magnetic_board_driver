@@ -3,7 +3,7 @@ use data_transfer::{
     messaging::{self, Writable},
     rpc,
 };
-use defmt::Format;
+use defmt::{info, Format};
 use embassy_futures::join::join_array;
 use embassy_stm32::exti::ExtiInput;
 use embassy_time::{Instant, Timer};
@@ -11,6 +11,15 @@ use embedded_hal_async::{digital::Wait, i2c::I2c};
 use embedded_io::Write;
 
 use super::sensor::{Status, MLX90393};
+
+// Known-good acquisition settings used by the older Raspberry Pi setup.
+// Keep the raw MLX90393 register values explicit here so comparisons remain
+// unambiguous while resolution naming is cleaned up separately.
+const OLD_PI_BASELINE_GAIN: u8 = 4;
+const OLD_PI_BASELINE_RESOLUTION: u8 = 0;
+const OLD_PI_BASELINE_HALL_CONF: u8 = 0x0C;
+const OLD_PI_BASELINE_OSR: u8 = 2;
+const OLD_PI_BASELINE_DIG_FILT: u8 = 4;
 
 pub struct Sensor<I, P> {
     pub position: (f32, f32, f32),
@@ -56,6 +65,75 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
     pub async fn read_sensitivity(&mut self) -> Option<(u8, u8, u8)> {
         self.mlx.read_sensitivity_values().await
     }
+
+    /// Read the acquisition settings directly from the MLX90393 registers.
+    ///
+    /// Returned tuple is `(gain, resolution, hall_conf, osr, dig_filt)` using
+    /// the raw register encodings. This will be surfaced through the RPC/UI in
+    /// the configuration-reporting cleanup; for now it provides startup
+    /// verification of the Old-Pi baseline.
+    pub async fn read_acquisition_configuration(&mut self) -> Option<(u8, u8, u8, u8, u8)> {
+        let (gain, resolution, hall_conf) = self.read_sensitivity().await?;
+        let reg2 = self.mlx.read_register::<0x02>().await;
+
+        Some((
+            gain,
+            resolution,
+            hall_conf,
+            reg2.oversampling(),
+            reg2.digital_filter(),
+        ))
+    }
+
+    /// Program and verify the known-good acquisition settings used by OldPi.
+    async fn configure_old_pi_baseline(&mut self) -> bool {
+        // The sensitivity helper updates cached state, so populate it from the
+        // post-reset registers before applying the explicit baseline.
+        self.mlx.set_measurement_configuration().await;
+        if self.mlx.state.is_none() {
+            return false;
+        }
+
+        let sensitivity_ok = self
+            .set_sensitivity(
+                OLD_PI_BASELINE_GAIN,
+                OLD_PI_BASELINE_RESOLUTION,
+                OLD_PI_BASELINE_HALL_CONF,
+            )
+            .await;
+
+        // Register 0x02 fields are laid out in the 16-bit register as:
+        // OSR bits 0..1, DIG_FILT bits 2..4, then resolution fields. Preserve
+        // all non-OSR/filter fields and only replace the acquisition filtering.
+        let reg2_bytes = self.mlx.read_register::<0x02>().await.bytes();
+        let mut reg2_word = u16::from_be_bytes(reg2_bytes);
+        reg2_word &= !0x001F;
+        reg2_word |= u16::from(OLD_PI_BASELINE_OSR & 0x03);
+        reg2_word |= u16::from(OLD_PI_BASELINE_DIG_FILT & 0x07) << 2;
+
+        let filter_status = self
+            .mlx
+            .write_register_raw(0x02, reg2_word.to_be_bytes())
+            .await;
+        Timer::after_millis(20).await;
+
+        // Refresh conversion timing and conversion/scaling state from the
+        // actual sensor registers after every startup write.
+        self.mlx.set_measurement_configuration().await;
+
+        let readback_ok = matches!(
+            self.read_acquisition_configuration().await,
+            Some((gain, resolution, hall_conf, osr, dig_filt))
+                if gain == OLD_PI_BASELINE_GAIN
+                    && resolution == OLD_PI_BASELINE_RESOLUTION
+                    && hall_conf == OLD_PI_BASELINE_HALL_CONF
+                    && osr == OLD_PI_BASELINE_OSR
+                    && dig_filt == OLD_PI_BASELINE_DIG_FILT
+        );
+
+        sensitivity_ok && !filter_status.error && readback_ok
+    }
+
     pub async fn new(address: u8, i2c: I, position: (f32, f32, f32)) -> Self
         where {
         let mlx = MLX90393::new(address, None, i2c);
@@ -66,7 +144,18 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
         let mut sensor = Self { mlx, position };
         sensor.mlx.reset().await;
         Timer::after_micros(500).await;
-        sensor.mlx.set_measurement_configuration().await;
+
+        let configured = sensor.configure_old_pi_baseline().await;
+        if !configured {
+            info!(
+                "MLX addr={} failed Old-Pi acquisition baseline verification",
+                sensor.mlx.address
+            );
+            // Keep cached state synchronized with whatever the hardware actually
+            // accepted so subsequent reads do not use stale timing/scaling.
+            sensor.mlx.set_measurement_configuration().await;
+        }
+
         //sensor.mlx.set_burst::<true, true, true, true>().await;
         sensor
     }
