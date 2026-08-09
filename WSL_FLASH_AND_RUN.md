@@ -108,7 +108,7 @@ The firmware constructs 16 sensor initialization futures for a board. In the uno
 
 Treat `cargo run --release` as the canonical firmware command.
 
-### Item-2 acquisition-baseline verification
+### MLX90393 acquisition-baseline behavior
 
 On `agent-live-fit-fixes`, each MLX90393 is programmed after reset to the Old-Pi comparison baseline:
 
@@ -120,21 +120,13 @@ OSR                  = 2
 DIG_FILT             = 4
 ```
 
-The firmware reads those registers back before `configure_old_pi_baseline()` succeeds. A successful sensor now prints a startup line of the form:
-
-```text
-MLX addr=<address> Old-Pi baseline verified gain=4 resolution=0 hall_conf=12 osr=2 dig_filt=4
-```
-
-`hall_conf=12` is decimal `0x0C`.
-
-A mismatch prints:
+The firmware reads those registers back before accepting the configuration. Successful sensors are intentionally silent so normal firmware startup remains similar to the original branch. A mismatch prints:
 
 ```text
 MLX addr=<address> failed Old-Pi acquisition baseline verification
 ```
 
-For the item-2 hardware check, verify that every connected sensor prints the successful five-field baseline and that none prints the failure line. Item 3 will expose the same information properly through the RPC/UI; until then, the app's cached sensitivity display should not be treated as authoritative startup readback.
+A normal release-mode startup with no baseline-failure messages means the startup readback passed. Item 3 will expose the live sensor configuration properly through the RPC/UI; until then, the app's cached sensitivity display should not be treated as authoritative hardware readback.
 
 ## 5. Run the desktop app
 
@@ -221,6 +213,6 @@ cargo run --release
 
 The configured target is `thumbv8m.main-none-eabi`; avoid carrying a different explicit target into normal flash commands unless the repository configuration is intentionally changed.
 
-### Item-2 baseline verification fails on an MLX sensor
+### MLX baseline verification fails
 
 Preserve the full firmware startup log and note the MLX address that failed. Do not move on to fitter tuning: the sensor acquisition configuration should be fixed first.
