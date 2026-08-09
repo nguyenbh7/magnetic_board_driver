@@ -90,14 +90,29 @@ impl Register<0x02> {
         Res3D::from_u8_slice(&self.data)
     }
 
+    /// Magnetic oversampling (OSR), register 0x02 bits 0..=1.
+    pub fn oversampling(&self) -> u8 {
+        (u16::from_be_bytes(self.data) & 0x0003) as u8
+    }
+
+    /// Digital filter (DIG_FILT), register 0x02 bits 2..=4.
+    pub fn digital_filter(&self) -> u8 {
+        ((u16::from_be_bytes(self.data) >> 2) & 0x0007) as u8
+    }
+
+    /// Temperature oversampling (OSR2), register 0x02 bits 11..=12.
+    pub fn temperature_oversampling(&self) -> u8 {
+        ((u16::from_be_bytes(self.data) >> 11) & 0x0003) as u8
+    }
+
     pub fn magnetic_axis_conversion_time_micro(&self) -> u64 {
-        let osr = self.data[0] & 0b0000_0011;
-        let dig_filt = (self.data[0] & 0b0001_1100) >> 2;
+        let osr = self.oversampling();
+        let dig_filt = self.digital_filter();
         67 + 64 * (1 << osr) * (2 + (1 << dig_filt))
     }
 
     pub fn temperature_conversion_time_micro(&self) -> u64 {
-        let osr2 = (self.data[1] & 0b0001_1000) >> 3;
+        let osr2 = self.temperature_oversampling();
         67 + 192 * (1 << osr2)
     }
 }
@@ -494,5 +509,28 @@ impl HallConf {
             HallConf::TWOPHASE => 0x0,
             HallConf::FOURPHASE => 0xC,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Register;
+
+    #[test]
+    fn register_02_parses_old_pi_osr_filter_from_low_bits() {
+        // OSR=2 (bits 0..1), DIG_FILT=4 (bits 2..4), all resolutions=0.
+        let reg = Register::<0x02>::new(0x0012_u16.to_be_bytes());
+
+        assert_eq!(reg.oversampling(), 2);
+        assert_eq!(reg.digital_filter(), 4);
+        assert_eq!(reg.magnetic_axis_conversion_time_micro(), 4675);
+    }
+
+    #[test]
+    fn register_02_temperature_osr_uses_bits_11_through_12() {
+        let reg = Register::<0x02>::new(0x1800_u16.to_be_bytes());
+
+        assert_eq!(reg.temperature_oversampling(), 3);
+        assert_eq!(reg.temperature_conversion_time_micro(), 1603);
     }
 }
