@@ -41,7 +41,7 @@ Then check the firmware using the firmware workspace's own target/linker configu
 
 ```bash
 cd firmware
-cargo check
+cargo check --release
 ```
 
 Do not normally add an explicit `--target` here. `firmware/.cargo/config.toml` already sets:
@@ -72,10 +72,12 @@ From the repository root:
 
 ```bash
 cd firmware
-cargo run
+cargo run --release
 ```
 
-No normal command-line modifier is required. `firmware/.cargo/config.toml` defines:
+**Use the release profile for firmware flashing.** The unoptimized dev profile has been observed to HardFault during the 16-sensor async construction path, while the same source boots normally in `--release`.
+
+`firmware/.cargo/config.toml` defines:
 
 ```toml
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
@@ -88,14 +90,23 @@ target = "thumbv8m.main-none-eabi"
 DEFMT_LOG = "debug"
 ```
 
-Therefore `cargo run` from `firmware/` does all of the following:
+Therefore `cargo run --release` from `firmware/` does all of the following:
 
-1. Builds the `microcontroller` firmware for the configured Cortex-M target.
+1. Builds the `microcontroller` firmware for the configured Cortex-M target using the optimized release profile.
 2. Runs the configured `probe-rs` runner.
 3. Programs the STM32WBA55CG.
 4. Attaches to defmt output at debug level.
 
 For normal development, leave this terminal open so firmware/defmt messages remain visible and use a second WSL terminal for the desktop app.
+
+### Why `--release` matters
+
+The firmware constructs 16 sensor initialization futures for a board. In the unoptimized dev profile, this async state is large enough to HardFault during startup on the STM32WBA55CG. The original `brandon/mlx-sensitivity-live-fit` branch was hardware-tested on the same setup and showed this behavior:
+
+- `cargo run` -> HardFault during sensor-group construction.
+- `cargo run --release` -> boots normally.
+
+Treat `cargo run --release` as the canonical firmware command.
 
 ### Item-2 acquisition-baseline verification
 
@@ -152,7 +163,7 @@ Terminal 1 — firmware / defmt:
 
 ```bash
 cd /path/to/magnetic_board_driver/firmware
-cargo run
+cargo run --release
 ```
 
 Terminal 2 — desktop app:
@@ -166,7 +177,7 @@ This is the recommended day-to-day workflow while debugging acquisition and live
 
 ## 7. Quick troubleshooting
 
-### `cargo run` in `firmware/` cannot find a probe
+### `cargo run --release` in `firmware/` cannot find a probe
 
 Check:
 
@@ -187,14 +198,25 @@ ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
 
 The desktop app uses the serial port selected in its UI at 115200 baud.
 
-### Firmware builds with an explicit target but `cargo run` fails
+### Firmware HardFaults when run without `--release`
+
+This is a known behavior of the current embedded startup path. Use:
+
+```bash
+cd firmware
+cargo run --release
+```
+
+Do not use a successful unoptimized `cargo check` as proof that the dev-profile firmware will run safely on the MCU.
+
+### Firmware builds with an explicit target but `cargo run --release` fails
 
 Use the firmware workspace configuration as the source of truth:
 
 ```bash
 cd firmware
-cargo check
-cargo run
+cargo check --release
+cargo run --release
 ```
 
 The configured target is `thumbv8m.main-none-eabi`; avoid carrying a different explicit target into normal flash commands unless the repository configuration is intentionally changed.
