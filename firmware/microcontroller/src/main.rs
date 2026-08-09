@@ -97,7 +97,7 @@ type SensorGroupDefault =Mutex<CriticalSectionRawMutex, SensorGroup<
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("BOOT 00: main entered");
+    info!("Hello World!");
     static I2C_BUS1: StaticCell<
         Mutex<
             CriticalSectionRawMutex,
@@ -170,14 +170,12 @@ async fn main(spawner: Spawner) {
     // route PLL1_P into the USB‐OTG‐HS block
 
     config.rcc.sys = Sysclk::PLL1_R;
-    info!("BOOT 01: before embassy_stm32::init");
     let p = embassy_stm32::init(config);
-    info!("BOOT 02: STM32 init complete");
 
+    info!("Hello World!");
     let UART_RX = p.PA8;
     let UART_TX = p.PB12;
 
-    info!("BOOT 03: before USART1 init");
     let uart_interface = usart::Uart::new(
         p.USART1,
         UART_RX,
@@ -188,17 +186,10 @@ async fn main(spawner: Spawner) {
         usart::Config::default(),
     )
         .unwrap();
-    info!("BOOT 04: USART1 init complete");
-
     let (uart_tx, uart_rx) = uart_interface.split();
-    info!("BOOT 05: USART1 split complete");
-
     let rx_buffer = [0u8; 256];
     let rx_buffer = UART_RX_BUFFER.init(Mutex::new(rx_buffer));
-    info!("BOOT 06: UART RX buffer initialized");
-
     let uart_rx = uart_rx.into_ring_buffered(rx_buffer.get_mut());
-    info!("BOOT 07: UART RX ring buffer initialized");
     
     //let uart_rx_bus_mutex = Mutex::new(uart_rx);
     //let uart_rx_bus = UART_RX_BUS.init(uart_rx_bus_mutex);
@@ -207,10 +198,8 @@ async fn main(spawner: Spawner) {
     i2c_config.frequency = khz(100);
     i2c_config.sda_pullup = true;
     i2c_config.scl_pullup = true;
-    info!("BOOT 08: I2C config prepared");
 
 
-    info!("BOOT 09: before I2C1 init");
     let i2c_bus1 = {
         let i2c_peri = p.I2C1;
         
@@ -232,9 +221,7 @@ async fn main(spawner: Spawner) {
         let i2c_bus = Mutex::new(i2cport);
         I2C_BUS1.init(i2c_bus)
     };
-    info!("BOOT 10: I2C1 init complete");
 
-    info!("BOOT 11: before I2C3 init");
     let i2c_bus3 = {
 
         let i2c_peri = p.I2C3;
@@ -256,7 +243,6 @@ async fn main(spawner: Spawner) {
         let i2c_bus = Mutex::new(i2cport);
         I2C_BUS3.init(i2c_bus)
     };
-    info!("BOOT 12: I2C3 init complete");
     
     
     let i2c_devices_a = {
@@ -270,10 +256,8 @@ async fn main(spawner: Spawner) {
     let i2c_devices_c = {
         core::array::from_fn(|_| I2cDevice::new(i2c_bus3))
     };
-    info!("BOOT 13: shared I2C devices created");
 
     let positions: [_; 16] = core::array::from_fn(sensor_grid_position_mm);
-    info!("BOOT 14: sensor positions created");
     
     let sensor_groups = {
         let sensor_builders_a: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), positions[i]));
@@ -282,25 +266,11 @@ async fn main(spawner: Spawner) {
         let mut sensor_group_builder_a = SensorGroupBuilder::new_stm(0, sensor_builders_a);
         let mut sensor_group_builder_b = SensorGroupBuilder::new_stm(1, sensor_builders_b);
         let mut sensor_group_builder_c = SensorGroupBuilder::new_stm(2, sensor_builders_c);
-
-        info!("BOOT 15: before sensor group A construction");
-        let sensor_group_a = sensor_group_builder_a.with_i2c(i2c_devices_a).await;
-        info!("BOOT 16: sensor group A construction complete");
-
-        info!("BOOT 17: before sensor group B construction");
-        let sensor_group_b = sensor_group_builder_b.with_i2c(i2c_devices_b).await;
-        info!("BOOT 18: sensor group B construction complete");
-
-        info!("BOOT 19: before sensor group C construction");
-        let sensor_group_c = sensor_group_builder_c.with_i2c(i2c_devices_c).await;
-        info!("BOOT 20: sensor group C construction complete");
-
-        let sensor_groups = [sensor_group_a, sensor_group_b, sensor_group_c];
+        let sensor_groups = [sensor_group_builder_a.with_i2c(i2c_devices_a).await, sensor_group_builder_b.with_i2c(i2c_devices_b).await, sensor_group_builder_c.with_i2c(i2c_devices_c).await];
         let sensor_groups = sensor_groups.map(Mutex::new);
         
         SENSOR_GROUPS.init(sensor_groups)
     };
-    info!("BOOT 21: sensor groups stored");
 
     
     
@@ -312,7 +282,6 @@ async fn main(spawner: Spawner) {
             return
         }
     }
-    info!("BOOT 22: RPC storage initialized");
     let (rx_impl, tx_impl) = impls.unwrap();
 
     static PACKET_RX_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0u8; 256]);
@@ -332,7 +301,6 @@ async fn main(spawner: Spawner) {
     let vkk = dispatcher.min_key_len();
     let mut server: AppServer =
         Server::new(tx_impl, rx_impl, PACKET_RX_BUF.take(), dispatcher, vkk);
-    info!("BOOT 23: RPC server ready");
     loop {
         let _ = server.run().await;
 
