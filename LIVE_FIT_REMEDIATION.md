@@ -12,10 +12,12 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - Boards A/B/C share the same physical index-to-position mapping; Board C's address bit remapping does not change its physical sensor index.
   - Implemented in `firmware/microcontroller/src/main.rs` via `sensor_grid_position_mm()` and a 4.5 mm pitch derived from the 13.5 mm side length.
 
-- [ ] **2. Establish and enforce a known-good MLX90393 acquisition configuration.**
+- [ ] **2. Establish and enforce a known-good MLX90393 acquisition configuration.** *(implemented; local build/hardware verification pending)*
   - Start from the Old-Pi baseline for comparison: gain 4, resolution register value 0, HALLCONF 0x0C, OSR 2, DIG_FILT 4.
   - Program these values after sensor reset instead of relying on retained/default register state.
-  - Expose/read back OSR and DIG_FILT along with gain/resolution/HALLCONF.
+  - Read back OSR and DIG_FILT along with gain/resolution/HALLCONF before accepting the startup configuration.
+  - Correct register `0x02` OSR/DIG_FILT/OSR2 parsing so conversion delays use the actual 16-bit field locations.
+  - Added host-side register parsing tests for the Old-Pi OSR/filter combination and temperature OSR field.
 
 - [ ] **3. Fix sensitivity/configuration reporting and naming.**
   - Make `GetMlxSensitivity` query actual sensor state rather than returning only the cached startup struct.
