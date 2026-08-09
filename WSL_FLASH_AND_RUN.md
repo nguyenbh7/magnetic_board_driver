@@ -102,20 +102,28 @@ For normal development, leave this terminal open so firmware/defmt messages rema
 On `agent-live-fit-fixes`, each MLX90393 is programmed after reset to the Old-Pi comparison baseline:
 
 ```text
-gain              = 4
+gain                = 4
 resolution register = 0
-HALLCONF           = 0x0C
-OSR                = 2
-DIG_FILT           = 4
+HALLCONF             = 0x0C
+OSR                  = 2
+DIG_FILT             = 4
 ```
 
-The firmware reads those registers back before `configure_old_pi_baseline()` succeeds. A mismatch prints:
+The firmware reads those registers back before `configure_old_pi_baseline()` succeeds. A successful sensor now prints a startup line of the form:
+
+```text
+MLX addr=<address> Old-Pi baseline verified gain=4 resolution=0 hall_conf=12 osr=2 dig_filt=4
+```
+
+`hall_conf=12` is decimal `0x0C`.
+
+A mismatch prints:
 
 ```text
 MLX addr=<address> failed Old-Pi acquisition baseline verification
 ```
 
-So during the current item-2 hardware check, watch the firmware terminal during startup for any of those failures. Item 3 will make the complete live configuration/readback visible through the RPC/UI; until then, the app's cached sensitivity display should not be treated as authoritative startup readback.
+For the item-2 hardware check, verify that every connected sensor prints the successful five-field baseline and that none prints the failure line. Item 3 will expose the same information properly through the RPC/UI; until then, the app's cached sensitivity display should not be treated as authoritative startup readback.
 
 ## 5. Run the desktop app
 
