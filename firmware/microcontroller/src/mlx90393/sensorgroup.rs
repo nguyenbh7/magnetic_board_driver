@@ -292,6 +292,7 @@ impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
             address: message.address,
             field: message.field,
             position: message.position,
+            frame_id: 0,
             time: message.time,
             board_id: self.board_id,
         })
