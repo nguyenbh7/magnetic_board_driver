@@ -3,6 +3,12 @@ use std::fmt;
 
 use data_transfer::rpc::{BoardPresence, SensorField};
 
+mod constrained_pose;
+use constrained_pose::{
+    PoseFit, PoseSample, PoseState, field_jump_rms_m_t, fit_initial_pose, fit_reacquire_pose,
+    fit_temporal_pose,
+};
+
 const MAX_HISTORY_POINTS: usize = 600;
 const BACKGROUND_CAPTURE_FRAMES: usize = 20;
 const UT_PER_MT: f64 = 1000.0;
@@ -19,6 +25,10 @@ pub struct BoardLiveFitState {
     current_frame: BoardFrameAccumulator,
     result: Option<FitResult>,
     calibrated_moment_norm: Option<f64>,
+
+    pose_state: Option<PoseState>,
+    previous_pose_samples: Option<Vec<PoseSample>>,
+    last_measurement_sse: Option<f64>,
 
     background: Option<BTreeMap<u8, [f64; 3]>>,
     background_capture: Option<BackgroundCapture>,
@@ -39,6 +49,10 @@ impl Default for BoardLiveFitState {
             current_frame: BoardFrameAccumulator::default(),
             result: None,
             calibrated_moment_norm: None,
+
+            pose_state: None,
+            previous_pose_samples: None,
+            last_measurement_sse: None,
 
             background: None,
             background_capture: None,
@@ -150,6 +164,26 @@ struct Sample {
     field: [f64; 3],
 }
 
+fn sample_to_pose_sample(sample: &Sample) -> PoseSample {
+    PoseSample {
+        position: sample.position,
+        field: sample.field,
+    }
+}
+
+fn pose_fit_to_result(fit: PoseFit, n_sensors: usize) -> FitResult {
+    let position = fit.state.position();
+
+    FitResult {
+        position: (position[0], position[1], position[2]),
+        residual_rms: fit.residual_rms,
+        objective_score: fit.objective_score,
+        n_sensors,
+        moment: (fit.moment[0], fit.moment[1], fit.moment[2]),
+        moment_norm: fit.moment_norm,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MagnetPreset {
     ThinD52N52,
@@ -194,10 +228,7 @@ impl MagnetPreset {
 }
 
 impl MagnetPreset {
-    pub const ALL: [MagnetPreset; 2] = [
-        MagnetPreset::ThinD52N52,
-        MagnetPreset::ThickD54N52,
-    ];
+    pub const ALL: [MagnetPreset; 2] = [MagnetPreset::ThinD52N52, MagnetPreset::ThickD54N52];
 }
 
 impl fmt::Display for MagnetPreset {
@@ -311,11 +342,7 @@ impl BoardLiveFits {
 
         let count = sensor_mask.count_ones() as usize;
 
-        if count == 0 {
-            None
-        } else {
-            Some(count)
-        }
+        if count == 0 { None } else { Some(count) }
     }
 
     pub fn set_board_magnet_preset(&mut self, board_id: u16, preset: MagnetPreset) {
@@ -323,6 +350,10 @@ impl BoardLiveFits {
             board.magnet_preset = preset;
             board.magnet_effective_scale = 1.0;
             board.calibrated_moment_norm = None;
+            board.pose_state = None;
+            board.previous_pose_samples = None;
+            board.last_measurement_sse = None;
+            board.result = None;
             board.reset_displacement();
         }
     }
@@ -386,21 +417,82 @@ impl BoardLiveFitState {
             return;
         }
 
-        let fit_result = if self.use_known_magnet_prior {
-            let target_moment_norm =
-                self.magnet_preset.moment_norm_app() * self.magnet_effective_scale;
+        let pose_samples = samples
+            .iter()
+            .map(sample_to_pose_sample)
+            .collect::<Vec<_>>();
 
-            fit_dipole_grid_moment_norm_prior(&samples, target_moment_norm)
-        } else if let Some(calibrated_moment_norm) = self.calibrated_moment_norm {
-            fit_dipole_grid_moment_norm_prior(&samples, calibrated_moment_norm)
-        } else {
-            fit_dipole_grid(&samples)
+        let target_moment_norm = self.magnet_preset.moment_norm_app() * self.magnet_effective_scale;
+
+        let raw_field_jump = self
+            .previous_pose_samples
+            .as_ref()
+            .and_then(|previous| field_jump_rms_m_t(&pose_samples, previous));
+
+        let pose_fit = match self.pose_state {
+            None => fit_initial_pose(&pose_samples, target_moment_norm),
+
+            Some(previous) => {
+                let temporal = fit_temporal_pose(&pose_samples, target_moment_norm, previous);
+
+                let should_reacquire = temporal
+                    .as_ref()
+                    .map(|fit| {
+                        let previous_position = previous.position();
+                        let current_position = fit.state.position();
+
+                        let dx = current_position[0] - previous_position[0];
+                        let dy = current_position[1] - previous_position[1];
+                        let dz = current_position[2] - previous_position[2];
+                        let temporal_step_mm = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                        let field_jump_trigger =
+                            raw_field_jump.map(|jump| jump > 0.03).unwrap_or(false);
+
+                        let residual_trigger = self
+                            .last_measurement_sse
+                            .map(|previous_sse| {
+                                fit.measurement_sse > 1.05_f64.powi(2) * previous_sse.max(1.0e-12)
+                            })
+                            .unwrap_or(false);
+
+                        field_jump_trigger || residual_trigger || temporal_step_mm > 15.0
+                    })
+                    .unwrap_or(true);
+
+                if should_reacquire {
+                    let free = fit_reacquire_pose(&pose_samples, target_moment_norm, previous);
+
+                    match (temporal, free) {
+                        (Some(temporal), Some(free))
+                            if free.measurement_sse
+                                <= 1.50 * temporal.measurement_sse.max(1.0e-30) =>
+                        {
+                            Some(free)
+                        }
+
+                        (Some(temporal), _) => Some(temporal),
+                        (None, free) => free,
+                    }
+                } else {
+                    temporal
+                }
+            }
         };
 
-        if let Some(result) = fit_result {
-            let frame_mid_time_us =
-                frame.frame_start_time_us
-                    + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
+        self.previous_pose_samples = Some(pose_samples);
+
+        if let Some(pose_fit) = pose_fit {
+            self.pose_state = Some(pose_fit.state);
+            self.last_measurement_sse = Some(pose_fit.measurement_sse);
+
+            let result = pose_fit_to_result(pose_fit, samples.len());
+
+            let frame_mid_time_us = frame.frame_start_time_us
+                + (frame
+                    .frame_end_time_us
+                    .saturating_sub(frame.frame_start_time_us)
+                    / 2);
 
             self.last_fit_time_us = Some(frame_mid_time_us);
             self.record_displacement(frame_mid_time_us, &result);
@@ -485,6 +577,9 @@ impl BoardLiveFitState {
         // Existing calibration and displacement zero are no longer valid
         // because the field model changed between raw/background-subtracted data.
         self.calibrated_moment_norm = None;
+        self.pose_state = None;
+        self.previous_pose_samples = None;
+        self.last_measurement_sse = None;
         self.result = None;
         self.origin = None;
         self.start_time_us = None;
@@ -639,11 +734,7 @@ fn fit_dipole_grid_with(
 
     let mut best: Option<(FitResult, [f64; 3])> = None;
 
-    let mut center = [
-        0.5 * (min_x + max_x),
-        0.5 * (min_y + max_y),
-        10.0,
-    ];
+    let mut center = [0.5 * (min_x + max_x), 0.5 * (min_y + max_y), 10.0];
 
     let passes = [
         // Coarse/global passes.
@@ -651,7 +742,6 @@ fn fit_dipole_grid_with(
         (4.0, 2.0, 28.0, false),
         (2.0, 2.0, 20.0, false),
         (1.0, 2.0, 14.0, false),
-
         // Fine/local passes to reduce threshold/jump behavior.
         (0.5, 2.0, 14.0, true),
         (0.25, 2.0, 14.0, true),
@@ -773,11 +863,8 @@ fn evaluate_position(samples: &[Sample], magnet_pos: [f64; 3]) -> Option<FitResu
 
     let residual_rms = (sum_sq / n_components as f64).sqrt();
 
-    let moment_norm = (
-        moment[0] * moment[0]
-            + moment[1] * moment[1]
-            + moment[2] * moment[2]
-    ).sqrt();
+    let moment_norm =
+        (moment[0] * moment[0] + moment[1] * moment[1] + moment[2] * moment[2]).sqrt();
 
     Some(FitResult {
         position: (magnet_pos[0], magnet_pos[1], magnet_pos[2]),
@@ -912,15 +999,11 @@ mod tests {
     fn frame_accumulator_drops_incomplete_previous_sweep() {
         let mut accumulator = BoardFrameAccumulator::default();
 
-        assert!(accumulator
-            .update(streamed_field(1, 0x0C, 10), 2)
-            .is_none());
+        assert!(accumulator.update(streamed_field(1, 0x0C, 10), 2).is_none());
 
         // A new explicit firmware frame arrives before frame 1 completed.
         // Sensor 0 from frame 1 must be discarded.
-        assert!(accumulator
-            .update(streamed_field(2, 0x0D, 20), 2)
-            .is_none());
+        assert!(accumulator.update(streamed_field(2, 0x0D, 20), 2).is_none());
 
         let completed = accumulator
             .update(streamed_field(2, 0x0C, 21), 2)
@@ -966,30 +1049,25 @@ mod tests {
     fn background_capture_rejects_a_changed_sensor_set_without_advancing() {
         let mut capture = BackgroundCapture::default();
 
-        assert!(capture
-            .add_complete_frame(&[
-                sample(0, [1.0, 2.0, 3.0]),
-                sample(1, [4.0, 5.0, 6.0]),
-            ])
-            .is_none());
+        assert!(
+            capture
+                .add_complete_frame(&[sample(0, [1.0, 2.0, 3.0]), sample(1, [4.0, 5.0, 6.0]),])
+                .is_none()
+        );
         assert_eq!(capture.frames_collected, 1);
 
-        assert!(capture
-            .add_complete_frame(&[sample(0, [7.0, 8.0, 9.0])])
-            .is_none());
+        assert!(
+            capture
+                .add_complete_frame(&[sample(0, [7.0, 8.0, 9.0])])
+                .is_none()
+        );
         assert_eq!(capture.frames_collected, 1);
     }
 
     #[test]
     fn background_subtraction_is_per_sensor_and_per_axis() {
-        let samples = vec![
-            sample(0, [10.0, 20.0, 30.0]),
-            sample(1, [-5.0, 8.0, 12.0]),
-        ];
-        let background = BTreeMap::from([
-            (0, [1.0, 2.0, 3.0]),
-            (1, [-2.0, 3.0, 4.0]),
-        ]);
+        let samples = vec![sample(0, [10.0, 20.0, 30.0]), sample(1, [-5.0, 8.0, 12.0])];
+        let background = BTreeMap::from([(0, [1.0, 2.0, 3.0]), (1, [-2.0, 3.0, 4.0])]);
 
         let corrected = subtract_background_samples(&samples, &background);
 
