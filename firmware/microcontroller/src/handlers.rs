@@ -219,6 +219,10 @@ pub async fn stream_field(
     sender: Sender<AppTx>,
 ) {
     let mut seq = 0u8;
+    // Frame ID 0 is reserved for ad-hoc single reads. Each board maintains its
+    // own nonzero sweep counter so every sensor published from one board sweep
+    // has an explicit shared identity.
+    let mut frame_ids = [1u32; N];
     let mut ticker = Ticker::every(Duration::from_millis(0));
 
     if sender
@@ -245,6 +249,7 @@ pub async fn stream_field(
             }
 
             let sensor_mask = presence.sensor_masks[board_index];
+            let frame_id = frame_ids[board_index];
             let mut sg = context.sensor_groups[board_index].lock().await;
 
             for sensor_index in 0..sg.num_sensors() {
@@ -254,10 +259,11 @@ pub async fn stream_field(
 
                 ticker.next().await;
 
-                let Ok(message) = sg.get_message(sensor_index).await else {
+                let Ok(mut message) = sg.get_message(sensor_index).await else {
                     continue;
                 };
 
+                message.frame_id = frame_id;
                 //info!("{}", message);
 
                 if sender
@@ -271,6 +277,9 @@ pub async fn stream_field(
 
                 seq = seq.wrapping_add(1);
             }
+
+            let next_frame_id = frame_id.wrapping_add(1);
+            frame_ids[board_index] = if next_frame_id == 0 { 1 } else { next_frame_id };
         }
     }
 
