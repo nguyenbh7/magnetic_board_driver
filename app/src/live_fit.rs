@@ -58,6 +58,7 @@ impl Default for BoardLiveFitState {
 #[derive(Debug, Clone, Default)]
 struct BoardFrameAccumulator {
     fields: BTreeMap<u8, SensorField>,
+    frame_id: Option<u32>,
     frame_start_time_us: Option<u64>,
     frame_end_time_us: Option<u64>,
 }
@@ -137,6 +138,7 @@ pub struct DisplacementPoint {
 #[derive(Debug, Clone)]
 struct CompletedBoardFrame {
     fields: Vec<SensorField>,
+    frame_id: u32,
     frame_start_time_us: u64,
     frame_end_time_us: u64,
 }
@@ -246,7 +248,9 @@ impl BoardLiveFits {
     }
 
     pub fn update(&mut self, field: SensorField) {
-        if !self.is_expected_field(&field) {
+        // frame_id == 0 is reserved for ad-hoc single reads. Those should
+        // never enter the streaming frame accumulator used by the live fitter.
+        if field.frame_id == 0 || !self.is_expected_field(&field) {
             return;
         }
 
@@ -495,8 +499,22 @@ impl BoardFrameAccumulator {
         field: SensorField,
         expected_sensor_count: usize,
     ) -> Option<CompletedBoardFrame> {
-        if self.fields.is_empty() {
-            self.frame_start_time_us = Some(field.time);
+        let incoming_frame_id = field.frame_id;
+
+        match self.frame_id {
+            Some(current_frame_id) if current_frame_id != incoming_frame_id => {
+                // The previous sweep was incomplete. Drop it rather than
+                // mixing its samples with the next explicit firmware sweep.
+                self.fields.clear();
+                self.frame_id = Some(incoming_frame_id);
+                self.frame_start_time_us = Some(field.time);
+                self.frame_end_time_us = None;
+            }
+            None => {
+                self.frame_id = Some(incoming_frame_id);
+                self.frame_start_time_us = Some(field.time);
+            }
+            _ => {}
         }
 
         self.frame_end_time_us = Some(field.time);
@@ -510,11 +528,13 @@ impl BoardFrameAccumulator {
             .into_values()
             .collect::<Vec<_>>();
 
+        let frame_id = self.frame_id.take().unwrap_or(incoming_frame_id);
         let frame_start_time_us = self.frame_start_time_us.take().unwrap_or(0);
         let frame_end_time_us = self.frame_end_time_us.take().unwrap_or(frame_start_time_us);
 
         Some(CompletedBoardFrame {
             fields,
+            frame_id,
             frame_start_time_us,
             frame_end_time_us,
         })
@@ -878,6 +898,37 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             field,
         }
+    }
+
+    fn streamed_field(frame_id: u32, address: u8, time: u64) -> SensorField {
+        let mut field = SensorField::default();
+        field.frame_id = frame_id;
+        field.address = address;
+        field.time = time;
+        field
+    }
+
+    #[test]
+    fn frame_accumulator_drops_incomplete_previous_sweep() {
+        let mut accumulator = BoardFrameAccumulator::default();
+
+        assert!(accumulator
+            .update(streamed_field(1, 0x0C, 10), 2)
+            .is_none());
+
+        // A new explicit firmware frame arrives before frame 1 completed.
+        // Sensor 0 from frame 1 must be discarded.
+        assert!(accumulator
+            .update(streamed_field(2, 0x0D, 20), 2)
+            .is_none());
+
+        let completed = accumulator
+            .update(streamed_field(2, 0x0C, 21), 2)
+            .expect("two sensors from frame 2 should complete one board frame");
+
+        assert_eq!(completed.frame_id, 2);
+        assert_eq!(completed.fields.len(), 2);
+        assert!(completed.fields.iter().all(|field| field.frame_id == 2));
     }
 
     #[test]
