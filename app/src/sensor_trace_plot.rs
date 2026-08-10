@@ -1,5 +1,5 @@
 use iced::widget::canvas;
-use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Theme};
+use iced::{Color, Element, Length, Pixels, Point, Rectangle, Renderer, Theme, mouse};
 
 use crate::sensor_trace::SensorTracePoint;
 
@@ -120,9 +120,8 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
         y_min -= 0.10 * y_range;
         y_max += 0.10 * y_range;
 
-        let map_x = |time_s: f64| {
-            plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width)
-        };
+        let map_x =
+            |time_s: f64| plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width);
 
         let map_y = |field_mt: f64| {
             plot_bottom - (((field_mt - y_min) / (y_max - y_min)) as f32 * plot_height)
@@ -201,22 +200,59 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
                 .with_width(1.0),
         );
 
-        draw_series(&mut frame, &self.points, |p| p.bx_mt, map_x, map_y, bx_color);
-        draw_series(&mut frame, &self.points, |p| p.by_mt, map_x, map_y, by_color);
-        draw_series(&mut frame, &self.points, |p| p.bz_mt, map_x, map_y, bz_color);
+        draw_series(
+            &mut frame,
+            &self.points,
+            |p| p.bx_mt,
+            map_x,
+            map_y,
+            bx_color,
+        );
+        draw_series(
+            &mut frame,
+            &self.points,
+            |p| p.by_mt,
+            map_x,
+            map_y,
+            by_color,
+        );
+        draw_series(
+            &mut frame,
+            &self.points,
+            |p| p.bz_mt,
+            map_x,
+            map_y,
+            bz_color,
+        );
 
-        draw_legend(&mut frame, plot_right - 130.0, plot_top + 4.0, bx_color, "Bx");
-        draw_legend(&mut frame, plot_right - 86.0, plot_top + 4.0, by_color, "By");
-        draw_legend(&mut frame, plot_right - 42.0, plot_top + 4.0, bz_color, "Bz");
+        draw_legend(
+            &mut frame,
+            plot_right - 130.0,
+            plot_top + 4.0,
+            bx_color,
+            "Bx",
+        );
+        draw_legend(
+            &mut frame,
+            plot_right - 86.0,
+            plot_top + 4.0,
+            by_color,
+            "By",
+        );
+        draw_legend(
+            &mut frame,
+            plot_right - 42.0,
+            plot_top + 4.0,
+            bz_color,
+            "Bz",
+        );
 
         if let Some(last) = self.points.last() {
             draw_label(
                 &mut frame,
                 format!(
                     "latest: Bx={:.4}, By={:.4}, Bz={:.4} mT",
-                    last.bx_mt,
-                    last.by_mt,
-                    last.bz_mt,
+                    last.bx_mt, last.by_mt, last.bz_mt,
                 ),
                 Point::new(plot_left + 8.0, plot_top + 4.0),
                 11.0,
@@ -272,24 +308,14 @@ fn draw_series(
 
     frame.stroke(
         &path,
-        canvas::Stroke::default()
-            .with_color(color)
-            .with_width(1.8),
+        canvas::Stroke::default().with_color(color).with_width(1.8),
     );
 }
 
-fn draw_legend(
-    frame: &mut canvas::Frame,
-    x: f32,
-    y: f32,
-    color: Color,
-    label: &'static str,
-) {
+fn draw_legend(frame: &mut canvas::Frame, x: f32, y: f32, color: Color, label: &'static str) {
     frame.stroke(
         &canvas::Path::line(Point::new(x, y + 6.0), Point::new(x + 18.0, y + 6.0)),
-        canvas::Stroke::default()
-            .with_color(color)
-            .with_width(2.0),
+        canvas::Stroke::default().with_color(color).with_width(2.0),
     );
 
     draw_label(

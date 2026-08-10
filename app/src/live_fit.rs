@@ -36,6 +36,7 @@ pub struct BoardLiveFitState {
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
     last_fit_time_us: Option<u64>,
+    last_fit_frame_id: Option<u32>,
     displacement_history: VecDeque<DisplacementPoint>,
 
     magnet_preset: MagnetPreset,
@@ -60,6 +61,7 @@ impl Default for BoardLiveFitState {
             origin: None,
             start_time_us: None,
             last_fit_time_us: None,
+            last_fit_frame_id: None,
             displacement_history: VecDeque::new(),
 
             magnet_preset: MagnetPreset::ThickD54N52,
@@ -147,6 +149,45 @@ pub struct FitResult {
 pub struct DisplacementPoint {
     pub time_s: f64,
     pub displacement_mm: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundSnapshot {
+    pub board_id: u16,
+    pub sensor_index: u8,
+    pub field_m_t: [f64; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveFitLogSnapshot {
+    pub board_id: u16,
+    pub frame_id: u32,
+    pub time_us: u64,
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub z_mm: f64,
+    pub theta_rad: f64,
+    pub phi_rad: f64,
+    pub residual_rms_m_t: f64,
+    pub objective_score: f64,
+    pub n_sensors: usize,
+    pub target_moment_norm: f64,
+    pub dx_mm: f64,
+    pub dy_mm: f64,
+    pub dz_mm: f64,
+    pub displacement_mm: f64,
+}
+
+fn displacement_from_origin(
+    origin: (f64, f64, f64),
+    position: (f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let dx = position.0 - origin.0;
+    let dy = position.1 - origin.1;
+    let dz = position.2 - origin.2;
+    let total = (dx * dx + dy * dy + dz * dz).sqrt();
+
+    (dx, dy, dz, total)
 }
 
 #[derive(Debug, Clone)]
@@ -304,6 +345,12 @@ impl BoardLiveFits {
                 expected_sensors: self.expected_sensor_count(*board_id).unwrap_or(16),
                 result: board.result.clone(),
                 displacement_history: board.displacement_history.iter().cloned().collect(),
+                displacement_from_zero: match (board.origin, board.result.as_ref()) {
+                    (Some(origin), Some(result)) => {
+                        Some(displacement_from_origin(origin, result.position))
+                    }
+                    _ => None,
+                },
                 is_calibrated: board.calibrated_moment_norm.is_some(),
                 has_background: board.background.is_some(),
                 magnet_preset: board.magnet_preset,
@@ -345,6 +392,79 @@ impl BoardLiveFits {
         if count == 0 { None } else { Some(count) }
     }
 
+    pub fn background_snapshots(&self) -> Vec<BackgroundSnapshot> {
+        let mut snapshots = Vec::new();
+
+        for (board_id, board) in &self.boards {
+            let Some(background) = &board.background else {
+                continue;
+            };
+
+            for (sensor_index, field_m_t) in background {
+                snapshots.push(BackgroundSnapshot {
+                    board_id: *board_id,
+                    sensor_index: *sensor_index,
+                    field_m_t: *field_m_t,
+                });
+            }
+        }
+
+        snapshots
+    }
+
+    pub fn log_snapshot_for_frame(
+        &self,
+        board_id: u16,
+        frame_id: u32,
+    ) -> Option<LiveFitLogSnapshot> {
+        let board = self.boards.get(&board_id)?;
+        if board.last_fit_frame_id != Some(frame_id) {
+            return None;
+        }
+
+        let result = board.result.as_ref()?;
+        let time_us = board.last_fit_time_us?;
+        let origin = board.origin.unwrap_or(result.position);
+        let dx_mm = result.position.0 - origin.0;
+        let dy_mm = result.position.1 - origin.1;
+        let dz_mm = result.position.2 - origin.2;
+        let displacement_mm = (dx_mm * dx_mm + dy_mm * dy_mm + dz_mm * dz_mm).sqrt();
+
+        let theta_rad = if result.moment_norm.is_finite() && result.moment_norm > 1.0e-12 {
+            (result.moment.2 / result.moment_norm)
+                .clamp(-1.0, 1.0)
+                .acos()
+        } else {
+            f64::NAN
+        };
+        let phi_rad = result.moment.1.atan2(result.moment.0);
+
+        let target_moment_norm = if board.use_known_magnet_prior {
+            board.magnet_preset.moment_norm_app() * board.magnet_effective_scale
+        } else {
+            board.calibrated_moment_norm?
+        };
+
+        Some(LiveFitLogSnapshot {
+            board_id,
+            frame_id,
+            time_us,
+            x_mm: result.position.0,
+            y_mm: result.position.1,
+            z_mm: result.position.2,
+            theta_rad,
+            phi_rad,
+            residual_rms_m_t: result.residual_rms,
+            objective_score: result.objective_score,
+            n_sensors: result.n_sensors,
+            target_moment_norm,
+            dx_mm,
+            dy_mm,
+            dz_mm,
+            displacement_mm,
+        })
+    }
+
     pub fn set_board_magnet_preset(&mut self, board_id: u16, preset: MagnetPreset) {
         if let Some(board) = self.boards.get_mut(&board_id) {
             board.magnet_preset = preset;
@@ -366,6 +486,7 @@ pub struct BoardFitSummary {
     pub expected_sensors: usize,
     pub result: Option<FitResult>,
     pub displacement_history: Vec<DisplacementPoint>,
+    pub displacement_from_zero: Option<(f64, f64, f64, f64)>,
     pub is_calibrated: bool,
     pub has_background: bool,
     pub magnet_preset: MagnetPreset,
@@ -495,6 +616,7 @@ impl BoardLiveFitState {
                     / 2);
 
             self.last_fit_time_us = Some(frame_mid_time_us);
+            self.last_fit_frame_id = Some(frame.frame_id);
             self.record_displacement(frame_mid_time_us, &result);
             self.result = Some(result);
         }
@@ -506,11 +628,7 @@ impl BoardLiveFitState {
         let origin = *self.origin.get_or_insert(position);
         let start_time_us = *self.start_time_us.get_or_insert(time_us);
 
-        let dx = position.0 - origin.0;
-        let dy = position.1 - origin.1;
-        let dz = position.2 - origin.2;
-
-        let displacement_mm = (dx * dx + dy * dy + dz * dz).sqrt();
+        let (_, _, _, displacement_mm) = displacement_from_origin(origin, position);
         let time_s = time_us.saturating_sub(start_time_us) as f64 / 1_000_000.0;
 
         self.displacement_history.push_back(DisplacementPoint {
@@ -540,6 +658,7 @@ impl BoardLiveFitState {
             self.origin = None;
             self.start_time_us = None;
             self.last_fit_time_us = None;
+            self.last_fit_frame_id = None;
         }
     }
 
@@ -584,6 +703,7 @@ impl BoardLiveFitState {
         self.origin = None;
         self.start_time_us = None;
         self.last_fit_time_us = None;
+        self.last_fit_frame_id = None;
         self.displacement_history.clear();
     }
 }
@@ -993,6 +1113,16 @@ mod tests {
         field.address = address;
         field.time = time;
         field
+    }
+
+    #[test]
+    fn displacement_components_are_signed_and_total_is_euclidean() {
+        let displacement = displacement_from_origin((1.0, -2.0, 10.0), (4.0, 2.0, 22.0));
+
+        assert_eq!(displacement.0, 3.0);
+        assert_eq!(displacement.1, 4.0);
+        assert_eq!(displacement.2, 12.0);
+        assert!((displacement.3 - 13.0).abs() < 1.0e-12);
     }
 
     #[test]

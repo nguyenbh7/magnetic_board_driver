@@ -4,7 +4,10 @@ use numpy::pyo3::prelude::*;
 #[pymodule]
 mod magnetic_data_parser {
     use std::{
-        fs::File, io::{BufReader, Read}, ops::Deref, path::PathBuf
+        fs::File,
+        io::{BufReader, Read},
+        ops::Deref,
+        path::PathBuf,
     };
 
     use data_transfer::rpc::{SensorField, StopFieldStream};
@@ -86,6 +89,4 @@ mod magnetic_data_parser {
             self.0.len()
         }
     }
-
-    
 }

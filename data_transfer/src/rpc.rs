@@ -1,10 +1,8 @@
-
-
-use postcard_rpc::{endpoints, topics, TopicDirection};
-use postcard_schema::Schema;
-use postcard::experimental::max_size::MaxSize;
-use serde::{Deserialize, Serialize};
 use crate::conversions::MagneticField;
+use postcard::experimental::max_size::MaxSize;
+use postcard_rpc::{TopicDirection, endpoints, topics};
+use postcard_schema::Schema;
+use serde::{Deserialize, Serialize};
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
@@ -57,7 +55,6 @@ endpoints! {
     | SetMlxSensitivity  | MlxSensitivityConfig | MlxSensitivityStatus  | "mlx/sensitivity/set" |
     | GetBoardPresence        | ()            | BoardPresence        | "boards/presence" |
 }
-
 
 topics! {
     list = TOPICS_IN_LIST;

@@ -76,7 +76,7 @@ impl From<postcard::Error> for Error {
     }
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Debug, Serialize, Deserialize,  MaxSize)]
+#[derive(Debug, Serialize, Deserialize, MaxSize)]
 pub struct Message {
     pub field: MagneticField,
     pub position: (f32, f32, f32),

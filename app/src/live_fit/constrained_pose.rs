@@ -389,11 +389,7 @@ fn wrap_phi(phi: f64) -> f64 {
 
 fn axis_from_angles(theta: f64, phi: f64) -> [f64; 3] {
     let sin_theta = theta.sin();
-    [
-        sin_theta * phi.cos(),
-        sin_theta * phi.sin(),
-        theta.cos(),
-    ]
+    [sin_theta * phi.cos(), sin_theta * phi.sin(), theta.cos()]
 }
 
 fn axis_angle(a: [f64; 5], b: [f64; 5]) -> f64 {
@@ -483,12 +479,24 @@ mod tests {
     #[test]
     fn field_jump_is_rms_across_all_sensor_components() {
         let a = vec![
-            PoseSample { position: [0.0; 3], field: [1.0, 2.0, 3.0] },
-            PoseSample { position: [0.0; 3], field: [4.0, 5.0, 6.0] },
+            PoseSample {
+                position: [0.0; 3],
+                field: [1.0, 2.0, 3.0],
+            },
+            PoseSample {
+                position: [0.0; 3],
+                field: [4.0, 5.0, 6.0],
+            },
         ];
         let b = vec![
-            PoseSample { position: [0.0; 3], field: [0.0, 1.0, 2.0] },
-            PoseSample { position: [0.0; 3], field: [3.0, 4.0, 5.0] },
+            PoseSample {
+                position: [0.0; 3],
+                field: [0.0, 1.0, 2.0],
+            },
+            PoseSample {
+                position: [0.0; 3],
+                field: [3.0, 4.0, 5.0],
+            },
         ];
         let jump = field_jump_rms_m_t(&a, &b).unwrap();
         assert!((jump - 1.0).abs() < 1.0e-12);

@@ -1,7 +1,5 @@
-use bitflags::{bitflags, Flags};
+use bitflags::{Flags, bitflags};
 use bitmatch::bitmatch;
-
-
 
 pub struct Register<const R: u8> {
     data: [u8; 2],

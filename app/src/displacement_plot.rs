@@ -1,5 +1,5 @@
 use iced::widget::canvas;
-use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Theme};
+use iced::{Color, Element, Length, Pixels, Point, Rectangle, Renderer, Theme, mouse};
 
 use crate::live_fit::DisplacementPoint;
 
@@ -119,13 +119,11 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
 
         let y_max = nice_axis_max((raw_y_max * 1.10).max(1.0));
 
-        let map_x = |time_s: f64| {
-            plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width)
-        };
+        let map_x =
+            |time_s: f64| plot_left + (((time_s - x_min) / (x_max - x_min)) as f32 * plot_width);
 
         let map_y = |displacement_mm: f64| {
-            plot_bottom
-                - (((displacement_mm - y_min) / (y_max - y_min)) as f32 * plot_height)
+            plot_bottom - (((displacement_mm - y_min) / (y_max - y_min)) as f32 * plot_height)
         };
 
         for i in 0..=4 {
@@ -134,10 +132,8 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
             let x = plot_left + frac * plot_width;
             let t = x_min + (x_max - x_min) * frac as f64;
 
-            let vertical_grid = canvas::Path::line(
-                Point::new(x, plot_top),
-                Point::new(x, plot_bottom),
-            );
+            let vertical_grid =
+                canvas::Path::line(Point::new(x, plot_top), Point::new(x, plot_bottom));
 
             frame.stroke(
                 &vertical_grid,
@@ -157,10 +153,8 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
             let y = plot_bottom - frac * plot_height;
             let displacement = y_min + (y_max - y_min) * frac as f64;
 
-            let horizontal_grid = canvas::Path::line(
-                Point::new(plot_left, y),
-                Point::new(plot_right, y),
-            );
+            let horizontal_grid =
+                canvas::Path::line(Point::new(plot_left, y), Point::new(plot_right, y));
 
             frame.stroke(
                 &horizontal_grid,

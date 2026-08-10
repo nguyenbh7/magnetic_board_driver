@@ -2,16 +2,16 @@
 
 This is intentionally a local source patcher rather than a wholesale replacement of
 ``main.rs`` / ``live_fit.rs`` because the hardware checkout may contain uncommitted
-item-7 UI changes.  The patch is transactional: both source files are transformed in
+item-7 UI changes. The patch is transactional: both source files are transformed in
 memory and are written only after every required edit succeeds.
 
 Run from the magnetic_board_driver repository root:
 
     python3 scripts/apply_ab_companion_logging.py
 
-Then run:
+Then format only the touched app files and validate:
 
-    cargo fmt -p app
+    rustfmt --edition 2024 app/src/main.rs app/src/live_fit.rs app/src/ab_log.rs
     cargo test -p app
     cargo check -p app
 """
@@ -102,8 +102,6 @@ pub struct LiveFitLogSnapshot {
         "record completed fit frame id",
     )
 
-    # Clearing a stale fit-frame ID anywhere the fit timestamp is cleared is safe and
-    # keeps logging from associating a previous solution with a later raw frame.
     text, count = re.subn(
         r"self\.last_fit_time_us\s*=\s*None;",
         "self.last_fit_time_us = None;\n            self.last_fit_frame_id = None;",
@@ -192,6 +190,66 @@ pub struct LiveFitLogSnapshot {
     return text
 
 
+def patch_file_opened_arm(text: str) -> str:
+    """Inject companion creation without replacing the user's local FileOpened logic."""
+    arm_start = re.search(r"Message::FileOpened\(fh\)\s*=>\s*\{", text)
+    if not arm_start:
+        raise PatchError("file selection: FileOpened arm start not found")
+
+    next_arm = re.search(r"\n\s*Message::WroteFile\s*=>", text[arm_start.end() :])
+    if not next_arm:
+        raise PatchError("file selection: WroteFile arm marker not found")
+
+    arm_end = arm_start.end() + next_arm.start()
+    arm = text[arm_start.start() : arm_end]
+
+    if "ab_log::create_companion" in arm:
+        return text
+
+    ok_match = re.search(r"if\s+let\s+Ok\s*\(fh\)\s*=\s*fh\s*\{", arm)
+    if not ok_match:
+        raise PatchError("file selection: `if let Ok(fh) = fh` not found inside FileOpened")
+
+    # Snapshot the selected raw path independently of whatever local path/file-opening
+    # code already exists. This intentionally preserves the user's local FileOpened body.
+    arm = (
+        arm[: ok_match.end()]
+        + '\n                let ab_raw_path = fh.path().to_path_buf();'
+        + arm[ok_match.end() :]
+    )
+
+    assignment_start = arm.find("context.file_writer")
+    if assignment_start < 0:
+        raise PatchError("file selection: context.file_writer assignment not found")
+    assignment_end = arm.find(";", assignment_start)
+    if assignment_end < 0:
+        raise PatchError("file selection: context.file_writer assignment has no semicolon")
+    assignment_end += 1
+
+    companion = r'''
+
+                let backgrounds = context.live_fits.background_snapshots();
+                match ab_log::create_companion(&ab_raw_path, &backgrounds) {
+                    Ok(writer) => {
+                        let companion_path = ab_log::companion_path(&ab_raw_path);
+                        println!(
+                            "A/B logging: raw={} companion={}",
+                            ab_raw_path.display(),
+                            companion_path.display()
+                        );
+                        context.ab_writer = Some(Arc::new(Mutex::new(writer)));
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to create A/B companion log: {err}");
+                        context.ab_writer = None;
+                    }
+                }
+                context.ab_logged_frames.clear();'''
+    arm = arm[:assignment_end] + companion + arm[assignment_end:]
+
+    return text[: arm_start.start()] + arm + text[arm_end:]
+
+
 def patch_main(text: str) -> str:
     if "mod ab_log;" in text and "ab_writer:" in text and "log_snapshot_for_frame" in text:
         return text
@@ -277,49 +335,13 @@ async fn write_ab_fit(
         "stream companion write",
     )
 
-    file_open_pattern = re.compile(
-        r"Message::FileOpened\(fh\)\s*=>\s*\{\s*"
-        r"if let Ok\(fh\) = fh \{\s*"
-        r"let path = fh\.path\(\);\s*"
-        r"let file = File::create\(path\)\.unwrap\(\);\s*"
-        r"let writer = BufWriter::new\(file\);\s*"
-        r"let writer = Arc::new\(Mutex::new\(writer\)\);\s*"
-        r"context\.file_writer = Some\(writer\);\s*"
-        r"\}\s*Task::none\(\)\s*\},",
-        re.DOTALL,
+    text = patch_file_opened_arm(text)
+
+    text = text.replace(
+        'button("Select File").on_press(Message::SelectFile)',
+        'button("Select raw + A/B log").on_press(Message::SelectFile)',
+        1,
     )
-    if not file_open_pattern.search(text):
-        raise PatchError("file selection: FileOpened block not found")
-    file_open_replacement = r'''Message::FileOpened(fh) => {
-            if let Ok(fh) = fh {
-                let path = fh.path().to_path_buf();
-                let file = File::create(&path).unwrap();
-                context.file_writer = Some(Arc::new(Mutex::new(BufWriter::new(file))));
-
-                let backgrounds = context.live_fits.background_snapshots();
-                match ab_log::create_companion(&path, &backgrounds) {
-                    Ok(writer) => {
-                        let companion_path = ab_log::companion_path(&path);
-                        println!(
-                            "A/B logging: raw={} companion={}",
-                            path.display(),
-                            companion_path.display()
-                        );
-                        context.ab_writer = Some(Arc::new(Mutex::new(writer)));
-                    }
-                    Err(err) => {
-                        eprintln!("Failed to create A/B companion log: {err}");
-                        context.ab_writer = None;
-                    }
-                }
-                context.ab_logged_frames.clear();
-            }
-            Task::none()
-        },'''
-    text = file_open_pattern.sub(file_open_replacement, text, count=1)
-
-    text = text.replace('button("Select File").on_press(Message::SelectFile)',
-                        'button("Select raw + A/B log").on_press(Message::SelectFile)', 1)
     return text
 
 
@@ -338,11 +360,13 @@ def main() -> int:
         print("A/B companion logging already appears to be applied.")
         return 0
 
-    # All transformations succeeded; only now mutate the working tree.
     LIVE.write_text(patched_live)
     MAIN.write_text(patched_main)
     print("Applied A/B companion logging to app/src/live_fit.rs and app/src/main.rs")
-    print("Next: cargo fmt -p app && cargo test -p app && cargo check -p app")
+    print(
+        "Next: rustfmt --edition 2024 app/src/main.rs app/src/live_fit.rs app/src/ab_log.rs "
+        "&& cargo test -p app && cargo check -p app"
+    )
     return 0
 
 

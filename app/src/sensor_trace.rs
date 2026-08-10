@@ -81,9 +81,7 @@ impl SensorTraceState {
 
         let board = self.boards.entry(field.board_id).or_default();
 
-        board
-            .selected_sensor_index
-            .get_or_insert(sensor_index);
+        board.selected_sensor_index.get_or_insert(sensor_index);
 
         let history = board.traces.entry(sensor_index).or_default();
         let start_time_us = *history.start_time_us.get_or_insert(field.time);

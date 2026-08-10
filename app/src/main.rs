@@ -1,5 +1,3 @@
-
-
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::{collections::BTreeMap, time::Duration};
@@ -9,25 +7,35 @@ use data_transfer::rpc::{MagneticTopic, StopFieldStream};
 use postcard::experimental::max_size::MaxSize;
 use postcard_rpc::host_client::{HostClient, Subscription};
 use postcard_rpc::standard_icd::WireError;
-use ratatui::{text::Text, widgets::Row, Frame};
-mod sensor_monitor;
+use ratatui::{Frame, text::Text, widgets::Row};
 mod displacement_plot;
+mod sensor_monitor;
 use displacement_plot::displacement_plot;
 mod sensor_trace;
 mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
+mod ab_log;
 mod live_fit;
 use live_fit::{BoardLiveFits, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch::{self, Receiver};
-use std::io::{BufWriter, Write};
-use std::fs::File;
 
 use crate::sensor_monitor::{SensorSubscription, SensorWatcher};
+use data_transfer::{
+    self,
+    messaging::MessageReader,
+    rpc::{
+        BoardPresence, GetBoardPresence, GetMlxSensitivity, MAX_SENSOR_BOARDS,
+        MlxSensitivityConfig, MlxSensitivityStatus, SensorField, SetMlxSensitivity,
+        SingleFieldValue, StartFieldStream,
+    },
+};
 use iced::widget::{
     button, column, combo_box, container, pick_list, row, scrollable, text, text_input,
 };
@@ -35,22 +43,6 @@ use iced::{Element, Length, Task};
 use std::fmt::{Display, format};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use data_transfer::{
-    self,
-    messaging::MessageReader,
-    rpc::{
-        SensorField,
-        SingleFieldValue,
-        StartFieldStream,
-        GetBoardPresence,
-        BoardPresence,
-        MAX_SENSOR_BOARDS,
-        GetMlxSensitivity,
-        SetMlxSensitivity,
-        MlxSensitivityConfig,
-        MlxSensitivityStatus,
-    },
-};
 
 #[derive(Debug, Clone)]
 struct SerialPortInfo(serialport::SerialPortInfo);
@@ -60,8 +52,6 @@ impl Display for SerialPortInfo {
         f.write_str(&self.0.port_name)
     }
 }
-
-
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -76,16 +66,10 @@ enum Message {
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
     CaptureBoardBackground(u16),
-    SelectBoardMagnetPreset {
-        board_id: u16,
-        preset: MagnetPreset,
-    },
+    SelectBoardMagnetPreset { board_id: u16, preset: MagnetPreset },
 
     SelectDashboardTab(DashboardTab),
-    SelectSensorTrace {
-        board_id: u16,
-        sensor_index: u8,
-    },
+    SelectSensorTrace { board_id: u16, sensor_index: u8 },
 
     StartFieldStream,
     FieldStreamStarted(Result<(), String>),
@@ -116,10 +100,9 @@ struct PingArgs {
     sensor: String,
 }
 
-
 #[derive(Default)]
 struct SensorGrid {
-    sensor_cols: [[SensorField; 4]; 4]
+    sensor_cols: [[SensorField; 4]; 4],
 }
 
 #[derive(Default)]
@@ -136,11 +119,12 @@ impl SensorGridCollection {
     }
 }
 
-
 #[derive(Default)]
 struct Context {
     sensor_watcher: Option<SensorWatcher>,
     file_writer: Option<Arc<Mutex<BufWriter<File>>>>,
+    ab_writer: Option<Arc<Mutex<BufWriter<File>>>>,
+    ab_logged_frames: BTreeMap<u16, u32>,
     sensors: combo_box::State<SerialPortInfo>,
     ping_args: PingArgs,
     ping_field: Option<SensorField>,
@@ -200,8 +184,7 @@ fn board_presence_text(presence: &BoardPresence) -> String {
 
         lines.push(format!(
             "Board {}: {}/16 sensors",
-            board_index,
-            sensor_count,
+            board_index, sensor_count,
         ));
     }
 
@@ -223,9 +206,8 @@ fn open_file(
 
     async move {
         let picked_file = dialog.save_file().await.ok_or(Error::DialogClosed);
-        
+
         picked_file
-        
     }
 }
 
@@ -263,12 +245,18 @@ async fn write_data(writer: &Mutex<BufWriter<File>>, field: &SensorField) {
     //println!("{:#?}", val);
 }
 
+async fn write_ab_fit(writer: &Mutex<BufWriter<File>>, record: &live_fit::LiveFitLogSnapshot) {
+    let mut writer = writer.lock().await;
+    if let Err(err) = ab_log::write_fit_record(&mut writer, record) {
+        eprintln!("Failed to write A/B companion fit row: {err}");
+    }
+}
+
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
     client.send_resp::<StopFieldStream>(&()).await.unwrap()
 }
 
 fn update(context: &mut Context, message: Message) -> Task<Message> {
-
     //println!("{:#?}", message);
     match message {
         Message::PortSelected(serial_port_info) => {
@@ -306,13 +294,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
                 let client = sw.get_client();
                 Task::perform(
-                    get_single_value(board, sensor, client), 
+                    get_single_value(board, sensor, client),
                     Message::RecievedField,
                 )
             } else {
                 Task::none()
             }
-
         }
         Message::CalibrateBoardMagnet(board_id) => {
             context.live_fits.calibrate_board_magnet(board_id);
@@ -331,11 +318,28 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
             Task::none()
-        },
+        }
         Message::RecievedStreamField(sensor_field) => {
             context.live_fits.update(sensor_field.clone());
+
+            let fit_log = context
+                .live_fits
+                .log_snapshot_for_frame(sensor_field.board_id, sensor_field.frame_id)
+                .filter(|record| {
+                    context.ab_logged_frames.get(&record.board_id).copied() != Some(record.frame_id)
+                });
+
+            if let Some(record) = &fit_log {
+                context
+                    .ab_logged_frames
+                    .insert(record.board_id, record.frame_id);
+            }
+
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field.clone());
+
+            let ab_writer = context.ab_writer.clone();
+            let fit_log_for_write = fit_log.clone();
 
             match &context.file_writer {
                 Some(w) => {
@@ -346,24 +350,24 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                                 //println!("Test");
                                 let sensor_field = sensor_field.clone();
                                 let _val = write_data(&*wr, &sensor_field).await;
+                                if let (Some(ab_writer), Some(fit_record)) =
+                                    (ab_writer, fit_log_for_write)
+                                {
+                                    write_ab_fit(&*ab_writer, &fit_record).await;
+                                }
                             }
                         })(),
-                        |_| Message::WroteFile
+                        |_| Message::WroteFile,
                     )
-                },
-                None => {
-                    Task::none()
-                },
+                }
+                None => Task::none(),
             }
-        },
+        }
         Message::StartFieldStream => {
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
 
-                Task::perform(
-                    get_board_presence(client),
-                    Message::ReceivedBoardPresence,
-                )
+                Task::perform(get_board_presence(client), Message::ReceivedBoardPresence)
             } else {
                 Task::none()
             }
@@ -372,16 +376,17 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             println!("Detected board presence: {:#?}", presence);
 
             context.board_presence = presence;
-            context.live_fits.set_presence(context.board_presence.clone());
-            context.sensor_traces.set_presence(context.board_presence.clone());
+            context
+                .live_fits
+                .set_presence(context.board_presence.clone());
+            context
+                .sensor_traces
+                .set_presence(context.board_presence.clone());
 
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
 
-                Task::perform(
-                    start_field_stream(client),
-                    Message::FieldStreamStarted,
-                )
+                Task::perform(start_field_stream(client), Message::FieldStreamStarted)
             } else {
                 Task::none()
             }
@@ -402,49 +407,57 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             if let Some(sw) = &mut context.sensor_watcher {
                 let client = sw.get_client();
 
-                Task::future(field_subscribe(client)).and_then(|sub| {
-                    Task::run(sub, Message::RecievedStreamField)
-                })
+                Task::future(field_subscribe(client))
+                    .and_then(|sub| Task::run(sub, Message::RecievedStreamField))
             } else {
                 Task::none()
             }
         }
 
         Message::StopFieldStream => {
-                if let Some(sw) = &context.sensor_watcher {
-                    let client = sw.get_client();
-                    Task::perform(
-                        stop_field_stream(client), 
-                        |_| Message::FieldStreamStopped,
-                    )
-                } else {
-                    Task::none()
-                }                
-            
+            if let Some(sw) = &context.sensor_watcher {
+                let client = sw.get_client();
+                Task::perform(stop_field_stream(client), |_| Message::FieldStreamStopped)
+            } else {
+                Task::none()
+            }
         }
-        Message::FieldStreamStopped => {
-            Task::none()
-        },
+        Message::FieldStreamStopped => Task::none(),
 
-        Message::SelectFile => {
-            iced::window::oldest()
-                .and_then(|id| iced::window::run(id, open_file))
-                .then(Task::future)
-                .map(Message::FileOpened)
-        },
+        Message::SelectFile => iced::window::oldest()
+            .and_then(|id| iced::window::run(id, open_file))
+            .then(Task::future)
+            .map(Message::FileOpened),
         Message::FileOpened(fh) => {
             if let Ok(fh) = fh {
+                let ab_raw_path = fh.path().to_path_buf();
                 let path = fh.path();
                 let file = File::create(path).unwrap();
                 let writer = BufWriter::new(file);
                 let writer = Arc::new(Mutex::new(writer));
                 context.file_writer = Some(writer);
+
+                let backgrounds = context.live_fits.background_snapshots();
+                match ab_log::create_companion(&ab_raw_path, &backgrounds) {
+                    Ok(writer) => {
+                        let companion_path = ab_log::companion_path(&ab_raw_path);
+                        println!(
+                            "A/B logging: raw={} companion={}",
+                            ab_raw_path.display(),
+                            companion_path.display()
+                        );
+                        context.ab_writer = Some(Arc::new(Mutex::new(writer)));
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to create A/B companion log: {err}");
+                        context.ab_writer = None;
+                    }
+                }
+                context.ab_logged_frames.clear();
             }
             Task::none()
-        },
-        Message::WroteFile => {
-            Task::none()
-        },
+        }
+        Message::WroteFile => Task::none(),
         Message::UpdateMlxGain(s) => {
             context.mlx_gain = s;
             Task::none()
@@ -465,12 +478,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let client = sw.get_client();
 
                 Task::perform(
-                    async move {
-                        client
-                            .send_resp::<GetMlxSensitivity>(&())
-                            .await
-                            .unwrap()
-                    },
+                    async move { client.send_resp::<GetMlxSensitivity>(&()).await.unwrap() },
                     Message::ReceivedMlxSensitivity,
                 )
             } else {
@@ -545,31 +553,47 @@ fn view(context: &Context) -> Element<'_, Message> {
         text("Sensor Number: "),
         text_input("Sensor Number", &context.ping_args.sensor).on_input(Message::UpdatePingSensor),
         button("Get Field Value").on_press(Message::GetField),
-        text(format!("x: {:.2}", context.ping_field.as_ref().map(|f| f.field.x.map(|x| x.value()).unwrap_or(0.0)).unwrap_or(0.0))),
-        text(format!("y: {:.2}", context.ping_field.as_ref().map(|f| f.field.y.map(|y| y.value()).unwrap_or(0.0)).unwrap_or(0.0))),
-        text(format!("z: {:.2}", context.ping_field.as_ref().map(|f| f.field.z.map(|z| z.value()).unwrap_or(0.0)).unwrap_or(0.0))),
+        text(format!(
+            "x: {:.2}",
+            context
+                .ping_field
+                .as_ref()
+                .map(|f| f.field.x.map(|x| x.value()).unwrap_or(0.0))
+                .unwrap_or(0.0)
+        )),
+        text(format!(
+            "y: {:.2}",
+            context
+                .ping_field
+                .as_ref()
+                .map(|f| f.field.y.map(|y| y.value()).unwrap_or(0.0))
+                .unwrap_or(0.0)
+        )),
+        text(format!(
+            "z: {:.2}",
+            context
+                .ping_field
+                .as_ref()
+                .map(|f| f.field.z.map(|z| z.value()).unwrap_or(0.0))
+                .unwrap_or(0.0)
+        )),
     ]);
 
-    let stream_widget = container(
-        column![
-            row![button("Start Field Stream").on_press(Message::StartFieldStream)],
-            row![button("Stop Field Stream").on_press(Message::StopFieldStream)],
-            text(board_presence_text(&context.board_presence)),
-            row![
-                text("File output: "),
-                text_input("File", &context.ping_args.sensor),
-                button("Select File").on_press(Message::SelectFile)
-            ]
+    let stream_widget = container(column![
+        row![button("Start Field Stream").on_press(Message::StartFieldStream)],
+        row![button("Stop Field Stream").on_press(Message::StopFieldStream)],
+        text(board_presence_text(&context.board_presence)),
+        row![
+            text("File output: "),
+            text_input("File", &context.ping_args.sensor),
+            button("Select raw + A/B log").on_press(Message::SelectFile)
         ]
-    );
+    ]);
 
     let live_fit_widget = {
         let summaries = context.live_fits.board_summaries();
 
-        let mut live_fit_content = column![
-            text("Live magnet fits by board")
-        ]
-        .spacing(12);
+        let mut live_fit_content = column![text("Live magnet fits by board")].spacing(12);
 
         if summaries.is_empty() {
             live_fit_content = live_fit_content.push(text("No detected boards"));
@@ -587,13 +611,22 @@ fn view(context: &Context) -> Element<'_, Message> {
                     ),
                     None => format!(
                         "Waiting for completed frame; seen {}/{} sensors",
-                        summary.seen_sensors,
-                        summary.expected_sensors,
+                        summary.seen_sensors, summary.expected_sensors,
                     ),
                 };
 
                 let board_id = summary.board_id;
                 let magnet_options = MagnetPreset::ALL.to_vec();
+
+                let displacement_text = summary
+                    .displacement_from_zero
+                    .map(|(dx, dy, dz, total)| {
+                        format!(
+                            "From zero: Δx={:+.3} mm  Δy={:+.3} mm  Δz={:+.3} mm  |Δr|={:.3} mm",
+                            dx, dy, dz, total,
+                        )
+                    })
+                    .unwrap_or_else(|| "From zero: not set".to_string());
 
                 let mode_text = if summary.use_known_magnet_prior {
                     "Mode: known magnet prior, free orientation"
@@ -620,17 +653,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                                 .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
                         ]
                         .spacing(12),
-
                         row![
                             text("Magnet:"),
-                            pick_list(
-                                magnet_options,
-                                Some(summary.magnet_preset),
-                                move |preset| Message::SelectBoardMagnetPreset {
-                                    board_id,
-                                    preset,
-                                },
-                            ),
+                            pick_list(magnet_options, Some(summary.magnet_preset), move |preset| {
+                                Message::SelectBoardMagnetPreset { board_id, preset }
+                            },),
                             text(format!(
                                 "Effective scale: {:.3}×",
                                 summary.magnet_effective_scale,
@@ -638,7 +665,6 @@ fn view(context: &Context) -> Element<'_, Message> {
                             text(target_text),
                         ]
                         .spacing(12),
-
                         text(mode_text),
                         text(if summary.has_background {
                             "Background: captured"
@@ -646,12 +672,10 @@ fn view(context: &Context) -> Element<'_, Message> {
                             "Background: not captured"
                         }),
                         text(fit_text),
-                        displacement_plot(
-                            summary.board_id,
-                            summary.displacement_history,
-                        ),
+                        text(displacement_text),
+                        displacement_plot(summary.board_id, summary.displacement_history,),
                     ]
-                    .spacing(6)
+                    .spacing(6),
                 )
                 .padding(10);
 
@@ -688,24 +712,18 @@ fn view(context: &Context) -> Element<'_, Message> {
                         row![
                             text(format!("Board {}", board_id)),
                             text("Sensor index"),
-                            pick_list(
-                                sensor_options,
-                                selected_sensor,
-                                move |sensor_index| Message::SelectSensorTrace {
+                            pick_list(sensor_options, selected_sensor, move |sensor_index| {
+                                Message::SelectSensorTrace {
                                     board_id,
                                     sensor_index,
-                                },
-                            ),
+                                }
+                            },),
                             text(selected_text),
                         ]
                         .spacing(12),
-                        sensor_trace_plot(
-                            board_id,
-                            selected_sensor,
-                            summary.selected_trace,
-                        ),
+                        sensor_trace_plot(board_id, selected_sensor, summary.selected_trace,),
                     ]
-                    .spacing(8)
+                    .spacing(8),
                 )
                 .padding(10);
 
@@ -724,10 +742,7 @@ fn view(context: &Context) -> Element<'_, Message> {
 
             format!(
                 "Hardware readback: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
-                status.ok,
-                status.gain,
-                resolution_text,
-                status.hall_conf,
+                status.ok, status.gain, resolution_text, status.hall_conf,
             )
         }
         None => "Hardware readback: not read yet".to_string(),
@@ -741,23 +756,15 @@ fn view(context: &Context) -> Element<'_, Message> {
 
     let mlx_widget = container(
         column![
-            row![
-                text("MLX90393 sensitivity"),
-                text(mlx_status_text),
-            ]
-            .spacing(16),
-
+            row![text("MLX90393 sensitivity"), text(mlx_status_text),].spacing(16),
             text("Changes are applied to the detected sensor boards."),
-
             row![
                 column![
                     text("Gain"),
-                    text_input("0..7", &context.mlx_gain)
-                        .on_input(Message::UpdateMlxGain),
+                    text_input("0..7", &context.mlx_gain).on_input(Message::UpdateMlxGain),
                     text("0 = max range, 7 = highest sensitivity")
                 ]
                 .spacing(4),
-
                 column![
                     text("Resolution"),
                     text_input("0..3", &context.mlx_resolution)
@@ -767,7 +774,6 @@ fn view(context: &Context) -> Element<'_, Message> {
                 .spacing(4),
             ]
             .spacing(18),
-
             column![
                 text("Hall configuration"),
                 pick_list(
@@ -781,14 +787,13 @@ fn view(context: &Context) -> Element<'_, Message> {
                 text("Default is stable; faster sampling may reduce per-frame delay.")
             ]
             .spacing(4),
-
             row![
                 button("Read from board").on_press(Message::GetMlxSensitivity),
                 button("Apply to detected boards").on_press(Message::SetMlxSensitivity),
             ]
             .spacing(12),
         ]
-        .spacing(10)
+        .spacing(10),
     )
     .padding(10);
 
@@ -802,17 +807,15 @@ fn view(context: &Context) -> Element<'_, Message> {
     let active_dashboard_widget = match context.dashboard_tab {
         DashboardTab::LiveFits => live_fit_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
-        DashboardTab::Both => {
-            container(
-                row![
-                    live_fit_widget.width(Length::FillPortion(1)),
-                    sensor_trace_widget.width(Length::FillPortion(1)),
-                ]
-                .spacing(12)
-            )
-        }
+        DashboardTab::Both => container(
+            row![
+                live_fit_widget.width(Length::FillPortion(1)),
+                sensor_trace_widget.width(Length::FillPortion(1)),
+            ]
+            .spacing(12),
+        ),
     };
-    
+
     let dashboard_content = container(
         column![
             stream_widget,
@@ -820,7 +823,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             active_dashboard_widget,
             mlx_widget,
         ]
-        .spacing(12)
+        .spacing(12),
     )
     .width(Length::Fill);
 
@@ -828,14 +831,10 @@ fn view(context: &Context) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
 
-    column![
-        serial_selector,
-        ping_widget,
-        dashboard,
-    ]
-    .spacing(10)
-    .padding(10)
-    .into()
+    column![serial_selector, ping_widget, dashboard,]
+        .spacing(10)
+        .padding(10)
+        .into()
 }
 
 #[tokio::main]

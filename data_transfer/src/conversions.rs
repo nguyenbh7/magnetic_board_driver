@@ -1,11 +1,10 @@
 use postcard::experimental::max_size::MaxSize;
-use serde::{Deserialize, Serialize};
 use postcard_schema::Schema;
+use serde::{Deserialize, Serialize};
 
 use crate::memory::{
     Gain, HallConf, Res3D, Resolution, TempOffset, TempRef, TemperatureCompensation,
 };
-
 
 pub struct MagneticBits {
     pub x: Option<[u8; 2]>,
@@ -105,7 +104,7 @@ impl SensitivityPerBit {
     }
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Serialize, Deserialize, Schema, Clone, Copy,  Debug, MaxSize, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Clone, Copy, Debug, MaxSize, PartialEq)]
 pub enum TempValue {
     Celsius(f64),
 }
@@ -131,7 +130,7 @@ impl TempValue {
     }
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Serialize, Deserialize, PartialEq, Schema, Clone, Copy,  Debug, Default, MaxSize)]
+#[derive(Serialize, Deserialize, PartialEq, Schema, Clone, Copy, Debug, Default, MaxSize)]
 pub struct MagneticField {
     pub x: Option<MagneticValue>,
     pub y: Option<MagneticValue>,
@@ -192,7 +191,7 @@ pub enum Error {
     FailedWrite,
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Serialize, Deserialize, Schema, PartialEq, Clone, Copy,  Debug, MaxSize)]
+#[derive(Serialize, Deserialize, Schema, PartialEq, Clone, Copy, Debug, MaxSize)]
 #[repr(usize)]
 pub enum MagneticValue {
     uT(f64),
@@ -269,18 +268,10 @@ mod tests {
 
     #[test]
     fn hallconf_0xc_matches_datasheet_table_17_gain7_res0() {
-        let xy = SensitivityPerBit::new(
-            Axis::X,
-            Gain::SEVEN,
-            Resolution::BIT16,
-            HallConf::FOURPHASE,
-        );
-        let z = SensitivityPerBit::new(
-            Axis::Z,
-            Gain::SEVEN,
-            Resolution::BIT16,
-            HallConf::FOURPHASE,
-        );
+        let xy =
+            SensitivityPerBit::new(Axis::X, Gain::SEVEN, Resolution::BIT16, HallConf::FOURPHASE);
+        let z =
+            SensitivityPerBit::new(Axis::Z, Gain::SEVEN, Resolution::BIT16, HallConf::FOURPHASE);
 
         assert_close(xy.value, 0.150);
         assert_close(z.value, 0.242);
@@ -288,18 +279,10 @@ mod tests {
 
     #[test]
     fn hallconf_0x0_uses_datasheet_98_over_75_scale() {
-        let four_phase = SensitivityPerBit::new(
-            Axis::X,
-            Gain::SEVEN,
-            Resolution::BIT16,
-            HallConf::FOURPHASE,
-        );
-        let two_phase = SensitivityPerBit::new(
-            Axis::X,
-            Gain::SEVEN,
-            Resolution::BIT16,
-            HallConf::TWOPHASE,
-        );
+        let four_phase =
+            SensitivityPerBit::new(Axis::X, Gain::SEVEN, Resolution::BIT16, HallConf::FOURPHASE);
+        let two_phase =
+            SensitivityPerBit::new(Axis::X, Gain::SEVEN, Resolution::BIT16, HallConf::TWOPHASE);
 
         assert_close(two_phase.value / four_phase.value, 98.0 / 75.0);
         // Datasheet footnote example: 0.150 uT/LSB becomes 0.196 uT/LSB.
