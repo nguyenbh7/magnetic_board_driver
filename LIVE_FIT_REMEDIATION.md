@@ -9,7 +9,8 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - Completed: **1. sensor geometry/address ordering**.
 - Completed: **2. known-good MLX90393 acquisition configuration**.
 - Completed: **3. sensitivity/configuration reporting and resolution naming**.
-- Current next item: **4. HALLCONF 0x00 magnetic-field scaling**.
+- Completed: **4. HALLCONF 0x00 magnetic-field scaling validation**.
+- Current next item: **5. robust per-sensor offset/background calibration**.
 - Firmware hardware workflow is documented in `WSL_FLASH_AND_RUN.md`.
 - Canonical firmware flash command is `cd firmware && cargo run --release`.
 - The unoptimized firmware dev profile is not suitable for this hardware path: both the untouched baseline branch and this branch HardFault during the existing 16-sensor async construction path when run without `--release`.
@@ -19,6 +20,8 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - High-frequency streamed-field and raw-MLX debug `info!` output is disabled during normal operation.
 - Item 3 hardware validation passed: `Read from board` returned a consistent actual register readback of gain 4, raw resolution 0 (16-bit), and HALLCONF 0x0C across the detected sensors.
 - Item 3 desktop validation passed: `cargo check -p app` succeeded and the running UI displayed raw resolution 0 explicitly as 16-bit.
+- Item 4 software validation passed with explicit HALLCONF scaling regression tests and `cargo test -p data_transfer`; firmware `cargo check --release` also passed.
+- Item 4 hardware A/B validation passed in a strong-field linear-stage setup: HALLCONF 0x0C gave approximately (-880, 620, 1630) uT and HALLCONF 0x00 gave approximately (-870, 650, 1680) uT, i.e. about 1.1%, 4.8%, and 3.1% axis differences rather than a common ~30.7% scaling error.
 
 ## Acquisition / sensor pipeline
 
@@ -49,9 +52,14 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - Hardware readback verification passed: the app returned `ok=true`, gain 4, raw resolution 0 (16-bit), and HALLCONF 0x0C from the connected sensor board.
   - The updated desktop app was run successfully and displayed the expected 16-bit label.
 
-- [ ] **4. Fix HALLCONF 0x00 magnetic-field scaling.**
-  - Replace the current approximate multiplier with the correct gain/resolution/axis coefficients for HALLCONF 0x00.
-  - Add conversion tests against known reference-table values.
+- [x] **4. Validate HALLCONF 0x00 magnetic-field scaling.**
+  - Inspection showed that the existing conversion formula already used the MLX90393 datasheet factor `98/75` for HALLCONF 0x00 relative to the HALLCONF 0x0C sensitivity table, so no production scaling change was required.
+  - Added regression tests that pin known sensitivity-table values and verify that the HALLCONF factor reaches final converted magnetic-field values.
+  - `cargo test -p data_transfer` passed with the new tests; firmware `cargo check --release` also passed.
+  - A low-field ambient test was intentionally treated as inconclusive because mode-dependent offset/noise was comparable to the measured field.
+  - Strong-field hardware A/B verification passed in the linear-stage setup: HALLCONF 0x0C measured approximately `(-880, 620, 1630)` uT and HALLCONF 0x00 approximately `(-870, 650, 1680)` uT with the sensor/magnet stationary.
+  - Those changes are approximately 1.1% (X), 4.8% (Y), and 3.1% (Z), which is consistent with the physical field remaining comparable across modes and rules out a missing/reversed common `98/75` scale factor.
+  - Keep HALLCONF 0x0C as the acquisition baseline after testing.
 
 - [ ] **5. Add robust per-sensor offset/background calibration.**
   - Replace one-frame background capture with a multi-frame average.
