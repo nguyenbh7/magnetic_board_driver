@@ -8,12 +8,17 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 
 - Completed: **1. sensor geometry/address ordering**.
 - Completed: **2. known-good MLX90393 acquisition configuration**.
-- Current next item: **3. sensitivity/configuration reporting and resolution naming**.
+- Completed: **3. sensitivity/configuration reporting and resolution naming**.
+- Current next item: **4. HALLCONF 0x00 magnetic-field scaling**.
 - Firmware hardware workflow is documented in `WSL_FLASH_AND_RUN.md`.
 - Canonical firmware flash command is `cd firmware && cargo run --release`.
 - The unoptimized firmware dev profile is not suitable for this hardware path: both the untouched baseline branch and this branch HardFault during the existing 16-sensor async construction path when run without `--release`.
 - Item 2 hardware validation passed in release mode: startup completed through the RPC server with no MLX baseline-verification failure.
+- Startup now probes for sensor presence before applying the Old-Pi baseline, so absent addresses are skipped instead of incurring repeated I2C timeout/configuration cycles.
 - Temporary boot diagnostics and per-sensor success logs have been removed; normal firmware startup is back to the original two `Hello World!` messages, while MLX baseline failures remain visible.
+- High-frequency streamed-field and raw-MLX debug `info!` output is disabled during normal operation.
+- Item 3 hardware validation passed: `Read from board` returned a consistent actual register readback of gain 4, raw resolution 0 (16-bit), and HALLCONF 0x0C across the detected sensors.
+- Item 3 desktop validation passed: `cargo check -p app` succeeded and the running UI displayed raw resolution 0 explicitly as 16-bit.
 
 ## Acquisition / sensor pipeline
 
@@ -32,12 +37,17 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - WSL software verification passed: `cargo test -p data_transfer` and firmware compilation both passed.
   - Hardware verification passed in the firmware release profile: the controller completed sensor initialization and reached the RPC server without an MLX baseline-verification failure.
   - Firmware must be run with `cargo run --release`; the unoptimized dev profile HardFaults during the existing 16-sensor async construction path even on the untouched baseline branch.
+  - Startup now probes each sensor before applying the baseline, avoiding long configuration retries on absent addresses.
   - Successful per-sensor baseline messages were removed after validation to keep normal startup output concise; baseline verification failures are still logged.
 
-- [ ] **3. Fix sensitivity/configuration reporting and naming.**
-  - Make `GetMlxSensitivity` query actual sensor state rather than returning only the cached startup struct.
-  - Rename resolution variants/UI labels to match the MLX90393 register convention (0=16-bit, 1=17-bit, 2=18-bit, 3=19-bit).
-  - Keep raw register values explicit in status output to avoid future ambiguity.
+- [x] **3. Fix sensitivity/configuration reporting and naming.**
+  - `GetMlxSensitivity` now re-detects connected sensors and reads the actual MLX90393 registers instead of returning only the cached startup struct.
+  - A successful status requires at least one detected sensor and a consistent gain/resolution/HALLCONF readback across all detected sensors.
+  - Resolution variants and raw mappings now follow the MLX90393 register convention: 0=16-bit, 1=17-bit, 2=18-bit, 3=19-bit.
+  - The desktop status keeps raw values explicit and displays the corresponding bit depth, e.g. `resolution=0 (16-bit)`.
+  - Host/shared software verification passed with `cargo test -p data_transfer`; firmware `cargo check --release` and desktop `cargo check -p app` also passed.
+  - Hardware readback verification passed: the app returned `ok=true`, gain 4, raw resolution 0 (16-bit), and HALLCONF 0x0C from the connected sensor board.
+  - The updated desktop app was run successfully and displayed the expected 16-bit label.
 
 - [ ] **4. Fix HALLCONF 0x00 magnetic-field scaling.**
   - Replace the current approximate multiplier with the correct gain/resolution/axis coefficients for HALLCONF 0x00.
