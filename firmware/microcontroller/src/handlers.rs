@@ -16,25 +16,77 @@ use portable_atomic::{AtomicBool, Ordering};
 
 //use embassy_futures::join::join_array;
 use embassy_time::{Duration, Ticker};
-use crate::N; 
+use crate::N;
 const BOARD_PRESENT_MIN_SENSORS: u32 = 1;
 pub fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
     info!("ping");
     rqst
 }
 
-pub fn get_mlx_sensitivity_handler(
+pub async fn get_mlx_sensitivity_handler(
     context: &mut Context,
     _header: VarHeader,
     _rqst: (),
 ) -> MlxSensitivityStatus {
     info!("get mlx sensitivity");
 
-    MlxSensitivityStatus {
-        ok: true,
-        gain: context.mlx_sensitivity.gain,
-        resolution: context.mlx_sensitivity.resolution,
-        hall_conf: context.mlx_sensitivity.hall_conf,
+    // Re-detect first so the read reflects the hardware that is connected now,
+    // not a cached startup assumption.
+    let presence = detect_board_presence_from_context(context).await;
+    context.board_presence = presence.clone();
+
+    let mut any_sensor = false;
+    let mut all_consistent = true;
+    let mut representative_readback: Option<(u8, u8, u8)> = None;
+
+    for board_index in 0..N {
+        if presence.board_mask & (1u8 << board_index) == 0 {
+            continue;
+        }
+
+        let sensor_mask = presence.sensor_masks[board_index];
+        let mut group = context.sensor_groups[board_index].lock().await;
+
+        for sensor_index in 0..group.num_sensors() {
+            if sensor_mask & (1u16 << sensor_index) == 0 {
+                continue;
+            }
+
+            any_sensor = true;
+            let readback = group.sensors[sensor_index].read_sensitivity().await;
+
+            match (representative_readback, readback) {
+                (None, Some(values)) => representative_readback = Some(values),
+                (Some(expected), Some(values)) if expected == values => {},
+                (_, _) => all_consistent = false,
+            }
+        }
+    }
+
+    let ok = any_sensor && all_consistent && representative_readback.is_some();
+
+    if let Some((gain, resolution, hall_conf)) = representative_readback {
+        if ok {
+            context.mlx_sensitivity = MlxSensitivityConfig {
+                gain,
+                resolution,
+                hall_conf,
+            };
+        }
+
+        MlxSensitivityStatus {
+            ok,
+            gain,
+            resolution,
+            hall_conf,
+        }
+    } else {
+        MlxSensitivityStatus {
+            ok: false,
+            gain: context.mlx_sensitivity.gain,
+            resolution: context.mlx_sensitivity.resolution,
+            hall_conf: context.mlx_sensitivity.hall_conf,
+        }
     }
 }
 
