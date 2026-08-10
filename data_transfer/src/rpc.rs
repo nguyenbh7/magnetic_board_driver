@@ -13,15 +13,18 @@ pub struct SensorField {
     pub board_id: u16,
     pub position: (f32, f32, f32),
     pub address: u8,
+    /// Stream sweep identifier. `0` is reserved for ad-hoc single reads;
+    /// streamed board sweeps use nonzero IDs shared by every sensor in a sweep.
+    pub frame_id: u32,
     pub time: u64,
 }
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
 pub struct MlxSensitivityConfig {
-    pub gain: u8,       // 0..7
-    pub resolution: u8, // 0..3, later map to 16/17/18/19-bit
-    pub hall_conf: u8,  // 0 = 2-phase, 1 = 4-phase
+    pub gain: u8,       // raw 0..7
+    pub resolution: u8, // raw 0..3 = 16/17/18/19-bit
+    pub hall_conf: u8,  // raw 0x00 = 2-phase, 0x0C = 4-phase
 }
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
