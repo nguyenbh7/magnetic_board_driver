@@ -4,6 +4,7 @@ use std::fmt;
 use data_transfer::rpc::{BoardPresence, SensorField};
 
 const MAX_HISTORY_POINTS: usize = 600;
+const BACKGROUND_CAPTURE_FRAMES: usize = 20;
 const UT_PER_MT: f64 = 1000.0;
 const MOMENT_NORM_PRIOR_WEIGHT_MT: f64 = 0.25;
 
@@ -19,8 +20,8 @@ pub struct BoardLiveFitState {
     result: Option<FitResult>,
     calibrated_moment_norm: Option<f64>,
 
-    latest_raw_samples: Vec<Sample>,
     background: Option<BTreeMap<u8, [f64; 3]>>,
+    background_capture: Option<BackgroundCapture>,
 
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
@@ -39,8 +40,8 @@ impl Default for BoardLiveFitState {
             result: None,
             calibrated_moment_norm: None,
 
-            latest_raw_samples: Vec::new(),
             background: None,
+            background_capture: None,
 
             origin: None,
             start_time_us: None,
@@ -59,6 +60,62 @@ struct BoardFrameAccumulator {
     fields: BTreeMap<u8, SensorField>,
     frame_start_time_us: Option<u64>,
     frame_end_time_us: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BackgroundCapture {
+    frames_collected: usize,
+    sums: BTreeMap<u8, [f64; 3]>,
+}
+
+impl BackgroundCapture {
+    fn add_complete_frame(&mut self, samples: &[Sample]) -> Option<BTreeMap<u8, [f64; 3]>> {
+        if samples.is_empty() {
+            return None;
+        }
+
+        if self.frames_collected > 0 {
+            let same_sensor_set = samples.len() == self.sums.len()
+                && samples
+                    .iter()
+                    .all(|sample| self.sums.contains_key(&sample.sensor_index));
+
+            if !same_sensor_set {
+                return None;
+            }
+        }
+
+        for sample in samples {
+            let sum = self.sums.entry(sample.sensor_index).or_insert([0.0; 3]);
+            sum[0] += sample.field[0];
+            sum[1] += sample.field[1];
+            sum[2] += sample.field[2];
+        }
+
+        self.frames_collected += 1;
+
+        if self.frames_collected < BACKGROUND_CAPTURE_FRAMES {
+            return None;
+        }
+
+        let denominator = self.frames_collected as f64;
+
+        Some(
+            std::mem::take(&mut self.sums)
+                .into_iter()
+                .map(|(sensor_index, sum)| {
+                    (
+                        sensor_index,
+                        [
+                            sum[0] / denominator,
+                            sum[1] / denominator,
+                            sum[2] / denominator,
+                        ],
+                    )
+                })
+                .collect(),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +241,7 @@ impl BoardLiveFits {
 
     pub fn capture_board_background(&mut self, board_id: u16) {
         if let Some(board) = self.boards.get_mut(&board_id) {
-            board.capture_background_from_latest_frame();
+            board.start_background_capture();
         }
     }
 
@@ -256,6 +313,7 @@ impl BoardLiveFits {
             Some(count)
         }
     }
+
     pub fn set_board_magnet_preset(&mut self, board_id: u16, preset: MagnetPreset) {
         if let Some(board) = self.boards.get_mut(&board_id) {
             board.magnet_preset = preset;
@@ -280,8 +338,10 @@ pub struct BoardFitSummary {
     pub use_known_magnet_prior: bool,
     pub target_moment_norm: Option<f64>,
 }
+
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
+        let frame_sensor_count = frame.fields.len();
         let raw_samples: Vec<_> = frame
             .fields
             .iter()
@@ -292,7 +352,25 @@ impl BoardLiveFitState {
             return;
         }
 
-        self.latest_raw_samples = raw_samples.clone();
+        let was_capturing_background = self.background_capture.is_some();
+
+        if raw_samples.len() == frame_sensor_count {
+            let completed_background = self
+                .background_capture
+                .as_mut()
+                .and_then(|capture| capture.add_complete_frame(&raw_samples));
+
+            if let Some(background) = completed_background {
+                self.background = Some(background);
+                self.background_capture = None;
+                self.clear_fit_after_background_change();
+            }
+        }
+
+        // Do not fit magnet position while a no-magnet background capture is in progress.
+        if was_capturing_background {
+            return;
+        }
 
         let samples = if let Some(background) = &self.background {
             subtract_background_samples(&raw_samples, background)
@@ -393,21 +471,15 @@ impl BoardLiveFitState {
         self.reset_displacement();
     }
 
-    fn capture_background_from_latest_frame(&mut self) {
-        if self.latest_raw_samples.is_empty() {
-            return;
-        }
+    fn start_background_capture(&mut self) {
+        self.background = None;
+        self.background_capture = Some(BackgroundCapture::default());
+        self.clear_fit_after_background_change();
+    }
 
-        let background = self
-            .latest_raw_samples
-            .iter()
-            .map(|sample| (sample.sensor_index, sample.field))
-            .collect::<BTreeMap<_, _>>();
-
-        self.background = Some(background);
-
+    fn clear_fit_after_background_change(&mut self) {
         // Existing calibration and displacement zero are no longer valid
-        // because the field model changed from raw to background-subtracted.
+        // because the field model changed between raw/background-subtracted data.
         self.calibrated_moment_norm = None;
         self.result = None;
         self.origin = None;
@@ -415,11 +487,14 @@ impl BoardLiveFitState {
         self.last_fit_time_us = None;
         self.displacement_history.clear();
     }
-
 }
 
 impl BoardFrameAccumulator {
-    fn update(&mut self, field: SensorField, expected_sensor_count: usize,) -> Option<CompletedBoardFrame> {
+    fn update(
+        &mut self,
+        field: SensorField,
+        expected_sensor_count: usize,
+    ) -> Option<CompletedBoardFrame> {
         if self.fields.is_empty() {
             self.frame_start_time_us = Some(field.time);
         }
@@ -791,4 +866,84 @@ fn determinant_3x3(a: [[f64; 3]; 3]) -> f64 {
     a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(sensor_index: u8, field: [f64; 3]) -> Sample {
+        Sample {
+            sensor_index,
+            position: [0.0, 0.0, 0.0],
+            field,
+        }
+    }
+
+    #[test]
+    fn background_capture_averages_twenty_complete_frames_per_sensor_and_axis() {
+        let mut capture = BackgroundCapture::default();
+        let mut result = None;
+
+        for frame_index in 0..BACKGROUND_CAPTURE_FRAMES {
+            let f = frame_index as f64;
+            let samples = vec![
+                sample(0, [f, 2.0 * f, -f]),
+                sample(1, [10.0 + f, 20.0 + f, 30.0 + f]),
+            ];
+
+            result = capture.add_complete_frame(&samples);
+
+            if frame_index + 1 < BACKGROUND_CAPTURE_FRAMES {
+                assert!(result.is_none());
+            }
+        }
+
+        let background = result.expect("20th frame should finish background capture");
+        let expected_mean = (BACKGROUND_CAPTURE_FRAMES as f64 - 1.0) / 2.0;
+
+        assert_eq!(background.len(), 2);
+        assert!((background[&0][0] - expected_mean).abs() < 1.0e-12);
+        assert!((background[&0][1] - 2.0 * expected_mean).abs() < 1.0e-12);
+        assert!((background[&0][2] + expected_mean).abs() < 1.0e-12);
+        assert!((background[&1][0] - (10.0 + expected_mean)).abs() < 1.0e-12);
+        assert!((background[&1][1] - (20.0 + expected_mean)).abs() < 1.0e-12);
+        assert!((background[&1][2] - (30.0 + expected_mean)).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn background_capture_rejects_a_changed_sensor_set_without_advancing() {
+        let mut capture = BackgroundCapture::default();
+
+        assert!(capture
+            .add_complete_frame(&[
+                sample(0, [1.0, 2.0, 3.0]),
+                sample(1, [4.0, 5.0, 6.0]),
+            ])
+            .is_none());
+        assert_eq!(capture.frames_collected, 1);
+
+        assert!(capture
+            .add_complete_frame(&[sample(0, [7.0, 8.0, 9.0])])
+            .is_none());
+        assert_eq!(capture.frames_collected, 1);
+    }
+
+    #[test]
+    fn background_subtraction_is_per_sensor_and_per_axis() {
+        let samples = vec![
+            sample(0, [10.0, 20.0, 30.0]),
+            sample(1, [-5.0, 8.0, 12.0]),
+        ];
+        let background = BTreeMap::from([
+            (0, [1.0, 2.0, 3.0]),
+            (1, [-2.0, 3.0, 4.0]),
+        ]);
+
+        let corrected = subtract_background_samples(&samples, &background);
+
+        assert_eq!(corrected.len(), 2);
+        assert_eq!(corrected[0].field, [9.0, 18.0, 27.0]);
+        assert_eq!(corrected[1].field, [-3.0, 5.0, 8.0]);
+    }
 }
