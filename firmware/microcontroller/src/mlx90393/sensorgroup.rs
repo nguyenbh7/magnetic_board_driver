@@ -145,7 +145,7 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
         sensor.mlx.reset().await;
         Timer::after_micros(500).await;
         // Keep construction lightweight. The Old-Pi baseline is applied
-        // sequentially after all sensors in the group have been constructed.
+        // after all sensors in the group have been constructed.
         sensor.mlx.set_measurement_configuration().await;
         //sensor.mlx.set_burst::<true, true, true, true>().await;
         sensor
@@ -332,15 +332,19 @@ impl<'a, const N: usize> SensorGroupBuilder<N> {
 
         let mut sensors = join_array(sensors_future).await;
 
-        // The baseline setup is intentionally sequential. Keeping the 16-way
-        // constructor futures small avoids a large embedded async state machine,
-        // and serializing register writes makes startup deterministic on a
-        // shared I2C bus.
+        // Only configure sensors that actually answer on the bus. This avoids
+        // spending the full I2C timeout/retry sequence on every empty address
+        // for unpopulated board slots while still verifying every detected MLX.
         for sensor in sensors.iter_mut() {
+            if !sensor.is_present().await {
+                continue;
+            }
+
             let configured = sensor.configure_old_pi_baseline().await;
             if !configured {
                 info!(
-                    "MLX addr={} failed Old-Pi acquisition baseline verification",
+                    "Board {} MLX addr={} failed Old-Pi acquisition baseline verification",
+                    self.board_id,
                     sensor.mlx.address
                 );
                 // Keep cached state synchronized with whatever the hardware
