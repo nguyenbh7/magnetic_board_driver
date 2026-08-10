@@ -234,16 +234,16 @@ impl Gain {
     }
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, )]
+#[derive(Clone, Copy)]
 #[repr(usize)]
 pub enum Resolution {
-    BIT19,
-    BIT18,
-    BIT17,
     BIT16,
+    BIT17,
+    BIT18,
+    BIT19,
 }
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, )]
+#[derive(Clone, Copy)]
 #[repr(usize)]
 pub enum HallConf {
     TWOPHASE,
@@ -278,10 +278,10 @@ impl Res3D {
         let "????_??zzv" = val[0];
         let xval = #[bitmatch]
         match x {
-            "00" => Resolution::BIT19,
-            "01" => Resolution::BIT18,
-            "10" => Resolution::BIT17,
-            "11" => Resolution::BIT16,
+            "00" => Resolution::BIT16,
+            "01" => Resolution::BIT17,
+            "10" => Resolution::BIT18,
+            "11" => Resolution::BIT19,
         };
         let yval = #[bitmatch]
         match v {
@@ -289,25 +289,25 @@ impl Res3D {
             {
                 #[bitmatch]
                 match y {
-                    "0" => Resolution::BIT19,
-                    "1" => Resolution::BIT18,
+                    "0" => Resolution::BIT16,
+                    "1" => Resolution::BIT17,
                 }
             }
             "1" =>
             {
                 #[bitmatch]
                 match y {
-                    "0" => Resolution::BIT17,
-                    "1" => Resolution::BIT16,
+                    "0" => Resolution::BIT18,
+                    "1" => Resolution::BIT19,
                 }
             }
         };
         let zval = #[bitmatch]
         match z {
-            "00" => Resolution::BIT19,
-            "01" => Resolution::BIT18,
-            "10" => Resolution::BIT17,
-            "11" => Resolution::BIT16,
+            "00" => Resolution::BIT16,
+            "01" => Resolution::BIT17,
+            "10" => Resolution::BIT18,
+            "11" => Resolution::BIT19,
         };
 
         Self {
@@ -494,12 +494,11 @@ impl Gain {
 
 impl Resolution {
     pub fn as_u8(self) -> u8 {
-        match self {
-            Resolution::BIT19 => 0,
-            Resolution::BIT18 => 1,
-            Resolution::BIT17 => 2,
-            Resolution::BIT16 => 3,
-        }
+        self as u8
+    }
+
+    pub fn bit_depth(self) -> u8 {
+        16 + self.as_u8()
     }
 }
 
@@ -532,5 +531,22 @@ mod tests {
 
         assert_eq!(reg.temperature_oversampling(), 3);
         assert_eq!(reg.temperature_conversion_time_micro(), 1603);
+    }
+
+    #[test]
+    fn resolution_raw_values_match_documented_bit_depths() {
+        // All resolution fields zero.
+        let res0 = Register::<0x02>::new(0x0000_u16.to_be_bytes()).resolution();
+        assert_eq!(res0.x.as_u8(), 0);
+        assert_eq!(res0.x.bit_depth(), 16);
+        assert_eq!(res0.y.bit_depth(), 16);
+        assert_eq!(res0.z.bit_depth(), 16);
+
+        // All X/Y/Z resolution fields set to raw value 3.
+        let res3 = Register::<0x02>::new(0x07E0_u16.to_be_bytes()).resolution();
+        assert_eq!(res3.x.as_u8(), 3);
+        assert_eq!(res3.x.bit_depth(), 19);
+        assert_eq!(res3.y.bit_depth(), 19);
+        assert_eq!(res3.z.bit_depth(), 19);
     }
 }
