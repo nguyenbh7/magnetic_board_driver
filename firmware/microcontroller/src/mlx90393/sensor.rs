@@ -670,10 +670,10 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
 
     fn resolution_from_u8(value: u8) -> Option<Resolution> {
         match value {
-            0 => Some(Resolution::BIT19),
-            1 => Some(Resolution::BIT18),
-            2 => Some(Resolution::BIT17),
-            3 => Some(Resolution::BIT16),
+            0 => Some(Resolution::BIT16),
+            1 => Some(Resolution::BIT17),
+            2 => Some(Resolution::BIT18),
+            3 => Some(Resolution::BIT19),
             _ => None,
         }
     }
