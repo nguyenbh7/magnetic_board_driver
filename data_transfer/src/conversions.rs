@@ -38,7 +38,7 @@ struct SensitivityPerBit {
     value: f64,
 }
 
-//Taken from data sheet. Indices are [Gain][Resolution][Axis]
+// Taken from the datasheet. Indices are [Gain][raw resolution 0..3][Axis].
 const SENSITIVITY: [[[f64; 3]; 4]; 8] = [
     [
         [0.751, 0.751, 1.210],
@@ -208,35 +208,35 @@ impl MagneticValue {
         let raw = *value?;
 
         let counts: i32 = match (temp_comp, resolution) {
-            // TCMP disabled, RES=0/1:
+            // TCMP disabled, raw RES=0/1 (16/17-bit labels):
             // Datasheet: two's complement, 0 uT = 0 LSB.
-            (TemperatureCompensation::Disabled, Resolution::BIT19)
-            | (TemperatureCompensation::Disabled, Resolution::BIT18) => {
+            (TemperatureCompensation::Disabled, Resolution::BIT16)
+            | (TemperatureCompensation::Disabled, Resolution::BIT17) => {
                 i16::from_be_bytes(raw) as i32
             }
 
-            // TCMP disabled, RES=2:
+            // TCMP disabled, raw RES=2 (18-bit label):
             // Datasheet: unsigned, 0 uT = 2^15 LSB.
-            (TemperatureCompensation::Disabled, Resolution::BIT17) => {
+            (TemperatureCompensation::Disabled, Resolution::BIT18) => {
                 u16::from_be_bytes(raw) as i32 - 32768
             }
 
-            // TCMP disabled, RES=3:
+            // TCMP disabled, raw RES=3 (19-bit label):
             // Datasheet: unsigned, 0 uT = 2^14 LSB.
-            (TemperatureCompensation::Disabled, Resolution::BIT16) => {
+            (TemperatureCompensation::Disabled, Resolution::BIT19) => {
                 u16::from_be_bytes(raw) as i32 - 16384
             }
 
-            // TCMP enabled, RES=0/1:
+            // TCMP enabled, raw RES=0/1:
             // Datasheet: unsigned, 0 uT = 2^15 LSB.
-            (TemperatureCompensation::Enabled, Resolution::BIT19)
-            | (TemperatureCompensation::Enabled, Resolution::BIT18) => {
+            (TemperatureCompensation::Enabled, Resolution::BIT16)
+            | (TemperatureCompensation::Enabled, Resolution::BIT17) => {
                 u16::from_be_bytes(raw) as i32 - 32768
             }
 
-            // Datasheet marks TCMP enabled with RES=2/3 as N/A.
-            (TemperatureCompensation::Enabled, Resolution::BIT17)
-            | (TemperatureCompensation::Enabled, Resolution::BIT16) => {
+            // Datasheet marks TCMP enabled with raw RES=2/3 as N/A.
+            (TemperatureCompensation::Enabled, Resolution::BIT18)
+            | (TemperatureCompensation::Enabled, Resolution::BIT19) => {
                 return None;
             }
         };
