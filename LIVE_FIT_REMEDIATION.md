@@ -10,7 +10,8 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - Completed: **2. known-good MLX90393 acquisition configuration**.
 - Completed: **3. sensitivity/configuration reporting and resolution naming**.
 - Completed: **4. HALLCONF 0x00 magnetic-field scaling validation**.
-- Current next item: **5. robust per-sensor offset/background calibration**.
+- Completed: **5. robust per-sensor offset/background calibration**.
+- Current next item: **6. explicit/atomic streamed board frames**.
 - Firmware hardware workflow is documented in `WSL_FLASH_AND_RUN.md`.
 - Canonical firmware flash command is `cd firmware && cargo run --release`.
 - The unoptimized firmware dev profile is not suitable for this hardware path: both the untouched baseline branch and this branch HardFault during the existing 16-sensor async construction path when run without `--release`.
@@ -22,6 +23,9 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - Item 3 desktop validation passed: `cargo check -p app` succeeded and the running UI displayed raw resolution 0 explicitly as 16-bit.
 - Item 4 software validation passed with explicit HALLCONF scaling regression tests and `cargo test -p data_transfer`; firmware `cargo check --release` also passed.
 - Item 4 hardware A/B validation passed in a strong-field linear-stage setup: HALLCONF 0x0C gave approximately (-880, 620, 1630) uT and HALLCONF 0x00 gave approximately (-870, 650, 1680) uT, i.e. about 1.1%, 4.8%, and 3.1% axis differences rather than a common ~30.7% scaling error.
+- Item 5 now averages 20 complete no-magnet board frames per sensor and per XYZ axis before installing a background; fitting is suppressed during capture and resumes afterward using the averaged background.
+- Item 5 hardware validation passed: the running app completed the background capture, reported `Background: captured`, and live fitting resumed.
+- Background calibration is intentionally session-local so stale environmental offsets are not silently reused across app restarts. Saved field logs remain raw `SensorField` data; background subtraction is applied only inside the live-fit path.
 
 ## Acquisition / sensor pipeline
 
@@ -61,10 +65,15 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - Those changes are approximately 1.1% (X), 4.8% (Y), and 3.1% (Z), which is consistent with the physical field remaining comparable across modes and rules out a missing/reversed common `98/75` scale factor.
   - Keep HALLCONF 0x0C as the acquisition baseline after testing.
 
-- [ ] **5. Add robust per-sensor offset/background calibration.**
-  - Replace one-frame background capture with a multi-frame average.
-  - Preserve calibration per sensor and XYZ component.
-  - Decide whether calibration should be persisted in firmware/app state and whether calibrated fields should also be written to logs.
+- [x] **5. Add robust per-sensor offset/background calibration.**
+  - Replaced one-frame background capture with a 20-complete-frame average.
+  - Background is accumulated independently for every detected sensor and for X, Y, and Z; a changed sensor set does not advance an in-progress capture.
+  - Fitting is suppressed during background capture and resumes only after the averaged background has been installed.
+  - Existing fit/magnet calibration/displacement zero are cleared when a new background capture begins because the fit input definition changes.
+  - Added unit tests for the 20-frame mean, sensor-set consistency, and per-sensor/per-axis subtraction.
+  - Hardware behavior was verified in the running app: background capture completed, `Background: captured` appeared, and live fitting resumed.
+  - Calibration remains session-local by design; reconnecting/restarting requires a new background capture rather than silently reusing a stale environmental offset.
+  - Saved field logs remain raw `SensorField` stream values. Background-subtracted values are used only inside the live-fit path so offline analysis can reproduce or replace calibration independently.
 
 - [ ] **6. Make streamed board frames explicit and atomic.**
   - Add a frame/sweep identifier to streamed measurements or publish a complete board frame as one message.
