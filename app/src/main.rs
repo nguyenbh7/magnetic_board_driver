@@ -181,6 +181,13 @@ fn hall_conf_value_to_label(value: u8) -> &'static str {
     }
 }
 
+fn mlx_resolution_bit_depth(raw: u8) -> Option<u8> {
+    match raw {
+        0..=3 => Some(16 + raw),
+        _ => None,
+    }
+}
+
 fn board_presence_text(presence: &BoardPresence) -> String {
     let mut lines = Vec::new();
 
@@ -710,14 +717,20 @@ fn view(context: &Context) -> Element<'_, Message> {
     };
 
     let mlx_status_text = match &context.mlx_status {
-        Some(status) => format!(
-            "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
-            status.ok,
-            status.gain,
-            status.resolution,
-            status.hall_conf,
-        ),
-        None => "Current: not read yet".to_string(),
+        Some(status) => {
+            let resolution_text = mlx_resolution_bit_depth(status.resolution)
+                .map(|bits| format!("{} ({}-bit)", status.resolution, bits))
+                .unwrap_or_else(|| format!("{} (invalid)", status.resolution));
+
+            format!(
+                "Hardware readback: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
+                status.ok,
+                status.gain,
+                resolution_text,
+                status.hall_conf,
+            )
+        }
+        None => "Hardware readback: not read yet".to_string(),
     };
 
     let selected_hall_conf = Some(if context.mlx_hall_conf.is_empty() {
@@ -749,7 +762,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                     text("Resolution"),
                     text_input("0..3", &context.mlx_resolution)
                         .on_input(Message::UpdateMlxResolution),
-                    text("0 = finest/smallest range, 3 = coarser")
+                    text("Raw value: 0 = 16-bit, 1 = 17-bit, 2 = 18-bit, 3 = 19-bit")
                 ]
                 .spacing(4),
             ]
