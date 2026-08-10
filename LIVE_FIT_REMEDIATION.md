@@ -11,7 +11,8 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - Completed: **3. sensitivity/configuration reporting and resolution naming**.
 - Completed: **4. HALLCONF 0x00 magnetic-field scaling validation**.
 - Completed: **5. robust per-sensor offset/background calibration**.
-- Current next item: **6. explicit/atomic streamed board frames**.
+- Completed: **6. explicit/atomic streamed board frames**.
+- Current next item: **7. constrained temporal pose fitting with reacquisition**.
 - Firmware hardware workflow is documented in `WSL_FLASH_AND_RUN.md`.
 - Canonical firmware flash command is `cd firmware && cargo run --release`.
 - The unoptimized firmware dev profile is not suitable for this hardware path: both the untouched baseline branch and this branch HardFault during the existing 16-sensor async construction path when run without `--release`.
@@ -26,6 +27,9 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
 - Item 5 now averages 20 complete no-magnet board frames per sensor and per XYZ axis before installing a background; fitting is suppressed during capture and resumes afterward using the averaged background.
 - Item 5 hardware validation passed: the running app completed the background capture, reported `Background: captured`, and live fitting resumed.
 - Background calibration is intentionally session-local so stale environmental offsets are not silently reused across app restarts. Saved field logs remain raw `SensorField` data; background subtraction is applied only inside the live-fit path.
+- Item 6 adds an explicit nonzero `frame_id` to streamed `SensorField` records; all sensors from one board sweep share that ID, while ad-hoc single reads reserve `frame_id=0`.
+- The desktop frame accumulator now drops an incomplete sweep when a new `frame_id` arrives instead of mixing adjacent sweeps. Raw saved stream records carry the same frame IDs, so offline frame boundaries are explicit.
+- Item 6 software regression checks passed, and hardware validation passed with normal board detection, streaming, live-fit updates, background capture, and no RPC/postcard decode errors after the wire-format change.
 
 ## Acquisition / sensor pipeline
 
@@ -75,10 +79,13 @@ The order is intentional: make the acquisition geometry and sensor data trustwor
   - Calibration remains session-local by design; reconnecting/restarting requires a new background capture rather than silently reusing a stale environmental offset.
   - Saved field logs remain raw `SensorField` stream values. Background-subtracted values are used only inside the live-fit path so offline analysis can reproduce or replace calibration independently.
 
-- [ ] **6. Make streamed board frames explicit and atomic.**
-  - Add a frame/sweep identifier to streamed measurements or publish a complete board frame as one message.
-  - Prevent a desktop fit from combining the tail of sweep N with the head of sweep N+1 after subscription startup or a dropped packet.
-  - Update raw logging/decoding so frame boundaries are unambiguous.
+- [x] **6. Make streamed board frames explicit and atomic.**
+  - Added `frame_id` to `SensorField`; streamed board sweeps use nonzero IDs and ad-hoc single reads use zero.
+  - Firmware stamps every sensor measurement from one board sweep with the same ID and advances the ID for the next sweep.
+  - The desktop accumulator accepts samples only from one explicit ID at a time and discards an incomplete previous sweep when a newer ID arrives.
+  - Added a regression test proving that an incomplete sweep cannot be completed with samples from the following sweep.
+  - Raw binary logging retains `frame_id` because it serializes the original `SensorField`, making offline frame boundaries explicit without altering field values.
+  - Hardware validation passed after the wire-format change: detection, streaming, live fitting, and background capture all continued normally with no RPC/postcard decode errors.
 
 ## Live fitting / display
 
