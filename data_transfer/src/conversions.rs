@@ -92,6 +92,8 @@ const SENSITIVITY: [[[f64; 3]; 4]; 8] = [
 
 impl SensitivityPerBit {
     pub const fn new(axis: Axis, gain: Gain, resolution: Resolution, hallconf: HallConf) -> Self {
+        // MLX90393 datasheet Table 17 is specified for HALLCONF=0xC.
+        // Datasheet footnote 11 states HALLCONF=0x0 scales sensitivity by 98/75.
         let hall_conf_multiplier = match hallconf {
             HallConf::TWOPHASE => 98.0 / 75.0,
             HallConf::FOURPHASE => 1.0,
@@ -249,5 +251,87 @@ impl MagneticValue {
         match self {
             MagneticValue::uT(val) => *val,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPS: f64 = 1e-12;
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() <= EPS,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn hallconf_0xc_matches_datasheet_table_17_gain7_res0() {
+        let xy = SensitivityPerBit::new(
+            Axis::X,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::FOURPHASE,
+        );
+        let z = SensitivityPerBit::new(
+            Axis::Z,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::FOURPHASE,
+        );
+
+        assert_close(xy.value, 0.150);
+        assert_close(z.value, 0.242);
+    }
+
+    #[test]
+    fn hallconf_0x0_uses_datasheet_98_over_75_scale() {
+        let four_phase = SensitivityPerBit::new(
+            Axis::X,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::FOURPHASE,
+        );
+        let two_phase = SensitivityPerBit::new(
+            Axis::X,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::TWOPHASE,
+        );
+
+        assert_close(two_phase.value / four_phase.value, 98.0 / 75.0);
+        // Datasheet footnote example: 0.150 uT/LSB becomes 0.196 uT/LSB.
+        assert_close(two_phase.value, 0.196);
+    }
+
+    #[test]
+    fn hallconf_0x0_scale_is_applied_to_converted_field_values() {
+        let raw = [0x00, 0x64]; // +100 LSB for TCMP off, raw RES=0.
+        let four_phase = MagneticValue::from_bits(
+            Some(&raw),
+            TemperatureCompensation::Disabled,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::FOURPHASE,
+            Axis::X,
+        )
+        .unwrap()
+        .value();
+        let two_phase = MagneticValue::from_bits(
+            Some(&raw),
+            TemperatureCompensation::Disabled,
+            Gain::SEVEN,
+            Resolution::BIT16,
+            HallConf::TWOPHASE,
+            Axis::X,
+        )
+        .unwrap()
+        .value();
+
+        assert_close(four_phase, 15.0);
+        assert_close(two_phase, 19.6);
+        assert_close(two_phase / four_phase, 98.0 / 75.0);
     }
 }
