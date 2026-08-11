@@ -27,13 +27,9 @@ pub fn create_companion(
     Ok(writer)
 }
 
-fn write_background_record(
-    writer: &mut BufWriter<File>,
-    background: &BackgroundSnapshot,
-) -> io::Result<()> {
-    writeln!(
-        writer,
-        "background,{},{},{},{},{:.17},{:.17},{:.17},,,,,,,,,,,,,,",
+fn background_record_line(background: &BackgroundSnapshot) -> String {
+    format!(
+        "background,{},{},{},{},{:.17},{:.17},{:.17},,,,,,,,,,,,,",
         background.board_id,
         0,
         0,
@@ -42,6 +38,13 @@ fn write_background_record(
         background.field_m_t[1],
         background.field_m_t[2],
     )
+}
+
+fn write_background_record(
+    writer: &mut BufWriter<File>,
+    background: &BackgroundSnapshot,
+) -> io::Result<()> {
+    writeln!(writer, "{}", background_record_line(background))
 }
 
 pub fn write_fit_record(
@@ -79,5 +82,18 @@ mod tests {
     fn companion_extension_is_predictable() {
         let path = Path::new("stage_z.bin");
         assert_eq!(companion_path(path), PathBuf::from("stage_z.ab.csv"));
+    }
+
+    #[test]
+    fn background_record_matches_header_width() {
+        let background = BackgroundSnapshot {
+            board_id: 1,
+            sensor_index: 0,
+            field_m_t: [0.1, -0.2, 0.3],
+        };
+        assert_eq!(
+            background_record_line(&background).split(',').count(),
+            HEADER.split(',').count()
+        );
     }
 }
