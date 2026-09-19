@@ -56,6 +56,9 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
     pub async fn read_sensitivity(&mut self) -> Option<(u8, u8, u8)> {
         self.mlx.read_sensitivity_values().await
     }
+    pub async fn read_timing(&mut self) -> super::sensor::MlxTimingReadback {
+        self.mlx.read_timing_values().await
+    }
     pub async fn new(address: u8, i2c: I, position: (f32, f32, f32)) -> Self
         where {
         let mlx = MLX90393::new(address, None, i2c);
