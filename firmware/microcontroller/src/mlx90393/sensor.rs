@@ -16,9 +16,10 @@ use embedded_hal_async::digital::Wait;
 use embedded_hal_async::i2c::I2c;
 //use heapless::Vec;
 
+// Datasheet maximum fixed phases for conservative no-DRDY timing.
 const T_STBY_MICRO: u64 = 264;
-const T_ACTIVE_MICRO: u64 = 264;
-const T_CONV_END_MICRO: u64 = 264;
+const T_ACTIVE_MICRO: u64 = 432;
+const T_CONV_END_MICRO: u64 = 120;
 
 bitflags! {
     struct StatusFlags: u8 {
@@ -77,6 +78,18 @@ pub struct MLXSettings {
     temperature_conversion_time: u64,
 }
 
+#[derive(Clone, Copy, Format)]
+pub struct MlxTimingReadback {
+    pub register_02_msb: u8,
+    pub register_02_lsb: u8,
+    pub osr: u8,
+    pub dig_filt: u8,
+    pub osr2: u8,
+    pub magnetic_axis_conversion_time_us: u64,
+    pub temperature_conversion_time_us: u64,
+    pub xyz_t_single_measurement_time_us: u64,
+}
+
 impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
     pub async fn write_register_raw(&mut self, location: u8, data: [u8; 2]) -> Status {
         let command = Command::write_register(data, location);
@@ -106,6 +119,32 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
             Some((gain, res_x, hall_conf))
         } else {
             None
+        }
+    }
+
+    pub async fn read_timing_values(&mut self) -> MlxTimingReadback {
+        let reg2 = self.read_register::<0x02>().await;
+        let [register_02_msb, register_02_lsb] = reg2.bytes();
+        let magnetic_axis_conversion_time_us =
+            reg2.magnetic_axis_conversion_time_micro();
+        let temperature_conversion_time_us =
+            reg2.temperature_conversion_time_micro();
+        let xyz_t_single_measurement_time_us =
+            T_STBY_MICRO
+                + T_ACTIVE_MICRO
+                + 3 * magnetic_axis_conversion_time_us
+                + temperature_conversion_time_us
+                + T_CONV_END_MICRO;
+
+        MlxTimingReadback {
+            register_02_msb,
+            register_02_lsb,
+            osr: reg2.osr(),
+            dig_filt: reg2.dig_filt(),
+            osr2: reg2.osr2(),
+            magnetic_axis_conversion_time_us,
+            temperature_conversion_time_us,
+            xyz_t_single_measurement_time_us,
         }
     }
 
