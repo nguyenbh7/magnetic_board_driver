@@ -8,6 +8,7 @@ use data_transfer::rpc::{
     StartFieldStream,
     MlxSensitivityConfig,
     MlxSensitivityStatus,
+    MlxTimingStatus,
     BoardPresence,
 };
 use data_transfer::rpc::GetBoardPresence;
@@ -46,6 +47,52 @@ pub async fn get_board_presence_handler(
     let presence = detect_board_presence_from_context(context).await;
     context.board_presence = presence.clone();
     presence
+}
+
+pub async fn get_mlx_timing_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    _rqst: (),
+) -> MlxTimingStatus {
+    info!("get mlx timing");
+
+    let presence = detect_board_presence_from_context(context).await;
+    context.board_presence = presence.clone();
+
+    for board_index in 0..N {
+        if presence.board_mask & (1u8 << board_index) == 0 {
+            continue;
+        }
+
+        let sensor_mask = presence.sensor_masks[board_index];
+        let mut group = context.sensor_groups[board_index].lock().await;
+
+        for sensor_index in 0..group.num_sensors() {
+            if sensor_mask & (1u16 << sensor_index) == 0 {
+                continue;
+            }
+
+            let timing = group.sensors[sensor_index].read_timing().await;
+            return MlxTimingStatus {
+                ok: true,
+                board_id: group.board_id,
+                sensor_index: sensor_index as u8,
+                register_02_msb: timing.register_02_msb,
+                register_02_lsb: timing.register_02_lsb,
+                osr: timing.osr,
+                dig_filt: timing.dig_filt,
+                osr2: timing.osr2,
+                magnetic_axis_conversion_time_us:
+                    timing.magnetic_axis_conversion_time_us,
+                temperature_conversion_time_us:
+                    timing.temperature_conversion_time_us,
+                xyz_t_single_measurement_time_us:
+                    timing.xyz_t_single_measurement_time_us,
+            };
+        }
+    }
+
+    MlxTimingStatus::default()
 }
 
 pub async fn set_mlx_sensitivity_handler(
