@@ -33,6 +33,22 @@ pub struct MlxSensitivityStatus {
     pub hall_conf: u8,
 }
 
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct MlxTimingStatus {
+    pub ok: bool,
+    pub board_id: u16,
+    pub sensor_index: u8,
+    pub register_02_msb: u8,
+    pub register_02_lsb: u8,
+    pub osr: u8,
+    pub dig_filt: u8,
+    pub osr2: u8,
+    pub magnetic_axis_conversion_time_us: u64,
+    pub temperature_conversion_time_us: u64,
+    pub xyz_t_single_measurement_time_us: u64,
+}
+
 pub const MAX_SENSOR_BOARDS: usize = 3;
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
@@ -52,6 +68,7 @@ endpoints! {
     | StopFieldStream           | ()            | ()                    | "bfield/stop"     |
     | GetMlxSensitivity         | ()            | MlxSensitivityStatus  | "mlx/sensitivity/get" |
     | SetMlxSensitivity  | MlxSensitivityConfig | MlxSensitivityStatus  | "mlx/sensitivity/set" |
+    | GetMlxTiming             | ()            | MlxTimingStatus       | "mlx/timing/get" |
     | GetBoardPresence        | ()            | BoardPresence        | "boards/presence" |
 }
 
