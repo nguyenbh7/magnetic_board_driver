@@ -90,15 +90,33 @@ impl Register<0x02> {
         Res3D::from_u8_slice(&self.data)
     }
 
+    /// Magnetic ADC oversampling field (OSR, register bits 1:0).
+    ///
+    /// RR returns register data MSB first, so self.data[0] is bits 15:8 and
+    /// self.data[1] is bits 7:0.
+    pub fn osr(&self) -> u8 {
+        self.data[1] & 0b0000_0011
+    }
+
+    /// Magnetic digital-filter field (DIG_FILT, register bits 4:2).
+    pub fn dig_filt(&self) -> u8 {
+        (self.data[1] & 0b0001_1100) >> 2
+    }
+
+    /// Temperature oversampling field (OSR2, register bits 12:11).
+    pub fn osr2(&self) -> u8 {
+        (self.data[0] & 0b0001_1000) >> 3
+    }
+
     pub fn magnetic_axis_conversion_time_micro(&self) -> u64 {
-        let osr = self.data[0] & 0b0000_0011;
-        let dig_filt = (self.data[0] & 0b0001_1100) >> 2;
-        67 + 64 * (1 << osr) * (2 + (1 << dig_filt))
+        let osr = self.osr();
+        let dig_filt = self.dig_filt();
+        67 + 64 * (1u64 << osr) * (2 + (1u64 << dig_filt))
     }
 
     pub fn temperature_conversion_time_micro(&self) -> u64 {
-        let osr2 = (self.data[1] & 0b0001_1000) >> 3;
-        67 + 192 * (1 << osr2)
+        let osr2 = self.osr2();
+        67 + 192 * (1u64 << osr2)
     }
 }
 
@@ -494,5 +512,42 @@ impl HallConf {
             HallConf::TWOPHASE => 0x0,
             HallConf::FOURPHASE => 0xC,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Register;
+
+    #[test]
+    fn timing_fields_use_low_and_high_register_bytes() {
+        // Register bytes are stored [bits 15:8, bits 7:0].
+        // OSR2=2 in high-byte bits 4:3; DIG_FILT=5 and OSR=3 in low byte.
+        let register = Register::<0x02>::new([
+            0b0001_0000,
+            0b0001_0111,
+        ]);
+
+        assert_eq!(register.osr(), 3);
+        assert_eq!(register.dig_filt(), 5);
+        assert_eq!(register.osr2(), 2);
+    }
+
+    #[test]
+    fn timing_formula_matches_decoded_fields() {
+        // OSR=2, DIG_FILT=3, OSR2=1.
+        let register = Register::<0x02>::new([
+            0b0000_1000,
+            0b0000_1110,
+        ]);
+
+        assert_eq!(
+            register.magnetic_axis_conversion_time_micro(),
+            67 + 64 * 4 * (2 + 8),
+        );
+        assert_eq!(
+            register.temperature_conversion_time_micro(),
+            67 + 192 * 2,
+        );
     }
 }
