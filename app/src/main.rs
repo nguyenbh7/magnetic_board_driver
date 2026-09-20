@@ -49,6 +49,8 @@ use data_transfer::{
         SetMlxSensitivity,
         MlxSensitivityConfig,
         MlxSensitivityStatus,
+        GetMlxTiming,
+        MlxTimingStatus,
     },
 };
 
@@ -95,6 +97,13 @@ enum Message {
     GetMlxSensitivity,
     SetMlxSensitivity,
     ReceivedMlxSensitivity(MlxSensitivityStatus),
+    GetMlxTiming,
+    ReceivedMlxTiming(MlxTimingStatus),
+    UiScaleIncrease,
+    UiScaleDecrease,
+    UiScaleReset,
+    CopyMlxStatus,
+    CopyMlxTiming,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -148,6 +157,8 @@ struct Context {
     mlx_resolution: String,
     mlx_hall_conf: String,
     mlx_status: Option<MlxSensitivityStatus>,
+    mlx_timing_status: Option<MlxTimingStatus>,
+    ui_scale_steps: i8,
 }
 
 #[derive(Debug, Clone)]
@@ -156,8 +167,8 @@ pub enum Error {
     IoError(tokio::io::ErrorKind),
 }
 
-const MLX_HALL_CONF_DEFAULT_LABEL: &str = "0xC = Default Sampling";
-const MLX_HALL_CONF_FAST_LABEL: &str = "0x0 = Faster Sampling";
+const MLX_HALL_CONF_DEFAULT_LABEL: &str = "0xC = Four-phase / default";
+const MLX_HALL_CONF_FAST_LABEL: &str = "0x0 = Two-phase";
 
 fn hall_conf_label_to_value(label: &str) -> u8 {
     match label {
@@ -200,6 +211,43 @@ fn board_presence_text(presence: &BoardPresence) -> String {
     }
 }
 
+fn ui_scale_factor(context: &Context) -> f32 {
+    (1.0 + 0.10 * f32::from(context.ui_scale_steps)).clamp(0.60, 2.00)
+}
+
+fn mlx_status_text(context: &Context) -> String {
+    match &context.mlx_status {
+        Some(status) => format!(
+            "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
+            status.ok,
+            status.gain,
+            status.resolution,
+            status.hall_conf,
+        ),
+        None => "Current: not read yet".to_string(),
+    }
+}
+
+fn mlx_timing_text(context: &Context) -> String {
+    match &context.mlx_timing_status {
+        Some(status) if status.ok => format!(
+            "Timing: board {} sensor {} · reg02=0x{:02X}{:02X} · OSR={} · DIG_FILT={} · OSR2={} · axis={} us · temp={} us · XYZ+T predicted={} us",
+            status.board_id,
+            status.sensor_index,
+            status.register_02_msb,
+            status.register_02_lsb,
+            status.osr,
+            status.dig_filt,
+            status.osr2,
+            status.magnetic_axis_conversion_time_us,
+            status.temperature_conversion_time_us,
+            status.xyz_t_single_measurement_time_us,
+        ),
+        Some(_) => "Timing: no detected sensor".to_string(),
+        None => "Timing: not read yet".to_string(),
+    }
+}
+
 fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
@@ -232,6 +280,13 @@ async fn start_field_stream(client: HostClient<WireError>) -> Result<(), String>
 async fn get_board_presence(client: HostClient<WireError>) -> BoardPresence {
     client
         .send_resp::<GetBoardPresence>(&())
+        .await
+        .unwrap_or_default()
+}
+
+async fn get_mlx_timing(client: HostClient<WireError>) -> MlxTimingStatus {
+    client
+        .send_resp::<GetMlxTiming>(&())
         .await
         .unwrap_or_default()
 }
@@ -495,6 +550,47 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::GetMlxTiming => {
+            if let Some(sw) = &context.sensor_watcher {
+                let client = sw.get_client();
+                Task::perform(
+                    get_mlx_timing(client),
+                    Message::ReceivedMlxTiming,
+                )
+            } else {
+                Task::none()
+            }
+        }
+
+        Message::ReceivedMlxTiming(status) => {
+            context.mlx_timing_status = Some(status);
+            Task::none()
+        }
+
+        Message::UiScaleIncrease => {
+            context.ui_scale_steps = (context.ui_scale_steps + 1).min(10);
+            Task::none()
+        }
+
+        Message::UiScaleDecrease => {
+            context.ui_scale_steps = (context.ui_scale_steps - 1).max(-4);
+            Task::none()
+        }
+
+        Message::UiScaleReset => {
+            context.ui_scale_steps = 0;
+            Task::none()
+        }
+
+        Message::CopyMlxStatus => {
+            iced::clipboard::write(mlx_status_text(context))
+        }
+
+        Message::CopyMlxTiming => {
+            iced::clipboard::write(mlx_timing_text(context))
+        }
+
+
         Message::SelectDashboardTab(tab) => {
             context.dashboard_tab = tab;
             Task::none()
@@ -658,16 +754,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         container(trace_content)
     };
 
-    let mlx_status_text = match &context.mlx_status {
-        Some(status) => format!(
-            "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
-            status.ok,
-            status.gain,
-            status.resolution,
-            status.hall_conf,
-        ),
-        None => "Current: not read yet".to_string(),
-    };
+    let mlx_status_text = mlx_status_text(context);
 
     let selected_hall_conf = Some(if context.mlx_hall_conf.is_empty() {
         MLX_HALL_CONF_DEFAULT_LABEL.to_string()
@@ -675,11 +762,14 @@ fn view(context: &Context) -> Element<'_, Message> {
         context.mlx_hall_conf.clone()
     });
 
+    let mlx_timing_text = mlx_timing_text(context);
+
     let mlx_widget = container(
         column![
             row![
                 text("MLX90393 sensitivity"),
                 text(mlx_status_text),
+                button("Copy status").on_press(Message::CopyMlxStatus),
             ]
             .spacing(16),
 
@@ -714,12 +804,19 @@ fn view(context: &Context) -> Element<'_, Message> {
                     selected_hall_conf,
                     Message::UpdateMlxHallConf,
                 ),
-                text("Default is stable; faster sampling may reduce per-frame delay.")
+                text("Hall configuration changes the Hall sampling topology; timing is diagnosed separately from OSR/DIG_FILT.")
             ]
             .spacing(4),
 
             row![
+                text(mlx_timing_text),
+                button("Copy timing").on_press(Message::CopyMlxTiming),
+            ]
+            .spacing(8),
+
+            row![
                 button("Read from board").on_press(Message::GetMlxSensitivity),
+                button("Read timing").on_press(Message::GetMlxTiming),
                 button("Apply to detected boards").on_press(Message::SetMlxSensitivity),
             ]
             .spacing(12),
@@ -764,7 +861,17 @@ fn view(context: &Context) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
 
+    let scale_percent = (ui_scale_factor(context) * 100.0).round() as u16;
+    let scale_controls = row![
+        text(format!("UI scale: {}%", scale_percent)),
+        button("−").on_press(Message::UiScaleDecrease),
+        button("+").on_press(Message::UiScaleIncrease),
+        button("Reset").on_press(Message::UiScaleReset),
+    ]
+    .spacing(8);
+
     column![
+        scale_controls,
         serial_selector,
         ping_widget,
         dashboard,
@@ -776,5 +883,7 @@ fn view(context: &Context) -> Element<'_, Message> {
 
 #[tokio::main]
 pub async fn main() -> iced::Result {
-    iced::run(update, view)
+    iced::application(Context::default, update, view)
+        .scale_factor(ui_scale_factor)
+        .run()
 }
