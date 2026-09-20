@@ -17,6 +17,26 @@ pub struct SensorField {
     pub time: u64,
 }
 
+pub const SENSORS_PER_BOARD: usize = 16;
+
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct BoardFrameSample {
+    pub field: MagneticField,
+    pub position: (f32, f32, f32),
+    pub address: u8,
+    pub time: u64,
+}
+
+#[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct BoardFrame {
+    pub board_id: u16,
+    pub frame_id: u32,
+    pub sensor_mask: u16,
+    pub samples: [BoardFrameSample; SENSORS_PER_BOARD],
+}
+
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
 pub struct MlxSensitivityConfig {
@@ -87,4 +107,5 @@ topics! {
     | TopicTy                   | MessageTy     | Path              | Cfg                           |
     | -------                   | ---------     | ----              | ---                           |
     | MagneticTopic             | SensorField   | "bfield/data"     |                               |
+    | BoardFrameTopic           | BoardFrame    | "bfield/frame"    |                               |
 }
