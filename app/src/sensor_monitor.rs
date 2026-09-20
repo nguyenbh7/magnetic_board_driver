@@ -64,10 +64,16 @@ impl MagneticData {
 impl SensorWatcher {
     pub fn new(serial_port_info: &SerialPortInfo) -> SensorWatcher {
         let p = &serial_port_info.0.port_name;
-        let baud_rate = 115200;
+        const SERIAL_BAUD_RATE: u32 = 921_600;
 
         let client =
-            HostClient::<WireError>::new_serial_cobs(p, ERROR_PATH, 64, 115_200, VarSeqKind::Seq2);
+            HostClient::<WireError>::new_serial_cobs(
+                p,
+                ERROR_PATH,
+                64,
+                SERIAL_BAUD_RATE,
+                VarSeqKind::Seq2,
+            );
 
         SensorWatcher {
             client,
