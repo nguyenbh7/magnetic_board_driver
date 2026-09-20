@@ -34,6 +34,8 @@ pub struct BoardLiveFitState {
     magnet_preset: MagnetPreset,
     magnet_effective_scale: f64,
     use_known_magnet_prior: bool,
+    fit_in_progress: bool,
+    fit_generation: u64,
 }
 
 impl Default for BoardLiveFitState {
@@ -58,6 +60,8 @@ impl Default for BoardLiveFitState {
             magnet_preset: MagnetPreset::ThickD54N52,
             magnet_effective_scale: 1.0,
             use_known_magnet_prior: true,
+            fit_in_progress: false,
+            fit_generation: 0,
         }
     }
 }
@@ -79,6 +83,40 @@ pub struct FitResult {
     pub n_sensors: usize,
     pub moment: (f64, f64, f64),
     pub moment_norm: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FitJob {
+    pub board_id: u16,
+    pub generation: u64,
+    pub frame_mid_time_us: u64,
+    samples: Vec<Sample>,
+    target_moment_norm: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FitCompletion {
+    pub board_id: u16,
+    pub generation: u64,
+    pub frame_mid_time_us: u64,
+    pub result: Option<FitResult>,
+}
+
+impl FitJob {
+    pub fn run(self) -> FitCompletion {
+        let result = if let Some(target_moment_norm) = self.target_moment_norm {
+            fit_dipole_grid_moment_norm_prior(&self.samples, target_moment_norm)
+        } else {
+            fit_dipole_grid(&self.samples)
+        };
+
+        FitCompletion {
+            board_id: self.board_id,
+            generation: self.generation,
+            frame_mid_time_us: self.frame_mid_time_us,
+            result,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +220,8 @@ impl BoardLiveFits {
 
         for board in self.boards.values_mut() {
             board.reset_frame_timing();
+            board.fit_generation = board.fit_generation.wrapping_add(1);
+            board.fit_in_progress = false;
         }
     }
 
@@ -203,9 +243,9 @@ impl BoardLiveFits {
         }
     }
 
-    pub fn update(&mut self, field: SensorField) {
+    pub fn update(&mut self, field: SensorField) -> Option<FitJob> {
         if !self.is_expected_field(&field) {
-            return;
+            return None;
         }
 
         let board_id = field.board_id;
@@ -214,7 +254,27 @@ impl BoardLiveFits {
         let board = self.boards.entry(board_id).or_default();
 
         if let Some(frame) = board.current_frame.update(field, expected_sensor_count) {
-            board.update_from_completed_frame(frame);
+            return board.update_from_completed_frame(frame);
+        }
+
+        None
+    }
+
+    pub fn apply_fit_completion(&mut self, completion: FitCompletion) {
+        let Some(board) = self.boards.get_mut(&completion.board_id) else {
+            return;
+        };
+
+        if completion.generation != board.fit_generation {
+            return;
+        }
+
+        board.fit_in_progress = false;
+
+        if let Some(result) = completion.result {
+            board.last_fit_time_us = Some(completion.frame_mid_time_us);
+            board.record_displacement(completion.frame_mid_time_us, &result);
+            board.result = Some(result);
         }
     }
 
@@ -281,6 +341,8 @@ impl BoardLiveFits {
             board.magnet_preset = preset;
             board.magnet_effective_scale = 1.0;
             board.calibrated_moment_norm = None;
+            board.fit_generation = board.fit_generation.wrapping_add(1);
+            board.fit_in_progress = false;
             board.reset_displacement();
         }
     }
@@ -306,7 +368,7 @@ pub struct BoardFitSummary {
     pub incomplete_frames: u64,
 }
 impl BoardLiveFitState {
-    fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
+    fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) -> Option<FitJob> {
         let frame_mid_time_us =
             frame.frame_start_time_us
                 + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
@@ -340,10 +402,14 @@ impl BoardLiveFitState {
             .collect();
 
         if raw_samples.len() < 6 {
-            return;
+            return None;
         }
 
         self.latest_raw_samples = raw_samples.clone();
+
+        if self.fit_in_progress {
+            return None;
+        }
 
         let samples = if let Some(background) = &self.background {
             subtract_background_samples(&raw_samples, background)
@@ -352,25 +418,24 @@ impl BoardLiveFitState {
         };
 
         if samples.len() < 6 {
-            return;
+            return None;
         }
 
-        let fit_result = if self.use_known_magnet_prior {
-            let target_moment_norm =
-                self.magnet_preset.moment_norm_app() * self.magnet_effective_scale;
-
-            fit_dipole_grid_moment_norm_prior(&samples, target_moment_norm)
-        } else if let Some(calibrated_moment_norm) = self.calibrated_moment_norm {
-            fit_dipole_grid_moment_norm_prior(&samples, calibrated_moment_norm)
+        let target_moment_norm = if self.use_known_magnet_prior {
+            Some(self.magnet_preset.moment_norm_app() * self.magnet_effective_scale)
         } else {
-            fit_dipole_grid(&samples)
+            self.calibrated_moment_norm
         };
 
-        if let Some(result) = fit_result {
-            self.last_fit_time_us = Some(frame_mid_time_us);
-            self.record_displacement(frame_mid_time_us, &result);
-            self.result = Some(result);
-        }
+        self.fit_in_progress = true;
+
+        Some(FitJob {
+            board_id: frame.fields.first().map(|field| field.board_id).unwrap_or(0),
+            generation: self.fit_generation,
+            frame_mid_time_us,
+            samples,
+            target_moment_norm,
+        })
     }
 
     fn median_frame_period_us(&self) -> Option<f64> {
@@ -474,6 +539,8 @@ impl BoardLiveFitState {
             self.calibrated_moment_norm = Some(result.moment_norm);
         }
 
+        self.fit_generation = self.fit_generation.wrapping_add(1);
+        self.fit_in_progress = false;
         self.reset_displacement();
     }
 
@@ -497,6 +564,8 @@ impl BoardLiveFitState {
         self.origin = None;
         self.start_time_us = None;
         self.last_fit_time_us = None;
+        self.fit_generation = self.fit_generation.wrapping_add(1);
+        self.fit_in_progress = false;
         self.displacement_history.clear();
     }
 
