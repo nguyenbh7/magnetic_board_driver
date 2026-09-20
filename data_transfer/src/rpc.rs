@@ -19,6 +19,28 @@ pub struct SensorField {
 
 pub const SENSORS_PER_BOARD: usize = 16;
 
+/// Canonical physical 4x4 MLX90393 sensor-center coordinates in firmware/address
+/// order. The PCB spans 13.5 mm center-to-center across each axis, which means
+/// three 4.5 mm intervals between four sensor centers.
+pub const SENSOR_POSITIONS_MM: [(f32, f32, f32); SENSORS_PER_BOARD] = [
+    ( 6.75, -6.75, 0.0),
+    ( 2.25, -6.75, 0.0),
+    (-2.25, -6.75, 0.0),
+    (-6.75, -6.75, 0.0),
+    ( 6.75, -2.25, 0.0),
+    ( 2.25, -2.25, 0.0),
+    (-2.25, -2.25, 0.0),
+    (-6.75, -2.25, 0.0),
+    ( 6.75,  2.25, 0.0),
+    ( 2.25,  2.25, 0.0),
+    (-2.25,  2.25, 0.0),
+    (-6.75,  2.25, 0.0),
+    ( 6.75,  6.75, 0.0),
+    ( 2.25,  6.75, 0.0),
+    (-2.25,  6.75, 0.0),
+    (-6.75,  6.75, 0.0),
+];
+
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
 pub struct BoardFrameSample {
