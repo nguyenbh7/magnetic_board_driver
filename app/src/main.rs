@@ -114,6 +114,7 @@ enum Message {
     CopyMlxStatus,
     CopyMlxTiming,
     CopyBoardCadence(u16),
+    CopyFitStatus(u16),
     CopyLogStatus,
 }
 
@@ -291,6 +292,21 @@ fn board_cadence_text(summary: &BoardFitSummary) -> String {
     }
 }
 
+fn board_fit_status_text(summary: &BoardFitSummary) -> String {
+    let duration_text = summary
+        .last_fit_duration_ms
+        .map(|ms| format!("{:.1} ms", ms))
+        .unwrap_or_else(|| "-".to_string());
+
+    format!(
+        "Board {} · Fit worker: {} · completed {} · last {}",
+        summary.board_id,
+        if summary.fit_in_progress { "busy" } else { "idle" },
+        summary.completed_fit_count,
+        duration_text,
+    )
+}
+
 fn sensor_position_from_index(sensor_index: usize) -> (f32, f32, f32) {
     let sensor_grid_side_length = 13.5_f32;
     let step = sensor_grid_side_length / 4.0;
@@ -449,17 +465,7 @@ async fn stop_field_stream(client: HostClient<WireError>) -> () {
 }
 
 async fn run_fit_job(job: FitJob) -> FitCompletion {
-    let failed = FitCompletion {
-        board_id: job.board_id,
-        generation: job.generation,
-        frame_mid_time_us: job.frame_mid_time_us,
-        result: None,
-    };
-
-    match tokio::task::spawn_blocking(move || job.run()).await {
-        Ok(completion) => completion,
-        Err(_) => failed,
-    }
+    async_std::task::spawn_blocking(move || job.run()).await
 }
 
 fn update(context: &mut Context, message: Message) -> Task<Message> {
@@ -790,6 +796,18 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(cadence)
         }
 
+        Message::CopyFitStatus(board_id) => {
+            let status = context
+                .live_fits
+                .board_summaries()
+                .into_iter()
+                .find(|summary| summary.board_id == board_id)
+                .map(|summary| board_fit_status_text(&summary))
+                .unwrap_or_else(|| format!("Board {} · Fit worker: unavailable", board_id));
+
+            iced::clipboard::write(status)
+        }
+
         Message::CopyLogStatus => {
             iced::clipboard::write(log_status_text(context))
         }
@@ -894,6 +912,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                     .unwrap_or_else(|| "Target moment: none".to_string());
 
                 let cadence_text = board_cadence_text(&summary);
+                let fit_status_text = board_fit_status_text(&summary);
 
                 let board_card = container(
                     column![
@@ -931,6 +950,12 @@ fn view(context: &Context) -> Element<'_, Message> {
                             text(cadence_text),
                             button("Copy cadence")
                                 .on_press(Message::CopyBoardCadence(summary.board_id)),
+                        ]
+                        .spacing(8),
+                        row![
+                            text(fit_status_text),
+                            button("Copy fit status")
+                                .on_press(Message::CopyFitStatus(summary.board_id)),
                         ]
                         .spacing(8),
                         text(if summary.has_background {
