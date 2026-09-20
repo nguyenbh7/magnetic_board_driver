@@ -105,13 +105,26 @@ impl SensorSubscription {
         Self(subscription)
     }
     
-    pub async fn recv(&mut self) -> Option<BoardFrame>{
-        self.0.recv().await
+    pub async fn recv(&mut self) -> Option<Vec<BoardFrame>> {
+        const UI_BATCH_WINDOW: Duration = Duration::from_millis(33);
+
+        let first = self.0.recv().await?;
+        let mut frames = vec![first];
+        let deadline = tokio::time::Instant::now() + UI_BATCH_WINDOW;
+
+        loop {
+            match tokio::time::timeout_at(deadline, self.0.recv()).await {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        Some(frames)
     }
 }
 
 impl Stream for SensorSubscription {
-    type Item = BoardFrame;
+    type Item = Vec<BoardFrame>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
         let fut = self.get_mut().recv();
