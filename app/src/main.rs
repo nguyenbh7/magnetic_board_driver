@@ -174,6 +174,8 @@ struct Context {
     ui_scale_steps: i8,
     logged_bytes: u64,
     log_started_at: Option<std::time::Instant>,
+    stream_status: String,
+    received_stream_frames: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +403,15 @@ fn log_status_text(context: &Context) -> String {
 
 fn all_diagnostics_text(context: &Context) -> String {
     let mut lines = Vec::new();
+    lines.push(format!(
+        "Stream: {} · host frames received {}",
+        if context.stream_status.is_empty() {
+            "idle"
+        } else {
+            context.stream_status.as_str()
+        },
+        context.received_stream_frames,
+    ));
     lines.push(log_status_text(context));
 
     for summary in context.live_fits.board_summaries() {
@@ -433,7 +444,13 @@ async fn get_single_value(board: u32, sensor: u32, client: HostClient<WireError>
     client.send_resp::<SingleFieldValue>(&args).await.unwrap()
 }
 
-async fn start_field_stream(client: HostClient<WireError>) -> Result<(), String> {
+async fn restart_field_stream(client: HostClient<WireError>) -> Result<(), String> {
+    // App restarts can leave the firmware's spawned stream task alive.
+    // Always request termination first, allow the current acquisition/publish
+    // cycle to drain, then start one fresh task.
+    let _ = client.send_resp::<StopFieldStream>(&()).await;
+    async_std::task::sleep(Duration::from_millis(100)).await;
+
     client
         .send_resp::<StartFieldStream>(&())
         .await
@@ -491,6 +508,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits = BoardLiveFits::default();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveFits;
+            context.stream_status = "idle".to_string();
+            context.received_stream_frames = 0;
             Task::none()
         }
         Message::UpdatePorts => {
@@ -546,6 +565,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::ReceivedStreamFrame(frame) => {
+            context.received_stream_frames =
+                context.received_stream_frames.saturating_add(1);
+            context.stream_status = "receiving".to_string();
+
             let mut fit_job = None;
 
             for sensor_index in 0..frame.samples.len() {
@@ -589,6 +612,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
+            context.stream_status = "detecting boards".to_string();
+            context.received_stream_frames = 0;
+
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
 
@@ -607,11 +633,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits.set_presence(context.board_presence.clone());
             context.sensor_traces.set_presence(context.board_presence.clone());
 
+            context.stream_status = "restarting firmware stream".to_string();
+
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
 
                 Task::perform(
-                    start_field_stream(client),
+                    restart_field_stream(client),
                     Message::FieldStreamStarted,
                 )
             } else {
@@ -624,12 +652,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::FieldStreamStarted(result) => {
             if let Err(err) = result {
+                context.stream_status = format!("start failed: {err}");
                 eprintln!("Failed to start field stream: {err}");
-
-                // Most common cause: the firmware stream task is already running
-                // or has not fully exited after Stop.
                 return Task::none();
             }
+
+            context.stream_status = "subscribing".to_string();
 
             if let Some(sw) = &mut context.sensor_watcher {
                 let client = sw.get_client();
@@ -643,6 +671,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::StopFieldStream => {
+                context.stream_status = "stopping".to_string();
                 if let Some(sw) = &context.sensor_watcher {
                     let client = sw.get_client();
                     Task::perform(
@@ -655,6 +684,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             
         }
         Message::FieldStreamStopped => {
+            context.stream_status = "idle".to_string();
             Task::none()
         },
 
@@ -872,6 +902,15 @@ fn view(context: &Context) -> Element<'_, Message> {
                 button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
             ]
             .spacing(8),
+            text(format!(
+                "Stream: {} · host frames received {}",
+                if context.stream_status.is_empty() {
+                    "idle"
+                } else {
+                    context.stream_status.as_str()
+                },
+                context.received_stream_frames,
+            )),
             text(board_presence_text(&context.board_presence)),
             row![
                 text(log_status_text(context)),
