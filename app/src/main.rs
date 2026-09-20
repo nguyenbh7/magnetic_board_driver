@@ -96,6 +96,7 @@ enum Message {
     StopFieldStream,
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
+    StopLogging,
     WroteFile(usize),
     UpdateMlxGain(String),
     UpdateMlxResolution(String),
@@ -291,23 +292,31 @@ fn board_cadence_text(summary: &BoardFitSummary) -> String {
 fn log_status_text(context: &Context) -> String {
     let megabytes = context.logged_bytes as f64 / 1_000_000.0;
 
-    match context.log_started_at {
-        Some(started_at) => {
+    if context.file_writer.is_some() {
+        if let Some(started_at) = context.log_started_at {
             let elapsed_minutes = started_at.elapsed().as_secs_f64() / 60.0;
             if elapsed_minutes > 0.0 {
-                format!(
-                    "Log: {:.2} MB written · {:.2} MB/min average · compact board-frame format",
+                return format!(
+                    "Log: recording · {:.2} MB written · {:.2} MB/min average · compact board-frame format",
                     megabytes,
                     megabytes / elapsed_minutes,
-                )
-            } else {
-                format!(
-                    "Log: {:.2} MB written · compact board-frame format",
-                    megabytes,
-                )
+                );
             }
         }
-        None => "Log: not recording · compact board-frame format".to_string(),
+
+        return format!(
+            "Log: recording · {:.2} MB written · compact board-frame format",
+            megabytes,
+        );
+    }
+
+    if context.logged_bytes > 0 {
+        format!(
+            "Log: stopped · {:.2} MB in last file · compact board-frame format",
+            megabytes,
+        )
+    } else {
+        "Log: not recording · compact board-frame format".to_string()
     }
 }
 
@@ -565,6 +574,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         },
+        Message::StopLogging => {
+            context.file_writer = None;
+            context.log_started_at = None;
+            Task::none()
+        },
         Message::WroteFile(bytes_written) => {
             context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
             Task::none()
@@ -744,7 +758,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![
                 text("File output: "),
                 text_input("File", &context.ping_args.sensor),
-                button("Select File").on_press(Message::SelectFile)
+                button("Select File").on_press(Message::SelectFile),
+                button("Stop logging").on_press(Message::StopLogging)
             ]
         ]
     );
