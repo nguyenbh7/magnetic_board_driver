@@ -169,7 +169,7 @@ async fn main(spawner: Spawner) {
     //let uart_rx_bus = UART_RX_BUS.init(uart_rx_bus_mutex);
     let mut i2c_config = i2c::Config::default();
     i2c_config.timeout = Duration::from_millis(500);
-    i2c_config.frequency = khz(100);
+    i2c_config.frequency = khz(400);
     i2c_config.sda_pullup = true;
     i2c_config.scl_pullup = true;
 
