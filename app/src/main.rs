@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::{BTreeMap, VecDeque}, time::Duration};
 
 use crossterm::event::{self, Event, KeyCode};
 use data_transfer::rpc::{BoardFrameTopic, StopFieldStream};
@@ -175,6 +175,9 @@ struct Context {
     ui_scale_steps: i8,
     logged_bytes: u64,
     log_started_at: Option<std::time::Instant>,
+    log_queue: VecDeque<BoardFrame>,
+    log_write_in_progress: bool,
+    log_stop_requested: bool,
     stream_status: String,
     received_stream_frames: u64,
 }
@@ -368,20 +371,31 @@ fn log_status_text(context: &Context) -> String {
     let megabytes = context.logged_bytes as f64 / 1_000_000.0;
 
     if context.file_writer.is_some() {
+        let state = if context.log_stop_requested {
+            "stopping"
+        } else {
+            "recording"
+        };
+        let pending = context.log_queue.len() + usize::from(context.log_write_in_progress);
+
         if let Some(started_at) = context.log_started_at {
             let elapsed_minutes = started_at.elapsed().as_secs_f64() / 60.0;
             if elapsed_minutes > 0.0 {
                 return format!(
-                    "Log: recording · {:.2} MB written · {:.2} MB/min average · compact board-frame v2 format",
+                    "Log: {} · {:.2} MB written · {:.2} MB/min average · {} pending · compact board-frame v2 format",
+                    state,
                     megabytes,
                     megabytes / elapsed_minutes,
+                    pending,
                 );
             }
         }
 
         return format!(
-            "Log: recording · {:.2} MB written · compact board-frame v2 format",
+            "Log: {} · {:.2} MB written · {} pending · compact board-frame v2 format",
+            state,
             megabytes,
+            pending,
         );
     }
 
@@ -482,6 +496,35 @@ async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) -
     }
 
     0
+}
+
+fn next_log_write_task(context: &mut Context) -> Option<Task<Message>> {
+    if context.log_write_in_progress {
+        return None;
+    }
+
+    let Some(frame) = context.log_queue.pop_front() else {
+        if context.log_stop_requested {
+            context.file_writer = None;
+            context.log_started_at = None;
+            context.log_stop_requested = false;
+        }
+        return None;
+    };
+
+    let Some(writer) = context.file_writer.as_ref().cloned() else {
+        context.log_queue.clear();
+        return None;
+    };
+
+    context.log_write_in_progress = true;
+
+    Some(Task::perform(
+        async move {
+            write_frame_data(&*writer, &frame).await
+        },
+        Message::WroteFile,
+    ))
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -589,14 +632,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 ));
             }
 
-            if let Some(w) = &context.file_writer {
-                let wr = w.clone();
-                tasks.push(Task::perform(
-                    async move {
-                        write_frame_data(&*wr, &frame).await
-                    },
-                    Message::WroteFile,
-                ));
+            if context.file_writer.is_some() && !context.log_stop_requested {
+                context.log_queue.push_back(frame.clone());
+
+                if let Some(task) = next_log_write_task(context) {
+                    tasks.push(task);
+                }
             }
 
             Task::batch(tasks)
@@ -698,17 +739,22 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.file_writer = Some(writer);
                 context.logged_bytes = 8;
                 context.log_started_at = Some(std::time::Instant::now());
+                context.log_queue.clear();
+                context.log_write_in_progress = false;
+                context.log_stop_requested = false;
             }
             Task::none()
         },
         Message::StopLogging => {
-            context.file_writer = None;
-            context.log_started_at = None;
-            Task::none()
+            context.log_stop_requested = true;
+
+            next_log_write_task(context).unwrap_or_else(Task::none)
         },
         Message::WroteFile(bytes_written) => {
             context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
-            Task::none()
+            context.log_write_in_progress = false;
+
+            next_log_write_task(context).unwrap_or_else(Task::none)
         },
         Message::UpdateMlxGain(s) => {
             context.mlx_gain = s;
