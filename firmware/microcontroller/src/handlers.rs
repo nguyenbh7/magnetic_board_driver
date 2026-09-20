@@ -253,8 +253,6 @@ pub async fn stream_field(
                     continue;
                 };
 
-                info!("{}", message);
-
                 if sender
                     .publish::<MagneticTopic>(seq.into(), &message)
                     .await
