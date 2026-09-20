@@ -266,7 +266,7 @@ async fn main(spawner: Spawner) {
     }
     let (rx_impl, tx_impl) = impls.unwrap();
 
-    static PACKET_RX_BUF: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0u8; 256]);
+    static PACKET_RX_BUF: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0u8; 2048]);
     
     
     let context = Context {
