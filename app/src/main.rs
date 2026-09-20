@@ -37,6 +37,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use data_transfer::{
     self,
+    conversions::{MagneticField, MagneticValue, TempValue},
     messaging::MessageReader,
     rpc::{
         SensorField,
@@ -289,6 +290,66 @@ fn board_cadence_text(summary: &BoardFitSummary) -> String {
     }
 }
 
+fn sensor_position_from_index(sensor_index: usize) -> (f32, f32, f32) {
+    let sensor_grid_side_length = 13.5_f32;
+    let step = sensor_grid_side_length / 4.0;
+
+    (
+        -sensor_grid_side_length / 2.0 + step * ((sensor_index / 4) as f32),
+        -sensor_grid_side_length / 2.0 + step * ((sensor_index % 4) as f32),
+        0.0,
+    )
+}
+
+fn sensor_address_from_index(board_id: u16, sensor_index: usize) -> u8 {
+    let address = 0x0C + sensor_index as u8;
+
+    if board_id == 2 {
+        address ^ 0b0100_0000
+    } else {
+        address
+    }
+}
+
+fn compact_sample_to_sensor_field(
+    frame: &BoardFrame,
+    sensor_index: usize,
+) -> Option<SensorField> {
+    if frame.sensor_mask & (1u16 << sensor_index) == 0 {
+        return None;
+    }
+
+    let sample = frame.samples[sensor_index];
+
+    let magnetic_value = |value: f32| {
+        if value.is_finite() {
+            Some(MagneticValue::uT(value as f64))
+        } else {
+            None
+        }
+    };
+
+    let temperature = if sample.temperature_c.is_finite() {
+        Some(TempValue::Celsius(sample.temperature_c as f64))
+    } else {
+        None
+    };
+
+    Some(SensorField {
+        field: MagneticField {
+            x: magnetic_value(sample.bx_ut),
+            y: magnetic_value(sample.by_ut),
+            z: magnetic_value(sample.bz_ut),
+            t: temperature,
+        },
+        board_id: frame.board_id,
+        frame_id: frame.frame_id,
+        position: sensor_position_from_index(sensor_index),
+        address: sensor_address_from_index(frame.board_id, sensor_index),
+        time: frame.base_time_us + u64::from(sample.time_offset_us),
+    })
+}
+
 fn log_status_text(context: &Context) -> String {
     let megabytes = context.logged_bytes as f64 / 1_000_000.0;
 
@@ -297,7 +358,7 @@ fn log_status_text(context: &Context) -> String {
             let elapsed_minutes = started_at.elapsed().as_secs_f64() / 60.0;
             if elapsed_minutes > 0.0 {
                 return format!(
-                    "Log: recording · {:.2} MB written · {:.2} MB/min average · compact board-frame format",
+                    "Log: recording · {:.2} MB written · {:.2} MB/min average · compact board-frame v2 format",
                     megabytes,
                     megabytes / elapsed_minutes,
                 );
@@ -305,18 +366,18 @@ fn log_status_text(context: &Context) -> String {
         }
 
         return format!(
-            "Log: recording · {:.2} MB written · compact board-frame format",
+            "Log: recording · {:.2} MB written · compact board-frame v2 format",
             megabytes,
         );
     }
 
     if context.logged_bytes > 0 {
         format!(
-            "Log: stopped · {:.2} MB in last file · compact board-frame format",
+            "Log: stopped · {:.2} MB in last file · compact board-frame v2 format",
             megabytes,
         )
     } else {
-        "Log: not recording · compact board-frame format".to_string()
+        "Log: not recording · compact board-frame v2 format".to_string()
     }
 }
 
@@ -453,18 +514,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
         Message::ReceivedStreamFrame(frame) => {
             for sensor_index in 0..frame.samples.len() {
-                if frame.sensor_mask & (1u16 << sensor_index) == 0 {
+                let Some(sensor_field) =
+                    compact_sample_to_sensor_field(&frame, sensor_index)
+                else {
                     continue;
-                }
-
-                let sample = frame.samples[sensor_index];
-                let sensor_field = SensorField {
-                    field: sample.field,
-                    board_id: frame.board_id,
-                    frame_id: frame.frame_id,
-                    position: sample.position,
-                    address: sample.address,
-                    time: sample.time,
                 };
 
                 context.live_fits.update(sensor_field.clone());
@@ -566,7 +619,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let path = fh.path();
                 let file = File::create(path).unwrap();
                 let mut writer = BufWriter::new(file);
-                let _ = writer.write_all(b"MLXBF001");
+                let _ = writer.write_all(b"MLXBF002");
                 let writer = Arc::new(Mutex::new(writer));
                 context.file_writer = Some(writer);
                 context.logged_bytes = 8;
