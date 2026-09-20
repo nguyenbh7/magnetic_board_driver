@@ -18,7 +18,7 @@ mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
-use live_fit::{BoardFitSummary, BoardLiveFits, MagnetPreset};
+use live_fit::{BoardFitSummary, BoardLiveFits, FitCompletion, FitJob, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
@@ -76,6 +76,7 @@ enum Message {
     GetField,
     RecievedField(data_transfer::rpc::SensorField),
     ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
+    FitCompleted(FitCompletion),
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
@@ -447,6 +448,20 @@ async fn stop_field_stream(client: HostClient<WireError>) -> () {
     client.send_resp::<StopFieldStream>(&()).await.unwrap()
 }
 
+async fn run_fit_job(job: FitJob) -> FitCompletion {
+    let failed = FitCompletion {
+        board_id: job.board_id,
+        generation: job.generation,
+        frame_mid_time_us: job.frame_mid_time_us,
+        result: None,
+    };
+
+    match tokio::task::spawn_blocking(move || job.run()).await {
+        Ok(completion) => completion,
+        Err(_) => failed,
+    }
+}
+
 fn update(context: &mut Context, message: Message) -> Task<Message> {
 
     //println!("{:#?}", message);
@@ -507,12 +522,14 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::RecievedField(sensor_field) => {
-            context.live_fits.update(sensor_field.clone());
+            let _ = context.live_fits.update(sensor_field.clone());
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
             Task::none()
         },
         Message::ReceivedStreamFrame(frame) => {
+            let mut fit_job = None;
+
             for sensor_index in 0..frame.samples.len() {
                 let Some(sensor_field) =
                     compact_sample_to_sensor_field(&frame, sensor_index)
@@ -520,23 +537,38 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     continue;
                 };
 
-                context.live_fits.update(sensor_field.clone());
+                if let Some(job) = context.live_fits.update(sensor_field.clone()) {
+                    fit_job = Some(job);
+                }
+
                 context.sensor_traces.update(&sensor_field);
                 context.ping_field = Some(sensor_field);
             }
 
-            match &context.file_writer {
-                Some(w) => {
-                    let wr = w.clone();
-                    Task::perform(
-                        async move {
-                            write_frame_data(&*wr, &frame).await
-                        },
-                        Message::WroteFile
-                    )
-                },
-                None => Task::none(),
+            let mut tasks = Vec::new();
+
+            if let Some(job) = fit_job {
+                tasks.push(Task::perform(
+                    run_fit_job(job),
+                    Message::FitCompleted,
+                ));
             }
+
+            if let Some(w) = &context.file_writer {
+                let wr = w.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        write_frame_data(&*wr, &frame).await
+                    },
+                    Message::WroteFile,
+                ));
+            }
+
+            Task::batch(tasks)
+        },
+        Message::FitCompleted(completion) => {
+            context.live_fits.apply_fit_completion(completion);
+            Task::none()
         },
         Message::StartFieldStream => {
             if let Some(sw) = &context.sensor_watcher {
