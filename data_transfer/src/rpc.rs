@@ -11,6 +11,7 @@ use crate::conversions::MagneticField;
 pub struct SensorField {
     pub field: MagneticField,
     pub board_id: u16,
+    pub frame_id: u32,
     pub position: (f32, f32, f32),
     pub address: u8,
     pub time: u64,
