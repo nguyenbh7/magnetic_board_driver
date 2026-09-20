@@ -36,6 +36,8 @@ pub struct BoardLiveFitState {
     use_known_magnet_prior: bool,
     fit_in_progress: bool,
     fit_generation: u64,
+    completed_fit_count: u64,
+    last_fit_duration_ms: Option<f64>,
 }
 
 impl Default for BoardLiveFitState {
@@ -62,6 +64,8 @@ impl Default for BoardLiveFitState {
             use_known_magnet_prior: true,
             fit_in_progress: false,
             fit_generation: 0,
+            completed_fit_count: 0,
+            last_fit_duration_ms: None,
         }
     }
 }
@@ -100,10 +104,13 @@ pub struct FitCompletion {
     pub generation: u64,
     pub frame_mid_time_us: u64,
     pub result: Option<FitResult>,
+    pub duration_ms: f64,
 }
 
 impl FitJob {
     pub fn run(self) -> FitCompletion {
+        let started_at = std::time::Instant::now();
+
         let result = if let Some(target_moment_norm) = self.target_moment_norm {
             fit_dipole_grid_moment_norm_prior(&self.samples, target_moment_norm)
         } else {
@@ -115,6 +122,7 @@ impl FitJob {
             generation: self.generation,
             frame_mid_time_us: self.frame_mid_time_us,
             result,
+            duration_ms: started_at.elapsed().as_secs_f64() * 1000.0,
         }
     }
 }
@@ -270,6 +278,8 @@ impl BoardLiveFits {
         }
 
         board.fit_in_progress = false;
+        board.completed_fit_count = board.completed_fit_count.saturating_add(1);
+        board.last_fit_duration_ms = Some(completion.duration_ms);
 
         if let Some(result) = completion.result {
             board.last_fit_time_us = Some(completion.frame_mid_time_us);
@@ -302,6 +312,9 @@ impl BoardLiveFits {
                 frame_span_ms: board.latest_frame_span_us.map(|us| us as f64 / 1000.0),
                 current_frame_id: board.current_frame.frame_id,
                 incomplete_frames: board.current_frame.incomplete_frames,
+                fit_in_progress: board.fit_in_progress,
+                completed_fit_count: board.completed_fit_count,
+                last_fit_duration_ms: board.last_fit_duration_ms,
             })
             .collect()
     }
@@ -366,6 +379,9 @@ pub struct BoardFitSummary {
     pub frame_span_ms: Option<f64>,
     pub current_frame_id: Option<u32>,
     pub incomplete_frames: u64,
+    pub fit_in_progress: bool,
+    pub completed_fit_count: u64,
+    pub last_fit_duration_ms: Option<f64>,
 }
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) -> Option<FitJob> {
