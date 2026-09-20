@@ -441,6 +441,23 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
             .await;
     }
 
+    pub fn predicted_measurement_time_us<
+        const X: bool,
+        const Y: bool,
+        const Z: bool,
+        const TEMP: bool,
+    >(&self) -> Option<u64> {
+        self.state.map(|state| {
+            let magnetic_axis_count =
+                u64::try_from([X, Y, Z].into_iter().filter(|x| *x).count()).unwrap();
+            T_STBY_MICRO
+                + T_ACTIVE_MICRO
+                + magnetic_axis_count * state.magnetic_conversion_time
+                + if TEMP { state.temperature_conversion_time } else { 0 }
+                + T_CONV_END_MICRO
+        })
+    }
+
     pub async fn get_measurement<const X: bool, const Y: bool, const Z: bool, const TEMP: bool>(
         &mut self,
     ) -> (Status, MagneticBits) {
@@ -642,6 +659,34 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
         (status, mbits)
         //Timer::after_micros(15).await;
         //info!("{}", status);
+    }
+
+    pub async fn get_field_now_xyz_t(&mut self) -> (Status, Option<MagneticField>) {
+        let state = self.state;
+        let (status, buffer) = self
+            .run_command(Command::read_measurement::<true, true, true, true>())
+            .await;
+        let [_, t1, t2, x1, x2, y1, y2, z1, z2] = buffer;
+        let mbits = MagneticBits::new(
+            Some([x1, x2]),
+            Some([y1, y2]),
+            Some([z1, z2]),
+            Some([t1, t2]),
+        );
+
+        let field = state.and_then(|state| {
+            MagneticField::from_mbits(
+                mbits,
+                state.temp_ref,
+                state.temperature_compensation,
+                state.gain,
+                state.resolution,
+                state.hall_configuration,
+            )
+        });
+        let field = if !status.error { field } else { None };
+
+        (status, field)
     }
 
     pub async fn get_field<
