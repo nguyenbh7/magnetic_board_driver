@@ -96,7 +96,7 @@ enum Message {
     StopFieldStream,
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
-    WroteFile,
+    WroteFile(usize),
     UpdateMlxGain(String),
     UpdateMlxResolution(String),
     UpdateMlxHallConf(String),
@@ -111,6 +111,7 @@ enum Message {
     CopyMlxStatus,
     CopyMlxTiming,
     CopyBoardCadence(u16),
+    CopyLogStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,6 +167,8 @@ struct Context {
     mlx_status: Option<MlxSensitivityStatus>,
     mlx_timing_status: Option<MlxTimingStatus>,
     ui_scale_steps: i8,
+    logged_bytes: u64,
+    log_started_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +288,29 @@ fn board_cadence_text(summary: &BoardFitSummary) -> String {
     }
 }
 
+fn log_status_text(context: &Context) -> String {
+    let megabytes = context.logged_bytes as f64 / 1_000_000.0;
+
+    match context.log_started_at {
+        Some(started_at) => {
+            let elapsed_minutes = started_at.elapsed().as_secs_f64() / 60.0;
+            if elapsed_minutes > 0.0 {
+                format!(
+                    "Log: {:.2} MB written · {:.2} MB/min average · compact board-frame format",
+                    megabytes,
+                    megabytes / elapsed_minutes,
+                )
+            } else {
+                format!(
+                    "Log: {:.2} MB written · compact board-frame format",
+                    megabytes,
+                )
+            }
+        }
+        None => "Log: not recording · compact board-frame format".to_string(),
+    }
+}
+
 fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
@@ -333,15 +359,18 @@ async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscrip
     Some(SensorSubscription::new(subs))
 }
 
-async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) {
+async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) -> usize {
     let mut writer = writer.lock().await;
     let mut data = [0; BoardFrame::POSTCARD_MAX_SIZE];
 
     if let Ok(encoded) = postcard::to_slice(frame, &mut data) {
         let length = (encoded.len() as u32).to_le_bytes();
-        let _ = writer.write_all(&length);
-        let _ = writer.write_all(encoded);
+        if writer.write_all(&length).is_ok() && writer.write_all(encoded).is_ok() {
+            return length.len() + encoded.len();
+        }
     }
+
+    0
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -439,9 +468,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     let wr = w.clone();
                     Task::perform(
                         async move {
-                            write_frame_data(&*wr, &frame).await;
+                            write_frame_data(&*wr, &frame).await
                         },
-                        |_| Message::WroteFile
+                        Message::WroteFile
                     )
                 },
                 None => Task::none(),
@@ -531,10 +560,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let _ = writer.write_all(b"MLXBF001");
                 let writer = Arc::new(Mutex::new(writer));
                 context.file_writer = Some(writer);
+                context.logged_bytes = 8;
+                context.log_started_at = Some(std::time::Instant::now());
             }
             Task::none()
         },
-        Message::WroteFile => {
+        Message::WroteFile(bytes_written) => {
+            context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
             Task::none()
         },
         Message::UpdateMlxGain(s) => {
@@ -660,6 +692,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(cadence)
         }
 
+        Message::CopyLogStatus => {
+            iced::clipboard::write(log_status_text(context))
+        }
+
         Message::SelectDashboardTab(tab) => {
             context.dashboard_tab = tab;
             Task::none()
@@ -700,6 +736,11 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![button("Start Field Stream").on_press(Message::StartFieldStream)],
             row![button("Stop Field Stream").on_press(Message::StopFieldStream)],
             text(board_presence_text(&context.board_presence)),
+            row![
+                text(log_status_text(context)),
+                button("Copy log stats").on_press(Message::CopyLogStatus),
+            ]
+            .spacing(8),
             row![
                 text("File output: "),
                 text_input("File", &context.ping_args.sensor),
