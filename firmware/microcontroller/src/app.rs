@@ -8,6 +8,7 @@ use crate::handlers::{
     stop_stream,
     get_mlx_sensitivity_handler,
     set_mlx_sensitivity_handler,
+    get_mlx_timing_handler,
     get_board_presence_handler,
 };
 use crate::mlx90393::sensorgroup::SensorGroup;
@@ -18,6 +19,7 @@ use data_transfer::rpc::{
     StopFieldStream,
     GetMlxSensitivity,
     SetMlxSensitivity,
+    GetMlxTiming,
     GetBoardPresence,
     MlxSensitivityConfig,
     BoardPresence,
@@ -124,8 +126,9 @@ define_dispatch! {
         | StartFieldStream          | spawn     | stream_field                  |
         | StopFieldStream           | blocking  | stop_stream                   |
         | GetMlxSensitivity         | blocking  | get_mlx_sensitivity_handler   |
-        | SetMlxSensitivity         | async  | set_mlx_sensitivity_handler   |
-        | GetBoardPresence        | async     | get_board_presence_handler |
+        | SetMlxSensitivity         | async     | set_mlx_sensitivity_handler   |
+        | GetMlxTiming              | async     | get_mlx_timing_handler        |
+        | GetBoardPresence          | async     | get_board_presence_handler     |
     };
 
     // Topics IN are messages we receive from the client, but that we do not reply
