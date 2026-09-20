@@ -26,6 +26,7 @@ pub struct BoardLiveFitState {
     start_time_us: Option<u64>,
     last_fit_time_us: Option<u64>,
     last_completed_frame_mid_time_us: Option<u64>,
+    last_completed_frame_id: Option<u32>,
     frame_period_history_us: VecDeque<u64>,
     latest_frame_span_us: Option<u64>,
     displacement_history: VecDeque<DisplacementPoint>,
@@ -49,6 +50,7 @@ impl Default for BoardLiveFitState {
             start_time_us: None,
             last_fit_time_us: None,
             last_completed_frame_mid_time_us: None,
+            last_completed_frame_id: None,
             frame_period_history_us: VecDeque::new(),
             latest_frame_span_us: None,
             displacement_history: VecDeque::new(),
@@ -87,6 +89,7 @@ pub struct DisplacementPoint {
 
 #[derive(Debug, Clone)]
 struct CompletedBoardFrame {
+    frame_id: u32,
     fields: Vec<SensorField>,
     frame_start_time_us: u64,
     frame_end_time_us: u64,
@@ -312,9 +315,15 @@ impl BoardLiveFitState {
             frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us)
         );
 
-        if let Some(previous_mid_time_us) = self.last_completed_frame_mid_time_us {
-            let period_us = frame_mid_time_us.saturating_sub(previous_mid_time_us);
-            if period_us > 0 {
+        if let (Some(previous_mid_time_us), Some(previous_frame_id)) = (
+            self.last_completed_frame_mid_time_us,
+            self.last_completed_frame_id,
+        ) {
+            let elapsed_us = frame_mid_time_us.saturating_sub(previous_mid_time_us);
+            let frame_delta = frame.frame_id.wrapping_sub(previous_frame_id);
+
+            if elapsed_us > 0 && frame_delta > 0 {
+                let period_us = elapsed_us / u64::from(frame_delta);
                 self.frame_period_history_us.push_back(period_us);
                 while self.frame_period_history_us.len() > 31 {
                     self.frame_period_history_us.pop_front();
@@ -322,6 +331,7 @@ impl BoardLiveFitState {
             }
         }
         self.last_completed_frame_mid_time_us = Some(frame_mid_time_us);
+        self.last_completed_frame_id = Some(frame.frame_id);
 
         let raw_samples: Vec<_> = frame
             .fields
@@ -418,6 +428,7 @@ impl BoardLiveFitState {
 
     fn reset_frame_timing(&mut self) {
         self.last_completed_frame_mid_time_us = None;
+        self.last_completed_frame_id = None;
         self.frame_period_history_us.clear();
         self.latest_frame_span_us = None;
     }
@@ -533,6 +544,7 @@ impl BoardFrameAccumulator {
         let frame_end_time_us = self.frame_end_time_us.take().unwrap_or(frame_start_time_us);
 
         Some(CompletedBoardFrame {
+            frame_id: self.frame_id.unwrap_or(0),
             fields,
             frame_start_time_us,
             frame_end_time_us,
