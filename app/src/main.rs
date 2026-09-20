@@ -109,7 +109,6 @@ enum Message {
     UiScaleReset,
     CopyMlxStatus,
     CopyMlxTiming,
-    NoOp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -605,8 +604,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(mlx_timing_text(context))
         }
 
-        Message::NoOp => Task::none(),
-
         Message::SelectDashboardTab(tab) => {
             context.dashboard_tab = tab;
             Task::none()
@@ -822,9 +819,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         column![
             row![
                 text("MLX90393 sensitivity"),
-                text_input("", &mlx_status_text)
-                    .on_input(|_| Message::NoOp)
-                    .width(Length::Fill),
+                text(mlx_status_text),
                 button("Copy status").on_press(Message::CopyMlxStatus),
             ]
             .spacing(16),
@@ -865,9 +860,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             .spacing(4),
 
             row![
-                text_input("", &mlx_timing_text)
-                    .on_input(|_| Message::NoOp)
-                    .width(Length::Fill),
+                text(mlx_timing_text),
                 button("Copy timing").on_press(Message::CopyMlxTiming),
             ]
             .spacing(8),
