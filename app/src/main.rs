@@ -376,7 +376,8 @@ fn log_status_text(context: &Context) -> String {
         } else {
             "recording"
         };
-        let pending = context.log_queue.len() + usize::from(context.log_write_in_progress);
+        let pending = context.log_queue.len()
+            + if context.log_write_in_progress { 1 } else { 0 };
 
         if let Some(started_at) = context.log_started_at {
             let elapsed_minutes = started_at.elapsed().as_secs_f64() / 60.0;
@@ -748,7 +749,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::StopLogging => {
             context.log_stop_requested = true;
 
-            next_log_write_task(context).unwrap_or_else(Task::none)
+            next_log_write_task(context).unwrap_or_else(|| Task::none())
         },
         Message::WroteFile(bytes_written) => {
             context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
