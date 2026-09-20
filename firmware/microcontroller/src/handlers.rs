@@ -13,7 +13,6 @@ use data_transfer::rpc::{
     MlxTimingStatus,
     BoardPresence,
 };
-use data_transfer::rpc::GetBoardPresence;
 use embassy_executor;
 use portable_atomic::{AtomicBool, Ordering};
 
@@ -342,7 +341,7 @@ pub async fn stream_field(
         // Boards 1 and 2 share I2C3, so this overlaps the independent bus and
         // also lets B1/B2 conversion waits overlap while their actual bus
         // transactions remain serialized by I2cDevice.
-        let frames = join_array(core::array::from_fn(|board_index| {
+        let frames: [BoardFrame; N] = join_array(core::array::from_fn(|board_index| {
             let sensor_mask =
                 if presence.board_mask & (1u8 << board_index) != 0 {
                     presence.sensor_masks[board_index]
