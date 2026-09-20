@@ -755,7 +755,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
             context.log_write_in_progress = false;
 
-            next_log_write_task(context).unwrap_or_else(Task::none)
+            next_log_write_task(context).unwrap_or_else(|| Task::none())
         },
         Message::UpdateMlxGain(s) => {
             context.mlx_gain = s;
