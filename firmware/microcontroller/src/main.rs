@@ -7,6 +7,7 @@ pub mod mlx90393;
 
 
 use static_cell::StaticCell;
+use data_transfer::rpc::SENSOR_POSITIONS_MM;
 use app::{Context, MyApp, STORAGE, AppServer};
 use postcard_rpc::server::{Server, Dispatch};
 
@@ -234,17 +235,10 @@ async fn main(spawner: Spawner) {
         core::array::from_fn(|_| I2cDevice::new(i2c_bus3))
     };
 
-    let sensor_grid_side_length = 13.5;
-    let positions: [_; 16]  = core::array::from_fn(
-        |i|{
-            let step = sensor_grid_side_length/4.0;
-            (-sensor_grid_side_length/2.0+step*((i / 4) as f32),-sensor_grid_side_length/2.0+step*((i % 4) as f32), 0.0)
-        });
-    
     let sensor_groups = {
-        let sensor_builders_a: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), positions[i]));
-        let sensor_builders_b: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), positions[i]));
-        let sensor_builders_c: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm((0x0C+(i as u8)) ^ 0b01000000, positions[i]));
+        let sensor_builders_a: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), SENSOR_POSITIONS_MM[i]));
+        let sensor_builders_b: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm(0x0C+(i as u8), SENSOR_POSITIONS_MM[i]));
+        let sensor_builders_c: [_; 16] = core::array::from_fn(|i| SensorBuilder::new_stm((0x0C+(i as u8)) ^ 0b01000000, SENSOR_POSITIONS_MM[i]));
         let mut sensor_group_builder_a = SensorGroupBuilder::new_stm(0, sensor_builders_a);
         let mut sensor_group_builder_b = SensorGroupBuilder::new_stm(1, sensor_builders_b);
         let mut sensor_group_builder_c = SensorGroupBuilder::new_stm(2, sensor_builders_c);
