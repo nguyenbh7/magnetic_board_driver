@@ -150,6 +150,9 @@ async fn main(spawner: Spawner) {
     let UART_RX = p.PA8;
     let UART_TX = p.PB12;
 
+    let mut uart_config = usart::Config::default();
+    uart_config.baudrate = 921_600;
+
     let uart_interface = usart::Uart::new(
         p.USART1,
         UART_RX,
@@ -157,7 +160,7 @@ async fn main(spawner: Spawner) {
         Irqs,
         p.GPDMA1_CH2,
         p.GPDMA1_CH3,
-        usart::Config::default(),
+        uart_config,
     )
         .unwrap();
     let (uart_tx, uart_rx) = uart_interface.split();
