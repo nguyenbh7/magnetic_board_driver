@@ -44,7 +44,7 @@ use embassy_sync::mutex::Mutex;
 use crate::N; 
 use {defmt_rtt as _, panic_probe as _};
 
-type SensorGroupDefault = Mutex<CriticalSectionRawMutex, SensorGroup<
+pub type SensorGroupDefault = Mutex<CriticalSectionRawMutex, SensorGroup<
         I2cDevice<
             'static,
             CriticalSectionRawMutex,
