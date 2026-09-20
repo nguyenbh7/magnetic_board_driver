@@ -250,6 +250,7 @@ impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
             position: message.position,
             time: message.time,
             board_id: self.board_id,
+            frame_id: 0,
         })
     }
 
@@ -269,6 +270,7 @@ impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
         &mut self,
         index: usize,
         measurement_time_us: u64,
+        frame_id: u32,
     ) -> Result<rpc::SensorField, ()> {
         let sensor = self.sensors.get_mut(index).ok_or(())?;
         let message = sensor.read_xyz_t_message_at(measurement_time_us).await?;
@@ -279,6 +281,7 @@ impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
             position: message.position,
             time: message.time,
             board_id: self.board_id,
+            frame_id,
         })
     }
 
