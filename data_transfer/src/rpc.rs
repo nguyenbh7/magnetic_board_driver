@@ -22,10 +22,11 @@ pub const SENSORS_PER_BOARD: usize = 16;
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
 pub struct BoardFrameSample {
-    pub field: MagneticField,
-    pub position: (f32, f32, f32),
-    pub address: u8,
-    pub time: u64,
+    pub bx_ut: f32,
+    pub by_ut: f32,
+    pub bz_ut: f32,
+    pub temperature_c: f32,
+    pub time_offset_us: u16,
 }
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
@@ -34,6 +35,7 @@ pub struct BoardFrame {
     pub board_id: u16,
     pub frame_id: u32,
     pub sensor_mask: u16,
+    pub base_time_us: u64,
     pub samples: [BoardFrameSample; SENSORS_PER_BOARD],
 }
 
