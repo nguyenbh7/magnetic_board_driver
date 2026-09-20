@@ -214,6 +214,7 @@ pub async fn stream_field(
     sender: Sender<AppTx>,
 ) {
     let mut seq = 0u8;
+    let mut frame_ids = [0u32; N];
 
     if sender
         .reply::<StartFieldStream>(header.seq_no, &())
@@ -239,6 +240,7 @@ pub async fn stream_field(
             }
 
             let sensor_mask = presence.sensor_masks[board_index];
+            let frame_id = frame_ids[board_index];
             let mut sg = context.sensor_groups[board_index].lock().await;
             let mut measurement_times_us = [0u64; 16];
             let mut max_conversion_time_us = 0u64;
@@ -285,7 +287,7 @@ pub async fn stream_field(
                 }
 
                 let Ok(message) = sg
-                    .read_message_at(sensor_index, measurement_time_us)
+                    .read_message_at(sensor_index, measurement_time_us, frame_id)
                     .await
                 else {
                     continue;
@@ -302,6 +304,8 @@ pub async fn stream_field(
 
                 seq = seq.wrapping_add(1);
             }
+
+            frame_ids[board_index] = frame_ids[board_index].wrapping_add(1);
         }
     }
 
