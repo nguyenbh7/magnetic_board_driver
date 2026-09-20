@@ -315,6 +315,10 @@ pub async fn stream_field(
     _rqst: (),
     sender: Sender<AppTx>,
 ) {
+    // A prior StopFieldStream may have been issued while no stream task was
+    // active. Every newly spawned stream owns a fresh run state.
+    STOP.store(false, Ordering::Release);
+
     let mut seq = 0u8;
     let mut frame_ids = [0u32; N];
 
