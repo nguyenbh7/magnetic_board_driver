@@ -697,6 +697,20 @@ fn view(context: &Context) -> Element<'_, Message> {
                     .map(|target| format!("Target moment: {:.3e} mT·mm³", target))
                     .unwrap_or_else(|| "Target moment: none".to_string());
 
+                let cadence_text = match (
+                    summary.frame_rate_hz,
+                    summary.frame_period_ms,
+                    summary.frame_span_ms,
+                ) {
+                    (Some(rate_hz), Some(period_ms), Some(span_ms)) => format!(
+                        "Cadence: {:.3} Hz · cycle {:.2} ms · board scan span {:.2} ms",
+                        rate_hz,
+                        period_ms,
+                        span_ms,
+                    ),
+                    _ => "Cadence: waiting for completed frames".to_string(),
+                };
+
                 let board_card = container(
                     column![
                         row![
@@ -729,6 +743,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                         .spacing(12),
 
                         text(mode_text),
+                        text(cadence_text),
                         text(if summary.has_background {
                             "Background: captured"
                         } else {
