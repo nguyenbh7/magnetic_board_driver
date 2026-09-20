@@ -62,9 +62,11 @@ impl Default for BoardLiveFitState {
 
 #[derive(Debug, Clone, Default)]
 struct BoardFrameAccumulator {
+    frame_id: Option<u32>,
     fields: BTreeMap<u8, SensorField>,
     frame_start_time_us: Option<u64>,
     frame_end_time_us: Option<u64>,
+    incomplete_frames: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +237,8 @@ impl BoardLiveFits {
                 frame_rate_hz: board.frame_rate_hz(),
                 frame_period_ms: board.frame_period_ms(),
                 frame_span_ms: board.latest_frame_span_us.map(|us| us as f64 / 1000.0),
+                current_frame_id: board.current_frame.frame_id,
+                incomplete_frames: board.current_frame.incomplete_frames,
             })
             .collect()
     }
@@ -295,6 +299,8 @@ pub struct BoardFitSummary {
     pub frame_rate_hz: Option<f64>,
     pub frame_period_ms: Option<f64>,
     pub frame_span_ms: Option<f64>,
+    pub current_frame_id: Option<u32>,
+    pub incomplete_frames: u64,
 }
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
@@ -486,12 +492,33 @@ impl BoardLiveFitState {
 }
 
 impl BoardFrameAccumulator {
-    fn update(&mut self, field: SensorField, expected_sensor_count: usize,) -> Option<CompletedBoardFrame> {
-        if self.fields.is_empty() {
+    fn update(
+        &mut self,
+        field: SensorField,
+        expected_sensor_count: usize,
+    ) -> Option<CompletedBoardFrame> {
+        if self.frame_id != Some(field.frame_id) {
+            if self.frame_id.is_some() && !self.fields.is_empty() {
+                self.incomplete_frames = self.incomplete_frames.saturating_add(1);
+            }
+
+            self.frame_id = Some(field.frame_id);
+            self.fields.clear();
             self.frame_start_time_us = Some(field.time);
+            self.frame_end_time_us = Some(field.time);
+        } else {
+            self.frame_start_time_us = Some(
+                self.frame_start_time_us
+                    .map(|time| time.min(field.time))
+                    .unwrap_or(field.time),
+            );
+            self.frame_end_time_us = Some(
+                self.frame_end_time_us
+                    .map(|time| time.max(field.time))
+                    .unwrap_or(field.time),
+            );
         }
 
-        self.frame_end_time_us = Some(field.time);
         self.fields.insert(field.address, field);
 
         if self.fields.len() < expected_sensor_count {
