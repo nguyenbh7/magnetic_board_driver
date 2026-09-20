@@ -116,6 +116,7 @@ enum Message {
     CopyBoardCadence(u16),
     CopyFitStatus(u16),
     CopyLogStatus,
+    CopyAllDiagnostics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -396,6 +397,18 @@ fn log_status_text(context: &Context) -> String {
     } else {
         "Log: not recording · compact board-frame v2 format".to_string()
     }
+}
+
+fn all_diagnostics_text(context: &Context) -> String {
+    let mut lines = Vec::new();
+    lines.push(log_status_text(context));
+
+    for summary in context.live_fits.board_summaries() {
+        lines.push(board_cadence_text(&summary));
+        lines.push(board_fit_status_text(&summary));
+    }
+
+    lines.join("\n")
 }
 
 fn open_file(
@@ -812,6 +825,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(log_status_text(context))
         }
 
+        Message::CopyAllDiagnostics => {
+            iced::clipboard::write(all_diagnostics_text(context))
+        }
+
         Message::SelectDashboardTab(tab) => {
             context.dashboard_tab = tab;
             Task::none()
@@ -849,8 +866,12 @@ fn view(context: &Context) -> Element<'_, Message> {
 
     let stream_widget = container(
         column![
-            row![button("Start Field Stream").on_press(Message::StartFieldStream)],
-            row![button("Stop Field Stream").on_press(Message::StopFieldStream)],
+            row![
+                button("Start Field Stream").on_press(Message::StartFieldStream),
+                button("Stop Field Stream").on_press(Message::StopFieldStream),
+                button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
+            ]
+            .spacing(8),
             text(board_presence_text(&context.board_presence)),
             row![
                 text(log_status_text(context)),
