@@ -4,7 +4,9 @@ use postcard_rpc::header::VarHeader;
 use postcard_rpc::server::Sender;
 use data_transfer::rpc::{
     SensorField,
-    MagneticTopic,
+    BoardFrame,
+    BoardFrameSample,
+    BoardFrameTopic,
     StartFieldStream,
     MlxSensitivityConfig,
     MlxSensitivityStatus,
@@ -274,8 +276,13 @@ pub async fn stream_field(
                 Timer::after_micros(max_conversion_time_us).await;
             }
 
-            // Read and publish the completed measurements. The timestamp is
-            // the estimated conversion midpoint, not the later readout time.
+            // Read the completed measurements into one atomic board frame.
+            // Timestamps are estimated conversion midpoints, not later
+            // readout times.
+            let mut frame = BoardFrame::default();
+            frame.board_id = sg.board_id;
+            frame.frame_id = frame_id;
+
             for sensor_index in 0..sg.num_sensors() {
                 if sensor_mask & (1u16 << sensor_index) == 0 {
                     continue;
@@ -293,18 +300,25 @@ pub async fn stream_field(
                     continue;
                 };
 
-                if sender
-                    .publish::<MagneticTopic>(seq.into(), &message)
-                    .await
-                    .is_err()
-                {
-                    defmt::error!("Send error!");
-                    break;
-                }
-
-                seq = seq.wrapping_add(1);
+                frame.samples[sensor_index] = BoardFrameSample {
+                    field: message.field,
+                    position: message.position,
+                    address: message.address,
+                    time: message.time,
+                };
+                frame.sensor_mask |= 1u16 << sensor_index;
             }
 
+            if frame.sensor_mask != 0
+                && sender
+                    .publish::<BoardFrameTopic>(seq.into(), &frame)
+                    .await
+                    .is_err()
+            {
+                defmt::error!("Send error!");
+            }
+
+            seq = seq.wrapping_add(1);
             frame_ids[board_index] = frame_ids[board_index].wrapping_add(1);
         }
     }
