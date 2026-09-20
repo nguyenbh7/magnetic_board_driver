@@ -25,6 +25,9 @@ pub struct BoardLiveFitState {
     origin: Option<(f64, f64, f64)>,
     start_time_us: Option<u64>,
     last_fit_time_us: Option<u64>,
+    last_completed_frame_mid_time_us: Option<u64>,
+    frame_period_history_us: VecDeque<u64>,
+    latest_frame_span_us: Option<u64>,
     displacement_history: VecDeque<DisplacementPoint>,
 
     magnet_preset: MagnetPreset,
@@ -45,6 +48,9 @@ impl Default for BoardLiveFitState {
             origin: None,
             start_time_us: None,
             last_fit_time_us: None,
+            last_completed_frame_mid_time_us: None,
+            frame_period_history_us: VecDeque::new(),
+            latest_frame_span_us: None,
             displacement_history: VecDeque::new(),
 
             magnet_preset: MagnetPreset::ThickD54N52,
@@ -168,6 +174,10 @@ impl BoardLiveFits {
                 self.boards.entry(board_index as u16).or_default();
             }
         }
+
+        for board in self.boards.values_mut() {
+            board.reset_frame_timing();
+        }
     }
 
     pub fn reset_displacement(&mut self, board_id: u16) {
@@ -222,6 +232,9 @@ impl BoardLiveFits {
                 } else {
                     board.calibrated_moment_norm
                 },
+                frame_rate_hz: board.frame_rate_hz(),
+                frame_period_ms: board.frame_period_ms(),
+                frame_span_ms: board.latest_frame_span_us.map(|us| us as f64 / 1000.0),
             })
             .collect()
     }
@@ -279,9 +292,31 @@ pub struct BoardFitSummary {
     pub magnet_effective_scale: f64,
     pub use_known_magnet_prior: bool,
     pub target_moment_norm: Option<f64>,
+    pub frame_rate_hz: Option<f64>,
+    pub frame_period_ms: Option<f64>,
+    pub frame_span_ms: Option<f64>,
 }
 impl BoardLiveFitState {
     fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) {
+        let frame_mid_time_us =
+            frame.frame_start_time_us
+                + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
+
+        self.latest_frame_span_us = Some(
+            frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us)
+        );
+
+        if let Some(previous_mid_time_us) = self.last_completed_frame_mid_time_us {
+            let period_us = frame_mid_time_us.saturating_sub(previous_mid_time_us);
+            if period_us > 0 {
+                self.frame_period_history_us.push_back(period_us);
+                while self.frame_period_history_us.len() > 31 {
+                    self.frame_period_history_us.pop_front();
+                }
+            }
+        }
+        self.last_completed_frame_mid_time_us = Some(frame_mid_time_us);
+
         let raw_samples: Vec<_> = frame
             .fields
             .iter()
@@ -316,14 +351,40 @@ impl BoardLiveFitState {
         };
 
         if let Some(result) = fit_result {
-            let frame_mid_time_us =
-                frame.frame_start_time_us
-                    + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
-
             self.last_fit_time_us = Some(frame_mid_time_us);
             self.record_displacement(frame_mid_time_us, &result);
             self.result = Some(result);
         }
+    }
+
+    fn median_frame_period_us(&self) -> Option<f64> {
+        if self.frame_period_history_us.is_empty() {
+            return None;
+        }
+
+        let mut periods = self
+            .frame_period_history_us
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        periods.sort_unstable();
+
+        let middle = periods.len() / 2;
+        if periods.len() % 2 == 0 {
+            Some((periods[middle - 1] as f64 + periods[middle] as f64) / 2.0)
+        } else {
+            Some(periods[middle] as f64)
+        }
+    }
+
+    fn frame_period_ms(&self) -> Option<f64> {
+        self.median_frame_period_us().map(|us| us / 1000.0)
+    }
+
+    fn frame_rate_hz(&self) -> Option<f64> {
+        self.median_frame_period_us()
+            .filter(|us| *us > 0.0)
+            .map(|us| 1_000_000.0 / us)
     }
 
     fn record_displacement(&mut self, time_us: u64, result: &FitResult) {
@@ -347,6 +408,12 @@ impl BoardLiveFitState {
         while self.displacement_history.len() > MAX_HISTORY_POINTS {
             self.displacement_history.pop_front();
         }
+    }
+
+    fn reset_frame_timing(&mut self) {
+        self.last_completed_frame_mid_time_us = None;
+        self.frame_period_history_us.clear();
+        self.latest_frame_span_us = None;
     }
 
     fn reset_displacement(&mut self) {
