@@ -6,6 +6,7 @@ use data_transfer::rpc::{BoardPresence, SensorField};
 const MAX_HISTORY_POINTS: usize = 600;
 const UT_PER_MT: f64 = 1000.0;
 const MOMENT_NORM_PRIOR_WEIGHT_MT: f64 = 0.25;
+const LIVE_FIT_MIN_INTERVAL_US: u64 = 100_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct BoardLiveFits {
@@ -344,6 +345,19 @@ impl BoardLiveFitState {
         }
 
         self.latest_raw_samples = raw_samples.clone();
+
+        // Cadence statistics and latest raw samples are updated for every
+        // acquired frame, but the grid-search fit is intentionally throttled
+        // so high-rate acquisition does not starve the desktop UI.
+        if self
+            .last_fit_time_us
+            .is_some_and(|last_fit_time_us| {
+                frame_mid_time_us.saturating_sub(last_fit_time_us)
+                    < LIVE_FIT_MIN_INTERVAL_US
+            })
+        {
+            return;
+        }
 
         let samples = if let Some(background) = &self.background {
             subtract_background_samples(&raw_samples, background)
