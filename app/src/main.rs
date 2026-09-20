@@ -261,15 +261,25 @@ fn board_cadence_text(summary: &BoardFitSummary) -> String {
         summary.frame_span_ms,
     ) {
         (Some(rate_hz), Some(period_ms), Some(span_ms)) => format!(
-            "Board {} · Cadence: {:.3} Hz · cycle {:.2} ms · acquisition span {:.2} ms",
+            "Board {} · Cadence: {:.3} Hz · cycle {:.2} ms · acquisition span {:.2} ms · frame {} · incomplete {}",
             summary.board_id,
             rate_hz,
             period_ms,
             span_ms,
+            summary
+                .current_frame_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            summary.incomplete_frames,
         ),
         _ => format!(
-            "Board {} · Cadence: waiting for completed frames",
+            "Board {} · Cadence: waiting for completed frames · frame {} · incomplete {}",
             summary.board_id,
+            summary
+                .current_frame_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            summary.incomplete_frames,
         ),
     }
 }
