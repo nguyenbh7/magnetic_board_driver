@@ -115,6 +115,39 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
         message.ok_or(())
     }
 
+    pub async fn trigger_xyz_t(&mut self) {
+        self.mlx
+            .set_single_measurmenet::<true, true, true, true>()
+            .await;
+    }
+
+    pub fn predicted_xyz_t_time_us(&self) -> Option<u64> {
+        self.mlx
+            .predicted_measurement_time_us::<true, true, true, true>()
+    }
+
+    pub async fn read_xyz_t_message_at(
+        &mut self,
+        measurement_time_us: u64,
+    ) -> Result<messaging::Message, ()> {
+        let (status, field) = self.mlx.get_field_now_xyz_t().await;
+
+        if status.error {
+            return Err(());
+        }
+
+        field
+            .map(|f| {
+                messaging::Message::new(
+                    f,
+                    self.position,
+                    self.mlx.address,
+                    measurement_time_us,
+                )
+            })
+            .ok_or(())
+    }
+
     pub async fn set_burst_mode(&mut self) {
         self.mlx.set_burst::<true, true, true, true>().await
     }
@@ -211,6 +244,35 @@ impl<I: I2c, P: Wait, const N: usize> SensorGroup<I, Option<P>, N> {
     pub async fn get_message(&mut self, index: usize) -> Result<rpc::SensorField, ()> {
         let sensor = self.sensors.get_mut(index).ok_or(())?;
         let message = sensor.get_message().await?;
+        Ok(rpc::SensorField {
+            address: message.address,
+            field: message.field,
+            position: message.position,
+            time: message.time,
+            board_id: self.board_id,
+        })
+    }
+
+    pub async fn trigger_measurement(&mut self, index: usize) -> Result<(), ()> {
+        let sensor = self.sensors.get_mut(index).ok_or(())?;
+        sensor.trigger_xyz_t().await;
+        Ok(())
+    }
+
+    pub fn predicted_measurement_time_us(&self, index: usize) -> Option<u64> {
+        self.sensors
+            .get(index)?
+            .predicted_xyz_t_time_us()
+    }
+
+    pub async fn read_message_at(
+        &mut self,
+        index: usize,
+        measurement_time_us: u64,
+    ) -> Result<rpc::SensorField, ()> {
+        let sensor = self.sensors.get_mut(index).ok_or(())?;
+        let message = sensor.read_xyz_t_message_at(measurement_time_us).await?;
+
         Ok(rpc::SensorField {
             address: message.address,
             field: message.field,
