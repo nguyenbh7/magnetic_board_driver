@@ -276,12 +276,22 @@ pub async fn stream_field(
                 Timer::after_micros(max_conversion_time_us).await;
             }
 
-            // Read the completed measurements into one atomic board frame.
-            // Timestamps are estimated conversion midpoints, not later
-            // readout times.
+            // Read the completed measurements into one compact atomic
+            // board frame. Sensor positions and addresses are deterministic
+            // from board/sensor index and are reconstructed by the desktop.
+            // Only one absolute timestamp is sent; each sample carries a
+            // small offset from the earliest conversion midpoint.
+            let base_time_us = measurement_times_us
+                .iter()
+                .copied()
+                .filter(|time| *time != 0)
+                .min()
+                .unwrap_or(0);
+
             let mut frame = BoardFrame::default();
             frame.board_id = sg.board_id;
             frame.frame_id = frame_id;
+            frame.base_time_us = base_time_us;
 
             for sensor_index in 0..sg.num_sensors() {
                 if sensor_mask & (1u16 << sensor_index) == 0 {
@@ -300,11 +310,17 @@ pub async fn stream_field(
                     continue;
                 };
 
+                let time_offset_us = message
+                    .time
+                    .saturating_sub(base_time_us)
+                    .min(u64::from(u16::MAX)) as u16;
+
                 frame.samples[sensor_index] = BoardFrameSample {
-                    field: message.field,
-                    position: message.position,
-                    address: message.address,
-                    time: message.time,
+                    bx_ut: message.field.x.map(|value| value.value() as f32).unwrap_or(f32::NAN),
+                    by_ut: message.field.y.map(|value| value.value() as f32).unwrap_or(f32::NAN),
+                    bz_ut: message.field.z.map(|value| value.value() as f32).unwrap_or(f32::NAN),
+                    temperature_c: message.field.t.map(|value| value.value() as f32).unwrap_or(f32::NAN),
+                    time_offset_us,
                 };
                 frame.sensor_mask |= 1u16 << sensor_index;
             }
