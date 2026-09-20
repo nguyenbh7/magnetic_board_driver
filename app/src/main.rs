@@ -18,7 +18,7 @@ mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
-use live_fit::{BoardLiveFits, MagnetPreset};
+use live_fit::{BoardFitSummary, BoardLiveFits, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
 use sipper::Sender;
@@ -109,6 +109,7 @@ enum Message {
     UiScaleReset,
     CopyMlxStatus,
     CopyMlxTiming,
+    CopyBoardCadence(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -250,6 +251,26 @@ fn mlx_timing_text(context: &Context) -> String {
         ),
         Some(_) => "Timing: no detected sensor".to_string(),
         None => "Timing: not read yet".to_string(),
+    }
+}
+
+fn board_cadence_text(summary: &BoardFitSummary) -> String {
+    match (
+        summary.frame_rate_hz,
+        summary.frame_period_ms,
+        summary.frame_span_ms,
+    ) {
+        (Some(rate_hz), Some(period_ms), Some(span_ms)) => format!(
+            "Board {} · Cadence: {:.3} Hz · cycle {:.2} ms · board scan span {:.2} ms",
+            summary.board_id,
+            rate_hz,
+            period_ms,
+            span_ms,
+        ),
+        _ => format!(
+            "Board {} · Cadence: waiting for completed frames",
+            summary.board_id,
+        ),
     }
 }
 
@@ -604,6 +625,18 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(mlx_timing_text(context))
         }
 
+        Message::CopyBoardCadence(board_id) => {
+            let cadence = context
+                .live_fits
+                .board_summaries()
+                .into_iter()
+                .find(|summary| summary.board_id == board_id)
+                .map(|summary| board_cadence_text(&summary))
+                .unwrap_or_else(|| format!("Board {} · Cadence: unavailable", board_id));
+
+            iced::clipboard::write(cadence)
+        }
+
         Message::SelectDashboardTab(tab) => {
             context.dashboard_tab = tab;
             Task::none()
@@ -697,19 +730,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                     .map(|target| format!("Target moment: {:.3e} mT·mm³", target))
                     .unwrap_or_else(|| "Target moment: none".to_string());
 
-                let cadence_text = match (
-                    summary.frame_rate_hz,
-                    summary.frame_period_ms,
-                    summary.frame_span_ms,
-                ) {
-                    (Some(rate_hz), Some(period_ms), Some(span_ms)) => format!(
-                        "Cadence: {:.3} Hz · cycle {:.2} ms · board scan span {:.2} ms",
-                        rate_hz,
-                        period_ms,
-                        span_ms,
-                    ),
-                    _ => "Cadence: waiting for completed frames".to_string(),
-                };
+                let cadence_text = board_cadence_text(&summary);
 
                 let board_card = container(
                     column![
@@ -743,7 +764,12 @@ fn view(context: &Context) -> Element<'_, Message> {
                         .spacing(12),
 
                         text(mode_text),
-                        text(cadence_text),
+                        row![
+                            text(cadence_text),
+                            button("Copy cadence")
+                                .on_press(Message::CopyBoardCadence(summary.board_id)),
+                        ]
+                        .spacing(8),
                         text(if summary.has_background {
                             "Background: captured"
                         } else {
