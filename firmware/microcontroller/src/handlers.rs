@@ -185,12 +185,11 @@ pub async fn set_mlx_sensitivity_handler(
     }
 }
 
-pub fn stop_stream(context: &mut Context, _header: VarHeader, _rqst: ()) {
-    let was_busy = core::array::from_fn::<_, N, _>(|i| context.sensor_groups[i].try_lock().is_err()).contains(&true);
-    if was_busy {
-        STOP.store(true, Ordering::Release);
-    } ;
-//    was_busy
+pub fn stop_stream(_context: &mut Context, _header: VarHeader, _rqst: ()) {
+    // Always request termination. The previous mutex-based check could miss
+    // an active stream during the brief interval between board acquisitions,
+    // leaving a stale spawned task alive across desktop-app restarts.
+    STOP.store(true, Ordering::Release);
 }
 
 pub async fn single_request_handler(context: &mut Context, _header: VarHeader, rqst: (u32, u32)) -> SensorField {
