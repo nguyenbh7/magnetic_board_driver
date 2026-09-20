@@ -1,4 +1,4 @@
-use crate::app::{Context, SpawnCtx, AppTx};
+use crate::app::{Context, SpawnCtx, AppTx, SensorGroupDefault};
 use defmt::info;
 use postcard_rpc::header::VarHeader;
 use postcard_rpc::server::Sender;
@@ -17,7 +17,7 @@ use data_transfer::rpc::GetBoardPresence;
 use embassy_executor;
 use portable_atomic::{AtomicBool, Ordering};
 
-//use embassy_futures::join::join_array;
+use embassy_futures::join::join_array;
 use embassy_time::{Instant, Timer};
 use crate::N; 
 const BOARD_PRESENT_MIN_SENSORS: u32 = 1;
@@ -208,6 +208,108 @@ pub static STOP: AtomicBool = AtomicBool::new(false);
 
 
 
+async fn acquire_board_frame(
+    group: &SensorGroupDefault,
+    sensor_mask: u16,
+    frame_id: u32,
+) -> BoardFrame {
+    if sensor_mask == 0 {
+        return BoardFrame::default();
+    }
+
+    let mut sg = group.lock().await;
+    let mut measurement_times_us = [0u64; 16];
+    let mut max_conversion_time_us = 0u64;
+
+    // Trigger all present sensors on this board first so their conversions
+    // overlap. When multiple boards run this helper concurrently, independent
+    // I2C peripherals proceed in parallel; I2cDevice serializes only accesses
+    // that truly share one physical bus.
+    for sensor_index in 0..sg.num_sensors() {
+        if sensor_mask & (1u16 << sensor_index) == 0 {
+            continue;
+        }
+
+        let conversion_time_us = sg
+            .predicted_measurement_time_us(sensor_index)
+            .unwrap_or(2_000);
+        max_conversion_time_us = max_conversion_time_us.max(conversion_time_us);
+
+        if sg.trigger_measurement(sensor_index).await.is_err() {
+            continue;
+        }
+
+        measurement_times_us[sensor_index] =
+            Instant::now().as_micros() + conversion_time_us / 2;
+    }
+
+    if max_conversion_time_us > 0 {
+        Timer::after_micros(max_conversion_time_us).await;
+    }
+
+    let base_time_us = measurement_times_us
+        .iter()
+        .copied()
+        .filter(|time| *time != 0)
+        .min()
+        .unwrap_or(0);
+
+    let mut frame = BoardFrame::default();
+    frame.board_id = sg.board_id;
+    frame.frame_id = frame_id;
+    frame.base_time_us = base_time_us;
+
+    for sensor_index in 0..sg.num_sensors() {
+        if sensor_mask & (1u16 << sensor_index) == 0 {
+            continue;
+        }
+
+        let measurement_time_us = measurement_times_us[sensor_index];
+        if measurement_time_us == 0 {
+            continue;
+        }
+
+        let Ok(message) = sg
+            .read_message_at(sensor_index, measurement_time_us, frame_id)
+            .await
+        else {
+            continue;
+        };
+
+        let time_offset_us = message
+            .time
+            .saturating_sub(base_time_us)
+            .min(u64::from(u16::MAX)) as u16;
+
+        frame.samples[sensor_index] = BoardFrameSample {
+            bx_ut: message
+                .field
+                .x
+                .map(|value| value.value() as f32)
+                .unwrap_or(f32::NAN),
+            by_ut: message
+                .field
+                .y
+                .map(|value| value.value() as f32)
+                .unwrap_or(f32::NAN),
+            bz_ut: message
+                .field
+                .z
+                .map(|value| value.value() as f32)
+                .unwrap_or(f32::NAN),
+            temperature_c: message
+                .field
+                .t
+                .map(|value| value.value() as f32)
+                .unwrap_or(f32::NAN),
+            time_offset_us,
+        };
+        frame.sensor_mask |= 1u16 << sensor_index;
+    }
+
+    frame
+}
+
 #[embassy_executor::task]
 pub async fn stream_field(
     context: SpawnCtx,
@@ -236,98 +338,39 @@ pub async fn stream_field(
     );
 
     while !STOP.load(Ordering::Acquire) {
+        // Acquire all detected boards concurrently. Board 0 uses I2C1 while
+        // Boards 1 and 2 share I2C3, so this overlaps the independent bus and
+        // also lets B1/B2 conversion waits overlap while their actual bus
+        // transactions remain serialized by I2cDevice.
+        let frames = join_array(core::array::from_fn(|board_index| {
+            let sensor_mask =
+                if presence.board_mask & (1u8 << board_index) != 0 {
+                    presence.sensor_masks[board_index]
+                } else {
+                    0
+                };
+
+            acquire_board_frame(
+                &context.sensor_groups[board_index],
+                sensor_mask,
+                frame_ids[board_index],
+            )
+        }))
+        .await;
+
+        // Keep postcard-RPC publishing serialized. This isolates the timing
+        // experiment to sensor-side concurrency and avoids concurrent writes
+        // through one transport sender.
         for board_index in 0..N {
             if presence.board_mask & (1u8 << board_index) == 0 {
                 continue;
             }
 
-            let sensor_mask = presence.sensor_masks[board_index];
-            let frame_id = frame_ids[board_index];
-            let mut sg = context.sensor_groups[board_index].lock().await;
-            let mut measurement_times_us = [0u64; 16];
-            let mut max_conversion_time_us = 0u64;
-
-            // Trigger every present sensor first. This makes the magnetic
-            // conversions overlap instead of paying one conversion wait per
-            // sensor.
-            for sensor_index in 0..sg.num_sensors() {
-                if sensor_mask & (1u16 << sensor_index) == 0 {
-                    continue;
-                }
-
-                let conversion_time_us = sg
-                    .predicted_measurement_time_us(sensor_index)
-                    .unwrap_or(2_000);
-                max_conversion_time_us =
-                    max_conversion_time_us.max(conversion_time_us);
-
-                if sg.trigger_measurement(sensor_index).await.is_err() {
-                    continue;
-                }
-
-                measurement_times_us[sensor_index] =
-                    Instant::now().as_micros() + conversion_time_us / 2;
-            }
-
-            // Waiting from the final trigger guarantees every sensor has
-            // completed, while earlier-triggered sensors have already been
-            // converting in parallel.
-            if max_conversion_time_us > 0 {
-                Timer::after_micros(max_conversion_time_us).await;
-            }
-
-            // Read the completed measurements into one compact atomic
-            // board frame. Sensor positions and addresses are deterministic
-            // from board/sensor index and are reconstructed by the desktop.
-            // Only one absolute timestamp is sent; each sample carries a
-            // small offset from the earliest conversion midpoint.
-            let base_time_us = measurement_times_us
-                .iter()
-                .copied()
-                .filter(|time| *time != 0)
-                .min()
-                .unwrap_or(0);
-
-            let mut frame = BoardFrame::default();
-            frame.board_id = sg.board_id;
-            frame.frame_id = frame_id;
-            frame.base_time_us = base_time_us;
-
-            for sensor_index in 0..sg.num_sensors() {
-                if sensor_mask & (1u16 << sensor_index) == 0 {
-                    continue;
-                }
-
-                let measurement_time_us = measurement_times_us[sensor_index];
-                if measurement_time_us == 0 {
-                    continue;
-                }
-
-                let Ok(message) = sg
-                    .read_message_at(sensor_index, measurement_time_us, frame_id)
-                    .await
-                else {
-                    continue;
-                };
-
-                let time_offset_us = message
-                    .time
-                    .saturating_sub(base_time_us)
-                    .min(u64::from(u16::MAX)) as u16;
-
-                frame.samples[sensor_index] = BoardFrameSample {
-                    bx_ut: message.field.x.map(|value| value.value() as f32).unwrap_or(f32::NAN),
-                    by_ut: message.field.y.map(|value| value.value() as f32).unwrap_or(f32::NAN),
-                    bz_ut: message.field.z.map(|value| value.value() as f32).unwrap_or(f32::NAN),
-                    temperature_c: message.field.t.map(|value| value.value() as f32).unwrap_or(f32::NAN),
-                    time_offset_us,
-                };
-                frame.sensor_mask |= 1u16 << sensor_index;
-            }
+            let frame = &frames[board_index];
 
             if frame.sensor_mask != 0
                 && sender
-                    .publish::<BoardFrameTopic>(seq.into(), &frame)
+                    .publish::<BoardFrameTopic>(seq.into(), frame)
                     .await
                     .is_err()
             {
