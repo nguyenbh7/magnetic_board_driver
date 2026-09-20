@@ -47,6 +47,7 @@ use data_transfer::{
         GetBoardPresence,
         BoardPresence,
         MAX_SENSOR_BOARDS,
+        SENSOR_POSITIONS_MM,
         GetMlxSensitivity,
         SetMlxSensitivity,
         MlxSensitivityConfig,
@@ -311,14 +312,7 @@ fn board_fit_status_text(summary: &BoardFitSummary) -> String {
 }
 
 fn sensor_position_from_index(sensor_index: usize) -> (f32, f32, f32) {
-    let sensor_grid_side_length = 13.5_f32;
-    let step = sensor_grid_side_length / 4.0;
-
-    (
-        -sensor_grid_side_length / 2.0 + step * ((sensor_index / 4) as f32),
-        -sensor_grid_side_length / 2.0 + step * ((sensor_index % 4) as f32),
-        0.0,
-    )
+    SENSOR_POSITIONS_MM[sensor_index]
 }
 
 fn sensor_address_from_index(board_id: u16, sensor_index: usize) -> u8 {
