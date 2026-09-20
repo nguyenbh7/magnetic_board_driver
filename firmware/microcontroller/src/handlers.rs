@@ -16,7 +16,7 @@ use embassy_executor;
 use portable_atomic::{AtomicBool, Ordering};
 
 //use embassy_futures::join::join_array;
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Instant, Timer};
 use crate::N; 
 const BOARD_PRESENT_MIN_SENSORS: u32 = 1;
 pub fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
@@ -214,7 +214,6 @@ pub async fn stream_field(
     sender: Sender<AppTx>,
 ) {
     let mut seq = 0u8;
-    let mut ticker = Ticker::every(Duration::from_millis(0));
 
     if sender
         .reply::<StartFieldStream>(header.seq_no, &())
@@ -241,15 +240,54 @@ pub async fn stream_field(
 
             let sensor_mask = presence.sensor_masks[board_index];
             let mut sg = context.sensor_groups[board_index].lock().await;
+            let mut measurement_times_us = [0u64; 16];
+            let mut max_conversion_time_us = 0u64;
 
+            // Trigger every present sensor first. This makes the magnetic
+            // conversions overlap instead of paying one conversion wait per
+            // sensor.
             for sensor_index in 0..sg.num_sensors() {
                 if sensor_mask & (1u16 << sensor_index) == 0 {
                     continue;
                 }
 
-                ticker.next().await;
+                let conversion_time_us = sg
+                    .predicted_measurement_time_us(sensor_index)
+                    .unwrap_or(2_000);
+                max_conversion_time_us =
+                    max_conversion_time_us.max(conversion_time_us);
 
-                let Ok(message) = sg.get_message(sensor_index).await else {
+                if sg.trigger_measurement(sensor_index).await.is_err() {
+                    continue;
+                }
+
+                measurement_times_us[sensor_index] =
+                    Instant::now().as_micros() + conversion_time_us / 2;
+            }
+
+            // Waiting from the final trigger guarantees every sensor has
+            // completed, while earlier-triggered sensors have already been
+            // converting in parallel.
+            if max_conversion_time_us > 0 {
+                Timer::after_micros(max_conversion_time_us).await;
+            }
+
+            // Read and publish the completed measurements. The timestamp is
+            // the estimated conversion midpoint, not the later readout time.
+            for sensor_index in 0..sg.num_sensors() {
+                if sensor_mask & (1u16 << sensor_index) == 0 {
+                    continue;
+                }
+
+                let measurement_time_us = measurement_times_us[sensor_index];
+                if measurement_time_us == 0 {
+                    continue;
+                }
+
+                let Ok(message) = sg
+                    .read_message_at(sensor_index, measurement_time_us)
+                    .await
+                else {
                     continue;
                 };
 
