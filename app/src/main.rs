@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::{collections::BTreeMap, time::Duration};
 
 use crossterm::event::{self, Event, KeyCode};
-use data_transfer::rpc::{MagneticTopic, StopFieldStream};
+use data_transfer::rpc::{BoardFrameTopic, StopFieldStream};
 use postcard::experimental::max_size::MaxSize;
 use postcard_rpc::host_client::{HostClient, Subscription};
 use postcard_rpc::standard_icd::WireError;
@@ -40,6 +40,7 @@ use data_transfer::{
     messaging::MessageReader,
     rpc::{
         SensorField,
+        BoardFrame,
         SingleFieldValue,
         StartFieldStream,
         GetBoardPresence,
@@ -73,7 +74,7 @@ enum Message {
     UpdatePingSensor(String),
     GetField,
     RecievedField(data_transfer::rpc::SensorField),
-    RecievedStreamField(data_transfer::rpc::SensorField),
+    ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
@@ -328,18 +329,19 @@ async fn get_mlx_timing(client: HostClient<WireError>) -> MlxTimingStatus {
 }
 
 async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscription> {
-    let subs = client.subscribe_exclusive::<MagneticTopic>(64).await.ok()?;
+    let subs = client.subscribe_exclusive::<BoardFrameTopic>(64).await.ok()?;
     Some(SensorSubscription::new(subs))
 }
 
-async fn write_data(writer: &Mutex<BufWriter<File>>, field: &SensorField) {
+async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) {
     let mut writer = writer.lock().await;
-    let mut data = [0; SensorField::POSTCARD_MAX_SIZE];
-    let val = postcard::to_slice(field, &mut data);
-    //println!("{:#?}", val);
+    let mut data = [0; BoardFrame::POSTCARD_MAX_SIZE];
 
-    let val = writer.write_all(&mut data);
-    //println!("{:#?}", val);
+    if let Ok(encoded) = postcard::to_slice(frame, &mut data) {
+        let length = (encoded.len() as u32).to_le_bytes();
+        let _ = writer.write_all(&length);
+        let _ = writer.write_all(encoded);
+    }
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -411,28 +413,38 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.ping_field = Some(sensor_field);
             Task::none()
         },
-        Message::RecievedStreamField(sensor_field) => {
-            context.live_fits.update(sensor_field.clone());
-            context.sensor_traces.update(&sensor_field);
-            context.ping_field = Some(sensor_field.clone());
+        Message::ReceivedStreamFrame(frame) => {
+            for sensor_index in 0..frame.samples.len() {
+                if frame.sensor_mask & (1u16 << sensor_index) == 0 {
+                    continue;
+                }
+
+                let sample = frame.samples[sensor_index];
+                let sensor_field = SensorField {
+                    field: sample.field,
+                    board_id: frame.board_id,
+                    frame_id: frame.frame_id,
+                    position: sample.position,
+                    address: sample.address,
+                    time: sample.time,
+                };
+
+                context.live_fits.update(sensor_field.clone());
+                context.sensor_traces.update(&sensor_field);
+                context.ping_field = Some(sensor_field);
+            }
 
             match &context.file_writer {
                 Some(w) => {
                     let wr = w.clone();
                     Task::perform(
-                        (move || {
-                            async move {
-                                //println!("Test");
-                                let sensor_field = sensor_field.clone();
-                                let _val = write_data(&*wr, &sensor_field).await;
-                            }
-                        })(),
+                        async move {
+                            write_frame_data(&*wr, &frame).await;
+                        },
                         |_| Message::WroteFile
                     )
                 },
-                None => {
-                    Task::none()
-                },
+                None => Task::none(),
             }
         },
         Message::StartFieldStream => {
@@ -482,7 +494,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let client = sw.get_client();
 
                 Task::future(field_subscribe(client)).and_then(|sub| {
-                    Task::run(sub, Message::RecievedStreamField)
+                    Task::run(sub, Message::ReceivedStreamFrame)
                 })
             } else {
                 Task::none()
@@ -515,7 +527,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             if let Ok(fh) = fh {
                 let path = fh.path();
                 let file = File::create(path).unwrap();
-                let writer = BufWriter::new(file);
+                let mut writer = BufWriter::new(file);
+                let _ = writer.write_all(b"MLXBF001");
                 let writer = Arc::new(Mutex::new(writer));
                 context.file_writer = Some(writer);
             }
