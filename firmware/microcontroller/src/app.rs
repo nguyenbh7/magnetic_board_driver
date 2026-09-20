@@ -78,7 +78,7 @@ impl SpawnContext for Context {
 
 pub type Rx = embassy_stm32::usart::RingBufferedUartRx<'static>;
 pub type Tx = embassy_stm32::usart::UartTx<'static, embassy_stm32::mode::Async>;
-pub type Storage = WireStorage<Rx, Tx, CriticalSectionRawMutex, 512, 512>;
+pub type Storage = WireStorage<Rx, Tx, CriticalSectionRawMutex, 2048, 2048>;
 pub type AppTx = EioWireTx<CriticalSectionRawMutex, Tx>;
 
 /// AppRx is the type of our receiver, which is how we receive information from the client
