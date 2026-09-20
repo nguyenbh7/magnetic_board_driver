@@ -522,7 +522,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::RecievedField(sensor_field) => {
-            let _ = context.live_fits.update(sensor_field.clone());
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
             Task::none()
