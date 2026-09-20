@@ -75,7 +75,7 @@ enum Message {
     UpdatePingSensor(String),
     GetField,
     RecievedField(data_transfer::rpc::SensorField),
-    ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
+    ReceivedStreamFrames(Vec<data_transfer::rpc::BoardFrame>),
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
@@ -429,18 +429,29 @@ async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscrip
     Some(SensorSubscription::new(subs))
 }
 
-async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) -> usize {
+async fn write_frame_batch(
+    writer: &Mutex<BufWriter<File>>,
+    frames: &[BoardFrame],
+) -> usize {
     let mut writer = writer.lock().await;
+    let mut total_written = 0usize;
     let mut data = [0; BoardFrame::POSTCARD_MAX_SIZE];
 
-    if let Ok(encoded) = postcard::to_slice(frame, &mut data) {
+    for frame in frames {
+        let Ok(encoded) = postcard::to_slice(frame, &mut data) else {
+            continue;
+        };
+
         let length = (encoded.len() as u32).to_le_bytes();
-        if writer.write_all(&length).is_ok() && writer.write_all(encoded).is_ok() {
-            return length.len() + encoded.len();
+
+        if writer.write_all(&length).is_err() || writer.write_all(encoded).is_err() {
+            break;
         }
+
+        total_written += length.len() + encoded.len();
     }
 
-    0
+    total_written
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -512,17 +523,19 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.ping_field = Some(sensor_field);
             Task::none()
         },
-        Message::ReceivedStreamFrame(frame) => {
-            for sensor_index in 0..frame.samples.len() {
-                let Some(sensor_field) =
-                    compact_sample_to_sensor_field(&frame, sensor_index)
-                else {
-                    continue;
-                };
+        Message::ReceivedStreamFrames(frames) => {
+            for frame in &frames {
+                for sensor_index in 0..frame.samples.len() {
+                    let Some(sensor_field) =
+                        compact_sample_to_sensor_field(frame, sensor_index)
+                    else {
+                        continue;
+                    };
 
-                context.live_fits.update(sensor_field.clone());
-                context.sensor_traces.update(&sensor_field);
-                context.ping_field = Some(sensor_field);
+                    context.live_fits.update(sensor_field.clone());
+                    context.sensor_traces.update(&sensor_field);
+                    context.ping_field = Some(sensor_field);
+                }
             }
 
             match &context.file_writer {
@@ -530,7 +543,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     let wr = w.clone();
                     Task::perform(
                         async move {
-                            write_frame_data(&*wr, &frame).await
+                            write_frame_batch(&*wr, &frames).await
                         },
                         Message::WroteFile
                     )
@@ -585,7 +598,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let client = sw.get_client();
 
                 Task::future(field_subscribe(client)).and_then(|sub| {
-                    Task::run(sub, Message::ReceivedStreamFrame)
+                    Task::run(sub, Message::ReceivedStreamFrames)
                 })
             } else {
                 Task::none()
