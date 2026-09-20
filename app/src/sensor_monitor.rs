@@ -101,7 +101,7 @@ impl SensorWatcher {
 
 impl SensorSubscription {
 
-    pub fn new(subscription: Subscription<SensorField>) -> Self {
+    pub fn new(subscription: Subscription<BoardFrame>) -> Self {
         Self(subscription)
     }
     
