@@ -58,23 +58,25 @@ const SENSOR_GRID_POINTS_PER_SIDE: usize = 4;
 const SENSOR_GRID_PITCH_MM: f32 =
     SENSOR_GRID_SIDE_LENGTH_MM / (SENSOR_GRID_POINTS_PER_SIDE as f32 - 1.0);
 
-/// Return the verified physical position for one acquisition-order sensor index.
+/// Return the KiCad-verified physical position for one acquisition-order sensor index.
 ///
 /// Sensor indices 0..15 correspond to addresses 0x0C..0x1B on boards A/B.
-/// The physical ordering matches the original Pi setup and the validated
-/// `gk_analysis` geometry:
+/// The lab-supplied KiCad board is the geometry/numbering source of truth.
+/// With JST connectors toward -Y/front, the physical sensor-index grid is:
 ///
-/// row y=-6.75: x=+6.75, +2.25, -2.25, -6.75
-/// row y=-2.25: x=+6.75, +2.25, -2.25, -6.75
-/// row y=+2.25: x=+6.75, +2.25, -2.25, -6.75
-/// row y=+6.75: x=+6.75, +2.25, -2.25, -6.75
+///     12   8   4   0
+///     13   9   5   1
+///     14  10   6   2
+///     15  11   7   3
+///
+/// Therefore acquisition index advances along +Y first, then one column toward -X.
 fn sensor_grid_position_mm(index: usize) -> (f32, f32, f32) {
-    let row = index / SENSOR_GRID_POINTS_PER_SIDE;
-    let column = index % SENSOR_GRID_POINTS_PER_SIDE;
+    let column_from_right = index / SENSOR_GRID_POINTS_PER_SIDE;
+    let row_from_front = index % SENSOR_GRID_POINTS_PER_SIDE;
     let half_side = SENSOR_GRID_SIDE_LENGTH_MM / 2.0;
 
-    let x = half_side - SENSOR_GRID_PITCH_MM * column as f32;
-    let y = -half_side + SENSOR_GRID_PITCH_MM * row as f32;
+    let x = half_side - SENSOR_GRID_PITCH_MM * column_from_right as f32;
+    let y = -half_side + SENSOR_GRID_PITCH_MM * row_from_front as f32;
 
     (x, y, 0.0)
 }
