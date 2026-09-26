@@ -8,14 +8,14 @@ The raw Sensor Trace remains unchanged. Only the live pose fitter converts incom
 
 For board `b` and physical sensor `i`, the live fitter uses the finalized A1 scalar response calibration `s[b][i]` and the KiCad-verified 4x4 geometry.
 
-The effective fit input is
+The fit input is
 
 ```text
 B_fit = T((B_raw - B_background) / s[b][i])
 T([Bx, By, Bz]) = [By, -Bx, Bz]
 ```
 
-The implementation applies the scalar normalization and frame transform before background capture. Because both operations are linear and the calibration is a scalar per sensor, this is algebraically identical to the expression above.
+Background capture and the A/B companion background records remain in the original raw logger XYZ frame. The scalar normalization and logger-to-model axis transform are applied only after background subtraction, immediately before pose fitting.
 
 ## Sensor geometry
 
@@ -41,6 +41,8 @@ The 48 scalar calibration values come from:
 - source artifact: `a1_calibration_results/comparison/sensor_scales.csv`
 - calibration finalization commit: `26e89790aec7fe5ff921b3c1f26027f73e159abe`
 
+The calibration artifact is indexed by physical sensor number. The live app derives the same physical sensor index from the sensor address, while the calibration analysis separately tracked the binary logger's raw-slot permutation.
+
 Firmware board IDs map directly to calibration boards:
 
 - `0` = Board A
@@ -57,7 +59,12 @@ Board C uses the XOR'd I2C address bit in firmware; the app normalizes that addr
 - finalized A1 scale lookup for Boards A/B/C
 - Board C address normalization
 - ignoring transmitted/stale `field.position`
-- scalar normalization plus `[By, -Bx, Bz]` frame conversion
+- preserving raw logger XYZ through background capture/subtraction
+- scalar normalization plus `[By, -Bx, Bz]` frame conversion after the background stage
 - existing per-sensor/per-axis background subtraction
 
-Run the app tests locally with the repository's Rust toolchain before flashing/using the branch for a new validation measurement.
+Run the app tests locally with the repository's Rust toolchain before flashing/using the branch for a new validation measurement:
+
+```bash
+cargo test -p app
+```
