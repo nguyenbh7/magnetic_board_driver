@@ -315,16 +315,17 @@ struct CompletedBoardFrame {
 
 #[derive(Debug, Clone)]
 struct Sample {
+    board_id: u16,
     sensor_index: u8,
     position: [f64; 3],
     field: [f64; 3],
 }
 
-fn sample_to_pose_sample(sample: &Sample) -> PoseSample {
-    PoseSample {
+fn sample_to_pose_sample(sample: &Sample) -> Option<PoseSample> {
+    Some(PoseSample {
         position: sample.position,
-        field: sample.field,
-    }
+        field: logger_field_to_fit_frame(sample.board_id, sample.sensor_index, sample.field)?,
+    })
 }
 
 fn pose_fit_to_result(fit: PoseFit, n_sensors: usize) -> FitResult {
@@ -653,10 +654,16 @@ impl BoardLiveFitState {
             return;
         }
 
+        // Only pose-fit inputs are calibrated/transformed. Background snapshots above remain
+        // raw logger XYZ, preserving the meaning of existing A/B companion log columns.
         let pose_samples = samples
             .iter()
-            .map(sample_to_pose_sample)
+            .filter_map(sample_to_pose_sample)
             .collect::<Vec<_>>();
+
+        if pose_samples.len() < 6 {
+            return;
+        }
 
         let target_moment_norm = self.magnet_preset.moment_norm_app() * self.magnet_effective_scale;
 
@@ -891,16 +898,15 @@ fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
     // Use the app's own KiCad-verified geometry instead of trusting the transmitted
     // field.position. This prevents stale firmware geometry from silently corrupting fits.
     let position = sensor_grid_position_mm(sensor_index)?;
-    let corrected_field = logger_field_to_fit_frame(field.board_id, sensor_index, [bx, by, bz])?;
 
-    // Calibration and the logger->model axis transform are linear, so applying them before
-    // background capture/subtraction is exactly equivalent to:
-    //   transform((raw - background) / sensor_scale).
-    // Sensor Trace remains raw because this conversion is used only by the live fitter.
+    // Keep logger-frame XYZ raw here so background capture and A/B companion background
+    // records retain their existing meaning. Calibration/axis conversion happens only
+    // after background subtraction in sample_to_pose_sample().
     Some(Sample {
+        board_id: field.board_id,
         sensor_index,
         position,
-        field: corrected_field,
+        field: [bx, by, bz],
     })
 }
 
@@ -914,6 +920,7 @@ fn subtract_background_samples(
             let background_field = background.get(&sample.sensor_index)?;
 
             Some(Sample {
+                board_id: sample.board_id,
                 sensor_index: sample.sensor_index,
                 position: sample.position,
                 field: [
@@ -1222,6 +1229,7 @@ mod tests {
 
     fn sample(sensor_index: u8, field: [f64; 3]) -> Sample {
         Sample {
+            board_id: 0,
             sensor_index,
             position: [0.0, 0.0, 0.0],
             field,
@@ -1352,6 +1360,8 @@ mod tests {
         assert_eq!(corrected.len(), 2);
         assert_eq!(corrected[0].field, [9.0, 18.0, 27.0]);
         assert_eq!(corrected[1].field, [-3.0, 5.0, 8.0]);
+        assert_eq!(corrected[0].board_id, 0);
+        assert_eq!(corrected[1].board_id, 0);
     }
 
     #[test]
@@ -1380,20 +1390,30 @@ mod tests {
     }
 
     #[test]
-    fn live_fit_ignores_transmitted_position_and_applies_scale_and_axis_transform() {
-        let scale = a1_sensor_scale(0, 0).unwrap();
+    fn live_fit_ignores_transmitted_position_but_preserves_raw_logger_field() {
         let field = measured_field(
             0,
             0x0C,
             (123.0, 456.0, 789.0),
-            [1000.0 * scale, 2000.0 * scale, 3000.0 * scale],
+            [1000.0, 2000.0, 3000.0],
         );
 
         let sample = sensor_field_to_sample(&field).expect("valid Board A sensor should convert");
 
+        assert_eq!(sample.board_id, 0);
         assert_eq!(sample.sensor_index, 0);
         assert_vec_close(sample.position, [6.75, -6.75, 0.0]);
-        assert_vec_close(sample.field, [2.0, -1.0, 3.0]);
+        assert_vec_close(sample.field, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn pose_conversion_applies_a1_scale_and_axis_transform_after_background_stage() {
+        let scale = a1_sensor_scale(0, 0).unwrap();
+        let post_background = sample(0, [1.0 * scale, 2.0 * scale, 3.0 * scale]);
+
+        let pose = sample_to_pose_sample(&post_background).expect("calibrated sensor should convert");
+
+        assert_vec_close(pose.field, [2.0, -1.0, 3.0]);
     }
 
     #[test]
