@@ -13,6 +13,121 @@ const MAX_HISTORY_POINTS: usize = 600;
 const BACKGROUND_CAPTURE_FRAMES: usize = 20;
 const UT_PER_MT: f64 = 1000.0;
 const MOMENT_NORM_PRIOR_WEIGHT_MT: f64 = 0.25;
+const N_SENSORS_PER_BOARD: usize = 16;
+const SENSOR_GRID_HALF_SIDE_MM: f64 = 6.75;
+const SENSOR_GRID_PITCH_MM: f64 = 4.5;
+
+// Finalized Bambu A1 per-sensor response scales from
+// hall-effect-motion-tracking:a1-calibration,
+// a1_calibration_results/comparison/sensor_scales.csv.
+// Rows are firmware board IDs 0=A, 1=B, 2=C. Columns are physical sensor indices 0..15.
+// Each scalar is the fitted sensor response relative to its board mean across the full
+// 20..40 mm calibration trajectory. Live fitting divides all three axes by this scalar.
+const A1_SENSOR_SCALES: [[f64; N_SENSORS_PER_BOARD]; 3] = [
+    [
+        0.998305503,
+        0.995573066,
+        0.999198181,
+        0.990395087,
+        1.00411477,
+        1.02118115,
+        1.01976842,
+        1.0048934,
+        0.977957215,
+        0.991875923,
+        0.98944587,
+        0.973310352,
+        1.04201558,
+        1.00244507,
+        0.981004191,
+        1.00851621,
+    ],
+    [
+        0.998472167,
+        0.980940324,
+        1.01608263,
+        0.969411196,
+        1.02978453,
+        1.00745936,
+        1.00170719,
+        0.99398276,
+        0.986865072,
+        0.98212045,
+        1.00139646,
+        0.99119569,
+        0.991292111,
+        1.01160096,
+        1.007626,
+        1.03006309,
+    ],
+    [
+        0.998275213,
+        0.985405632,
+        1.00188967,
+        0.955097,
+        0.97308648,
+        1.03620455,
+        1.0125925,
+        1.01369173,
+        0.976106343,
+        0.998213814,
+        0.986303263,
+        0.9847155,
+        1.03921541,
+        1.00970903,
+        1.01994321,
+        1.00955067,
+    ],
+];
+
+fn sensor_grid_position_mm(sensor_index: u8) -> Option<[f64; 3]> {
+    let index = usize::from(sensor_index);
+    if index >= N_SENSORS_PER_BOARD {
+        return None;
+    }
+
+    // KiCad-verified indexing with JST connectors toward -Y/front:
+    //
+    //     12   8   4   0
+    //     13   9   5   1
+    //     14  10   6   2
+    //     15  11   7   3
+    let column_from_right = index / 4;
+    let row_from_front = index % 4;
+
+    Some([
+        SENSOR_GRID_HALF_SIDE_MM - SENSOR_GRID_PITCH_MM * column_from_right as f64,
+        -SENSOR_GRID_HALF_SIDE_MM + SENSOR_GRID_PITCH_MM * row_from_front as f64,
+        0.0,
+    ])
+}
+
+fn a1_sensor_scale(board_id: u16, sensor_index: u8) -> Option<f64> {
+    let scale = *A1_SENSOR_SCALES
+        .get(usize::from(board_id))?
+        .get(usize::from(sensor_index))?;
+
+    if scale.is_finite() && scale > 0.0 {
+        Some(scale)
+    } else {
+        None
+    }
+}
+
+fn logger_field_to_fit_frame(
+    board_id: u16,
+    sensor_index: u8,
+    logger_field_m_t: [f64; 3],
+) -> Option<[f64; 3]> {
+    let scale = a1_sensor_scale(board_id, sensor_index)?;
+    let bx = logger_field_m_t[0] / scale;
+    let by = logger_field_m_t[1] / scale;
+    let bz = logger_field_m_t[2] / scale;
+
+    // Logger/sensor axes -> board/model axes established by the corrected A1 trajectory:
+    // [Bx, By, Bz]_fit = [By, -Bx, Bz]_normalized.
+    Some([by, -bx, bz])
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct BoardLiveFits {
@@ -773,14 +888,19 @@ fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
     let by = field.field.y?.value() / UT_PER_MT;
     let bz = field.field.z?.value() / UT_PER_MT;
 
+    // Use the app's own KiCad-verified geometry instead of trusting the transmitted
+    // field.position. This prevents stale firmware geometry from silently corrupting fits.
+    let position = sensor_grid_position_mm(sensor_index)?;
+    let corrected_field = logger_field_to_fit_frame(field.board_id, sensor_index, [bx, by, bz])?;
+
+    // Calibration and the logger->model axis transform are linear, so applying them before
+    // background capture/subtraction is exactly equivalent to:
+    //   transform((raw - background) / sensor_scale).
+    // Sensor Trace remains raw because this conversion is used only by the live fitter.
     Some(Sample {
         sensor_index,
-        position: [
-            field.position.0 as f64,
-            field.position.1 as f64,
-            field.position.2 as f64,
-        ],
-        field: [bx, by, bz],
+        position,
+        field: corrected_field,
     })
 }
 
@@ -1098,6 +1218,7 @@ fn determinant_3x3(a: [[f64; 3]; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use data_transfer::conversions::MagneticValue;
 
     fn sample(sensor_index: u8, field: [f64; 3]) -> Sample {
         Sample {
@@ -1113,6 +1234,33 @@ mod tests {
         field.address = address;
         field.time = time;
         field
+    }
+
+    fn measured_field(
+        board_id: u16,
+        address: u8,
+        position: (f32, f32, f32),
+        field_u_t: [f64; 3],
+    ) -> SensorField {
+        let mut field = SensorField::default();
+        field.board_id = board_id;
+        field.address = address;
+        field.position = position;
+        field.field.x = Some(MagneticValue::uT(field_u_t[0]));
+        field.field.y = Some(MagneticValue::uT(field_u_t[1]));
+        field.field.z = Some(MagneticValue::uT(field_u_t[2]));
+        field
+    }
+
+    fn assert_vec_close(actual: [f64; 3], expected: [f64; 3]) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] - expected[i]).abs() < 1.0e-10,
+                "axis {i}: actual={} expected={}",
+                actual[i],
+                expected[i]
+            );
+        }
     }
 
     #[test]
@@ -1204,5 +1352,53 @@ mod tests {
         assert_eq!(corrected.len(), 2);
         assert_eq!(corrected[0].field, [9.0, 18.0, 27.0]);
         assert_eq!(corrected[1].field, [-3.0, 5.0, 8.0]);
+    }
+
+    #[test]
+    fn live_fit_geometry_uses_kicad_sensor_indexing() {
+        assert_vec_close(sensor_grid_position_mm(0).unwrap(), [6.75, -6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(3).unwrap(), [6.75, 6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(12).unwrap(), [-6.75, -6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(15).unwrap(), [-6.75, 6.75, 0.0]);
+        assert!(sensor_grid_position_mm(16).is_none());
+    }
+
+    #[test]
+    fn finalized_a1_scale_table_is_used_for_all_three_boards() {
+        assert!((a1_sensor_scale(0, 12).unwrap() - 1.04201558).abs() < 1.0e-12);
+        assert!((a1_sensor_scale(1, 3).unwrap() - 0.969411196).abs() < 1.0e-12);
+        assert!((a1_sensor_scale(2, 5).unwrap() - 1.03620455).abs() < 1.0e-12);
+        assert!(a1_sensor_scale(3, 0).is_none());
+        assert!(a1_sensor_scale(0, 16).is_none());
+
+        for board in 0..3u16 {
+            for sensor in 0..16u8 {
+                let scale = a1_sensor_scale(board, sensor).unwrap();
+                assert!(scale.is_finite() && scale > 0.9 && scale < 1.1);
+            }
+        }
+    }
+
+    #[test]
+    fn live_fit_ignores_transmitted_position_and_applies_scale_and_axis_transform() {
+        let scale = a1_sensor_scale(0, 0).unwrap();
+        let field = measured_field(
+            0,
+            0x0C,
+            (123.0, 456.0, 789.0),
+            [1000.0 * scale, 2000.0 * scale, 3000.0 * scale],
+        );
+
+        let sample = sensor_field_to_sample(&field).expect("valid Board A sensor should convert");
+
+        assert_eq!(sample.sensor_index, 0);
+        assert_vec_close(sample.position, [6.75, -6.75, 0.0]);
+        assert_vec_close(sample.field, [2.0, -1.0, 3.0]);
+    }
+
+    #[test]
+    fn board_c_xor_address_maps_to_same_physical_sensor_index() {
+        assert_eq!(address_to_sensor_index(0x0C ^ 0b0100_0000), Some(0));
+        assert_eq!(address_to_sensor_index(0x1B ^ 0b0100_0000), Some(15));
     }
 }
