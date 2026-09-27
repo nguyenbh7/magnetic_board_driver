@@ -23,33 +23,34 @@ pub const SENSORS_PER_BOARD: usize = 16;
 /// order. The PCB spans 13.5 mm center-to-center across each axis, which means
 /// three 4.5 mm intervals between four sensor centers.
 ///
-/// Physical calibration view (JST connectors toward the user/front):
+/// The September 2026 A1/Aug-14 coordinate audit established that centered
+/// KiCad X had previously been interpreted from the opposite PCB viewing side.
+/// In the physical calibration view with JST connectors toward the user/front:
 ///
-///     15  11   7   3
-///     14  10   6   2
-///     13   9   5   1
-///     12   8   4   0
+///      3   7  11  15
+///      2   6  10  14
+///      1   5   9  13
+///      0   4   8  12
 ///
-/// Thus sensor 0 is the bottom-right sensor. Firmware coordinates use -Y for
-/// the front/JST edge, so acquisition index advances along +Y first, then one
-/// column toward -X.
+/// Firmware coordinates use -Y for the front/JST edge. Acquisition/address
+/// index advances along +Y first; adding four moves one column toward +X.
 pub const SENSOR_POSITIONS_MM: [(f32, f32, f32); SENSORS_PER_BOARD] = [
-    ( 6.75, -6.75, 0.0),
-    ( 6.75, -2.25, 0.0),
-    ( 6.75,  2.25, 0.0),
-    ( 6.75,  6.75, 0.0),
-    ( 2.25, -6.75, 0.0),
-    ( 2.25, -2.25, 0.0),
-    ( 2.25,  2.25, 0.0),
-    ( 2.25,  6.75, 0.0),
-    (-2.25, -6.75, 0.0),
-    (-2.25, -2.25, 0.0),
-    (-2.25,  2.25, 0.0),
-    (-2.25,  6.75, 0.0),
     (-6.75, -6.75, 0.0),
     (-6.75, -2.25, 0.0),
     (-6.75,  2.25, 0.0),
     (-6.75,  6.75, 0.0),
+    (-2.25, -6.75, 0.0),
+    (-2.25, -2.25, 0.0),
+    (-2.25,  2.25, 0.0),
+    (-2.25,  6.75, 0.0),
+    ( 2.25, -6.75, 0.0),
+    ( 2.25, -2.25, 0.0),
+    ( 2.25,  2.25, 0.0),
+    ( 2.25,  6.75, 0.0),
+    ( 6.75, -6.75, 0.0),
+    ( 6.75, -2.25, 0.0),
+    ( 6.75,  2.25, 0.0),
+    ( 6.75,  6.75, 0.0),
 ];
 
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
