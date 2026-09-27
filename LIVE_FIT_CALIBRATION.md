@@ -1,47 +1,74 @@
 # Live-fit calibration and coordinate convention
 
-This note records the production live-fit preprocessing added on the `gk_measurement` branch after the Bambu A1 calibration campaign.
+This note records the production live-fit preprocessing on the `gk_measurement` branch after the Bambu A1 calibration and the September 27 A1/Aug-14 coordinate audit.
 
 ## Production fit path
 
-The raw Sensor Trace remains unchanged. Only the live pose fitter converts incoming measurements into the calibrated model frame.
+The raw Sensor Trace remains unchanged. Only the live pose fitter converts incoming measurements into the calibrated physical-board/model frame.
 
-For board `b` and physical sensor `i`, the live fitter uses the finalized A1 scalar response calibration `s[b][i]` and the KiCad-verified 4x4 geometry.
-
-The fit input is
+For board `b` and firmware/I2C address-derived sensor index `i`, the fit input is
 
 ```text
-B_fit = T((B_raw - B_background) / s[b][i])
+B_fit = T((B_raw - B_background) / s_address[b][i])
 T([Bx, By, Bz]) = [By, -Bx, Bz]
 ```
 
-Background capture and the A/B companion background records remain in the original raw logger XYZ frame. The scalar normalization and logger-to-model axis transform are applied only after background subtraction, immediately before pose fitting.
+Background capture and A/B companion background records remain in raw logger XYZ. Scalar normalization and the logger-to-board rotation are applied only after background subtraction, immediately before pose fitting.
 
-## Sensor geometry
+## Canonical sensor identity and physical geometry
 
-With the JST connectors toward `-Y` / the front of the board, the physical sensor-index grid is
+Sensor identity is the firmware/I2C address-derived index `0..15`. With JST connectors toward `-Y` / the front of the board, the resolved physical grid is
 
 ```text
-12   8   4   0
-13   9   5   1
-14  10   6   2
-15  11   7   3
+             +Y / rear
+
+ 3    7   11   15
+ 2    6   10   14
+ 1    5    9   13
+ 0    4    8   12
+
+             -Y / front / JST
+ -X                  +X
 ```
 
-The live fitter derives these positions locally and intentionally ignores transmitted `field.position` values. This protects the fit from stale firmware geometry.
+The grid is 13.5 mm center-to-center across each axis with 4.5 mm pitch, so the outer coordinates are `+/-6.75 mm`.
 
-Coordinates are a 13.5 mm square grid centered at the origin, with 4.5 mm pitch, so the outer coordinates are `+/-6.75 mm`.
+The earlier implementation mirrored X because centered KiCad X was interpreted from the opposite PCB viewing side. The A1/Aug-14 audit resolved this by combining the empirical A1 raw-slot/target mapping, model-independent Maxwell checks, and an exact Aug-14 robust-baseline recovery.
 
-## A1 calibration source
+The live fitter derives these positions locally and intentionally ignores transmitted `field.position` values. Firmware geometry is nevertheless kept consistent so raw metadata and fit geometry agree.
 
-The 48 scalar calibration values come from:
+## A1 field transform
+
+The canonical logger -> board/model transform remains
+
+```text
+[By, -Bx, Bz]
+```
+
+The independent full 3-D A1 Maxwell diagnostic tested all 48 signed axis permutations and ranked `[By, -Bx, Bz]` as the best proper rotation. No GK-specific field transform is required.
+
+## A1 scalar gain source and re-indexing
+
+The 48 scalar response values come from:
 
 - repository: `nguyenbh7/hall-effect-motion-tracking`
 - branch: `a1-calibration`
 - source artifact: `a1_calibration_results/comparison/sensor_scales.csv`
 - calibration finalization commit: `26e89790aec7fe5ff921b3c1f26027f73e159abe`
 
-The calibration artifact is indexed by physical sensor number. The live app derives the same physical sensor index from the sensor address, while the calibration analysis separately tracked the binary logger's raw-slot permutation.
+The source CSV is indexed by the **historical A1 commanded-target labels**, not by firmware/address identity. All three boards use the same saved relation:
+
+```text
+historical A1 label -> address index
+0..3   -> 12..15
+4..7   ->  8..11
+8..11  ->  4..7
+12..15 ->  0..3
+```
+
+Production therefore remaps the table before applying a sensor scale. Address index 0 receives historical label 12's scale; address index 12 receives historical label 0's scale, etc.
+
+This correction preserves the useful response calibration while attaching it to the correct electrical sensor identity.
 
 Firmware board IDs map directly to calibration boards:
 
@@ -49,21 +76,21 @@ Firmware board IDs map directly to calibration boards:
 - `1` = Board B
 - `2` = Board C
 
-Board C uses the XOR'd I2C address bit in firmware; the app normalizes that address before deriving the physical sensor index.
+Board C uses the XOR'd I2C address bit in firmware; the app normalizes that bit before deriving address sensor index.
 
 ## Regression coverage
 
 `app/src/live_fit.rs` contains tests for:
 
-- KiCad sensor-index geometry
-- finalized A1 scale lookup for Boards A/B/C
-- Board C address normalization
-- ignoring transmitted/stale `field.position`
-- preserving raw logger XYZ through background capture/subtraction
-- scalar normalization plus `[By, -Bx, Bz]` frame conversion after the background stage
-- existing per-sensor/per-axis background subtraction
+- resolved physical address-index geometry;
+- historical-A1-label -> address-index scalar lookup for Boards A/B/C;
+- Board C address normalization;
+- ignoring transmitted/stale `field.position` in production fits;
+- preserving raw logger XYZ through background capture/subtraction;
+- remapped scalar normalization plus `[By, -Bx, Bz]` conversion after the background stage;
+- existing per-sensor/per-axis background subtraction.
 
-Run the app tests locally with the repository's Rust toolchain before flashing/using the branch for a new validation measurement:
+Run the app tests locally before flashing/using the branch for a new validation measurement:
 
 ```bash
 cargo test -p app
