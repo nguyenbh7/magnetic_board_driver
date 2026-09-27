@@ -20,10 +20,16 @@ const SENSOR_GRID_PITCH_MM: f64 = 4.5;
 // Finalized Bambu A1 per-sensor response scales from
 // hall-effect-motion-tracking:a1-calibration,
 // a1_calibration_results/comparison/sensor_scales.csv.
-// Rows are firmware board IDs 0=A, 1=B, 2=C. Columns are physical sensor indices 0..15.
-// Each scalar is the fitted sensor response relative to its board mean across the full
-// 20..40 mm calibration trajectory. Live fitting divides all three axes by this scalar.
-const A1_SENSOR_SCALES: [[f64; N_SENSORS_PER_BOARD]; 3] = [
+//
+// IMPORTANT: those CSV columns use the historical A1 commanded-target labels,
+// not firmware/I2C address identity. The A1/Aug-14 coordinate audit established
+// the common relation below for all three boards. Production fitting is keyed by
+// address index, so a1_sensor_scale() remaps before applying a scale.
+//
+// Each scalar is the fitted sensor response relative to its board mean across the
+// full 20..40 mm calibration trajectory. Live fitting divides all three axes by
+// this scalar.
+const A1_SENSOR_SCALES_HISTORICAL_PHYSICAL: [[f64; N_SENSORS_PER_BOARD]; 3] = [
     [
         0.998305503,
         0.995573066,
@@ -80,32 +86,44 @@ const A1_SENSOR_SCALES: [[f64; N_SENSORS_PER_BOARD]; 3] = [
     ],
 ];
 
+// Address index -> historical A1 "physical_sensor" label. The permutation is
+// self-inverse, so it is numerically identical to the saved physical->raw map.
+const A1_ADDRESS_TO_HISTORICAL_PHYSICAL_INDEX: [usize; N_SENSORS_PER_BOARD] = [
+    12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
+];
+
 fn sensor_grid_position_mm(sensor_index: u8) -> Option<[f64; 3]> {
     let index = usize::from(sensor_index);
     if index >= N_SENSORS_PER_BOARD {
         return None;
     }
 
-    // KiCad-verified indexing with JST connectors toward -Y/front:
+    // Resolved physical address indexing with JST connectors toward -Y/front:
     //
-    //     12   8   4   0
-    //     13   9   5   1
-    //     14  10   6   2
-    //     15  11   7   3
-    let column_from_right = index / 4;
+    //      3   7  11  15
+    //      2   6  10  14
+    //      1   5   9  13
+    //      0   4   8  12
+    //
+    // The earlier centered KiCad X direction was interpreted from the opposite
+    // PCB viewing side. Address/index increments move +Y first; adding four
+    // moves one column toward +X.
+    let column_from_left = index / 4;
     let row_from_front = index % 4;
 
     Some([
-        SENSOR_GRID_HALF_SIDE_MM - SENSOR_GRID_PITCH_MM * column_from_right as f64,
+        -SENSOR_GRID_HALF_SIDE_MM + SENSOR_GRID_PITCH_MM * column_from_left as f64,
         -SENSOR_GRID_HALF_SIDE_MM + SENSOR_GRID_PITCH_MM * row_from_front as f64,
         0.0,
     ])
 }
 
 fn a1_sensor_scale(board_id: u16, sensor_index: u8) -> Option<f64> {
-    let scale = *A1_SENSOR_SCALES
+    let address_index = usize::from(sensor_index);
+    let historical_physical_index = *A1_ADDRESS_TO_HISTORICAL_PHYSICAL_INDEX.get(address_index)?;
+    let scale = *A1_SENSOR_SCALES_HISTORICAL_PHYSICAL
         .get(usize::from(board_id))?
-        .get(usize::from(sensor_index))?;
+        .get(historical_physical_index)?;
 
     if scale.is_finite() && scale > 0.0 {
         Some(scale)
@@ -124,7 +142,8 @@ fn logger_field_to_fit_frame(
     let by = logger_field_m_t[1] / scale;
     let bz = logger_field_m_t[2] / scale;
 
-    // Logger/sensor axes -> board/model axes established by the corrected A1 trajectory:
+    // Logger/sensor axes -> canonical physical board/model axes, independently
+    // confirmed by the A1 full 3-D Maxwell diagnostic:
     // [Bx, By, Bz]_fit = [By, -Bx, Bz]_normalized.
     Some([by, -bx, bz])
 }
@@ -895,8 +914,9 @@ fn sensor_field_to_sample(field: &SensorField) -> Option<Sample> {
     let by = field.field.y?.value() / UT_PER_MT;
     let bz = field.field.z?.value() / UT_PER_MT;
 
-    // Use the app's own KiCad-verified geometry instead of trusting the transmitted
-    // field.position. This prevents stale firmware geometry from silently corrupting fits.
+    // Use the app's own resolved physical address geometry instead of trusting
+    // transmitted field.position. This prevents stale firmware geometry from
+    // silently corrupting fits.
     let position = sensor_grid_position_mm(sensor_index)?;
 
     // Keep logger-frame XYZ raw here so background capture and A/B companion background
@@ -1365,19 +1385,22 @@ mod tests {
     }
 
     #[test]
-    fn live_fit_geometry_uses_kicad_sensor_indexing() {
-        assert_vec_close(sensor_grid_position_mm(0).unwrap(), [6.75, -6.75, 0.0]);
-        assert_vec_close(sensor_grid_position_mm(3).unwrap(), [6.75, 6.75, 0.0]);
-        assert_vec_close(sensor_grid_position_mm(12).unwrap(), [-6.75, -6.75, 0.0]);
-        assert_vec_close(sensor_grid_position_mm(15).unwrap(), [-6.75, 6.75, 0.0]);
+    fn live_fit_geometry_uses_resolved_physical_address_indexing() {
+        assert_vec_close(sensor_grid_position_mm(0).unwrap(), [-6.75, -6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(3).unwrap(), [-6.75, 6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(12).unwrap(), [6.75, -6.75, 0.0]);
+        assert_vec_close(sensor_grid_position_mm(15).unwrap(), [6.75, 6.75, 0.0]);
         assert!(sensor_grid_position_mm(16).is_none());
     }
 
     #[test]
-    fn finalized_a1_scale_table_is_used_for_all_three_boards() {
-        assert!((a1_sensor_scale(0, 12).unwrap() - 1.04201558).abs() < 1.0e-12);
-        assert!((a1_sensor_scale(1, 3).unwrap() - 0.969411196).abs() < 1.0e-12);
-        assert!((a1_sensor_scale(2, 5).unwrap() - 1.03620455).abs() < 1.0e-12);
+    fn finalized_a1_scale_table_is_remapped_to_address_identity() {
+        // Address 0 corresponds to historical A1 physical label 12; address 12
+        // corresponds to historical label 0.
+        assert!((a1_sensor_scale(0, 0).unwrap() - 1.04201558).abs() < 1.0e-12);
+        assert!((a1_sensor_scale(0, 12).unwrap() - 0.998305503).abs() < 1.0e-12);
+        assert!((a1_sensor_scale(1, 3).unwrap() - 1.03006309).abs() < 1.0e-12);
+        assert!((a1_sensor_scale(2, 5).unwrap() - 0.998213814).abs() < 1.0e-12);
         assert!(a1_sensor_scale(3, 0).is_none());
         assert!(a1_sensor_scale(0, 16).is_none());
 
@@ -1402,12 +1425,12 @@ mod tests {
 
         assert_eq!(sample.board_id, 0);
         assert_eq!(sample.sensor_index, 0);
-        assert_vec_close(sample.position, [6.75, -6.75, 0.0]);
+        assert_vec_close(sample.position, [-6.75, -6.75, 0.0]);
         assert_vec_close(sample.field, [1.0, 2.0, 3.0]);
     }
 
     #[test]
-    fn pose_conversion_applies_a1_scale_and_axis_transform_after_background_stage() {
+    fn pose_conversion_applies_remapped_a1_scale_and_axis_transform_after_background_stage() {
         let scale = a1_sensor_scale(0, 0).unwrap();
         let post_background = sample(0, [1.0 * scale, 2.0 * scale, 3.0 * scale]);
 
