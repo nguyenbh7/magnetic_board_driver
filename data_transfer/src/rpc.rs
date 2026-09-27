@@ -22,22 +22,33 @@ pub const SENSORS_PER_BOARD: usize = 16;
 /// Canonical physical 4x4 MLX90393 sensor-center coordinates in firmware/address
 /// order. The PCB spans 13.5 mm center-to-center across each axis, which means
 /// three 4.5 mm intervals between four sensor centers.
+///
+/// Physical calibration view (JST connectors toward the user/front):
+///
+///     15  11   7   3
+///     14  10   6   2
+///     13   9   5   1
+///     12   8   4   0
+///
+/// Thus sensor 0 is the bottom-right sensor. Firmware coordinates use -Y for
+/// the front/JST edge, so acquisition index advances along +Y first, then one
+/// column toward -X.
 pub const SENSOR_POSITIONS_MM: [(f32, f32, f32); SENSORS_PER_BOARD] = [
     ( 6.75, -6.75, 0.0),
-    ( 2.25, -6.75, 0.0),
-    (-2.25, -6.75, 0.0),
-    (-6.75, -6.75, 0.0),
     ( 6.75, -2.25, 0.0),
-    ( 2.25, -2.25, 0.0),
-    (-2.25, -2.25, 0.0),
-    (-6.75, -2.25, 0.0),
     ( 6.75,  2.25, 0.0),
-    ( 2.25,  2.25, 0.0),
-    (-2.25,  2.25, 0.0),
-    (-6.75,  2.25, 0.0),
     ( 6.75,  6.75, 0.0),
+    ( 2.25, -6.75, 0.0),
+    ( 2.25, -2.25, 0.0),
+    ( 2.25,  2.25, 0.0),
     ( 2.25,  6.75, 0.0),
+    (-2.25, -6.75, 0.0),
+    (-2.25, -2.25, 0.0),
+    (-2.25,  2.25, 0.0),
     (-2.25,  6.75, 0.0),
+    (-6.75, -6.75, 0.0),
+    (-6.75, -2.25, 0.0),
+    (-6.75,  2.25, 0.0),
     (-6.75,  6.75, 0.0),
 ];
 
