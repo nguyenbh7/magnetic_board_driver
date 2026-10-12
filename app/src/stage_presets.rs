@@ -21,6 +21,13 @@ impl MagnetLocationPreset {
         }
     }
 
+    pub fn frame_key(self) -> &'static str {
+        match self {
+            Self::LinearStageCt => "gk_may15_ct",
+            Self::RotationStage => "gk_rotation_stage",
+        }
+    }
+
     pub fn reference_frame(self) -> &'static str {
         match self {
             Self::LinearStageCt => "CT world coordinates (May 15, 2026)",
@@ -82,7 +89,8 @@ impl MagnetLocationPreset {
     /// agree with the same-frame, fully calibrated sensor and magnet profile.
     /// We never transfer numeric positions between CT and stage coordinate frames.
     pub fn matches_profile(self, profile: &RigidProfile) -> bool {
-        profile.magnets.len() == 3 && self.centers_mm().iter()
+        profile.coordinate_frame.as_deref() == Some(self.frame_key())
+            && profile.magnets.len() == 3 && self.centers_mm().iter()
             .zip(&profile.magnets)
             .all(|(expected, actual)| expected.iter().zip(actual.center_mm.iter())
                 .all(|(a,b)| (a-b).abs() <= 0.05))
@@ -121,11 +129,18 @@ mod tests {
             .zip(MagnetLocationPreset::LinearStageCt.centers_mm()) {
             magnet.center_mm = center;
         }
+        assert_eq!(MagnetLocationPreset::identify_profile(&profile), None);
+        profile.coordinate_frame = Some("gk_may15_ct".to_string());
         assert_eq!(
             MagnetLocationPreset::identify_profile(&profile),
             Some(MagnetLocationPreset::LinearStageCt)
         );
         profile.magnets.swap(0, 1);
+        assert_eq!(MagnetLocationPreset::identify_profile(&profile), None);
+        profile.magnets.swap(0, 1);
+        // A coincidental center set in an unlabelled or different frame
+        // must also be rejected, even if its coordinates match.
+        profile.coordinate_frame = None;
         assert_eq!(MagnetLocationPreset::identify_profile(&profile), None);
     }
 }
