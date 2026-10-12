@@ -250,7 +250,9 @@ impl RigidLiveFit {
         self.background_raw = [None;3];
         self.enabled = true;
         self.reset_stream();
-        self.status = "Waiting for synchronized board frames".into();
+        self.status = if self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 ")) {
+            "Capture all three A1 no-magnet backgrounds before fitting".into()
+        } else { "Waiting for synchronized board frames".into() };
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -302,6 +304,12 @@ impl RigidLiveFit {
         self.reset_stream();
         self.status = "A1 no-magnet background captured; ready for magnets".into();
         Ok(())
+    }
+
+    pub fn clear_background_for_new_port(&mut self) {
+        self.background_raw = [None;3];
+        self.reset_stream();
+        self.status = "Board connection changed: verify profile and recapture backgrounds".into();
     }
 
     pub fn reset_zero(&mut self) {
@@ -376,6 +384,10 @@ impl RigidLiveFit {
         queue.push_back(BoardSnapshot { time_us: t, fields_mt });
         while queue.len() > FRAME_BUFFER_LEN { queue.pop_front(); }
 
+        if profile.name.starts_with("A1 ") && self.background_raw.iter().any(Option::is_none) {
+            self.status = "Awaiting A1 no-magnet background on all three boards".into();
+            return None;
+        }
         if self.busy { return None; }
         for b in &profile.boards {
             if self.frames[b.raw_board_id as usize].len() < 2 { return None; }
