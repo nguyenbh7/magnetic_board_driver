@@ -19,6 +19,8 @@ use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
 mod rigid_fit;
+mod stage_presets;
+use stage_presets::MagnetLocationPreset;
 use rigid_fit::{RigidFitCompletion, RigidFitJob, RigidLiveFit, RigidProfile, RigidSummary};
 use live_fit::{BoardFitSummary, BoardLiveFits, FitCompletion, FitJob, MagnetPreset};
 use rfd::FileHandle;
@@ -82,6 +84,7 @@ enum Message {
     FitCompleted(FitCompletion),
     RigidFitCompleted(RigidFitCompletion),
     UseA1RigidProfile,
+    SelectMagnetLocations(MagnetLocationPreset),
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
     ToggleRigidFit,
@@ -326,7 +329,7 @@ fn board_fit_status_text(summary: &BoardFitSummary) -> String {
 }
 
 fn rigid_fit_status_text(summary: &RigidSummary) -> String {
-    let name = summary.profile_name.as_deref().unwrap_or("No profile loaded");
+    let name = summary.profile_name.as_deref().unwrap_or("No calibrated profile loaded");
     let mut text = format!(
         "Rigid 6-DOF · {} · {} · {} · worker {} · completed {} · rejected {} · last {:.1} ms",
         name, if summary.enabled { "enabled" } else { "disabled" }, summary.status,
@@ -647,6 +650,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::SelectBoardMagnetPreset { board_id, preset } => {
             context.live_fits.set_board_magnet_preset(board_id, preset);
+            Task::none()
+        }
+        Message::SelectMagnetLocations(preset) => {
+            context.rigid_fit.select_location_preset(preset);
             Task::none()
         }
         Message::UseA1RigidProfile => {
@@ -1081,8 +1088,22 @@ fn view(context: &Context) -> Element<'_, Message> {
         let rigid = context.rigid_fit.summary();
         let enabled_label = if rigid.enabled { "Disable rigid fit" } else { "Enable rigid fit" };
         let pose_label = rigid_fit_status_text(&rigid);
+        let selected_locations = rigid.location_preset.map(|preset| preset.summary())
+            .unwrap_or_else(|| {
+                "Selected magnet locations: calibrated profile (A1/custom), or none loaded".into()
+            });
         let mut rigid_content = column![
             text("Rigid-body live fit — 6 DOF, all three boards / all three magnets"),
+            row![
+                text("Stage magnet locations:"),
+                pick_list(
+                    MagnetLocationPreset::ALL.to_vec(),
+                    rigid.location_preset,
+                    Message::SelectMagnetLocations,
+                ),
+            ].spacing(8),
+            text(selected_locations),
+            text("Stage presets provide measured magnet centers only. A matching calibrated board/sensor/magnet profile is required for live fitting; no cross-frame substitution is performed."),
             row![
                 button("Use A1 reference profile").on_press(Message::UseA1RigidProfile),
                 button("Load rigid geometry (.json)").on_press(Message::LoadRigidProfile),
