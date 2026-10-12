@@ -17,6 +17,47 @@ Press **Use A1 reference profile**. This uses the 110-mm triangle and per-magnet
 
 With all magnets REMOVED, stream complete frames from all three boards and press **Capture A1 no-magnet background**. The current version captures one complete frame per board and is not a long-duration background average. Then install the magnets, fit the pose, and press **Set rigid zero** to reference displacement and angular motion to the current pose. Do not capture a no-magnet background while magnets are installed.
 
+## Default Gamma Knife stage magnet locations
+
+The Live Fits dashboard now offers a **Stage magnet locations** dropdown. These are
+measured/reference **magnet centers**, not interchangeable complete fitting profiles.
+
+- **Linear stage — May-15 CT**: in the May-15 CT world frame, Left/M1
+  (180.20, 114.40, 114.30) mm, Top/M2 (104.10, 95.20, -14.30) mm,
+  Right/M3 (17.70, 105.00, 112.40) mm. Source: the
+  `markers_051526` sheet of `sensor_position_data_05152026.xlsx`.
+  The matching offline CT fit uses Left<-raw1, Top<-raw0, Right<-raw2
+  and right-board sensor permutation `flip_rot180`.
+- **Rotation stage — measured centers**: relative to the rotation-stage
+  origin, Top (126.89, 0.00, -90.59) mm, Left (0.00, 82.03, -94.15) mm,
+  Right (0.00, -82.03, -94.15) mm. Source:
+  `hall-effect-motion-tracking/src/gk_analysis/rotation_stage.py`
+  constant `MEASURED_MAGNET_CENTERS_STAGE_MM` on branch
+  `magnet-simulations`. The 25-mm tangent board geometry there is a
+  **simulation assumption**, not independently measured sensor poses.
+
+Selecting either dropdown reference **does not fabricate sensor positions,
+magnet axes, board orientations, or per-board field corrections**. If the
+currently loaded full profile is incompatible, live rigid fitting is disabled;
+the selected reference points are shown and the app requests a complete
+calibration profile. The user can still run independent per-board fits.
+
+To activate a matching stage fit, press **Load rigid geometry (.json)** and
+choose a full profile with the corresponding coordinate-frame key:
+
+- `"coordinate_frame": "gk_may15_ct"` for the May-15 CT linear reference.
+- `"coordinate_frame": "gk_rotation_stage"` for a calibrated rotation-stage setup.
+
+The magnet centers must match the chosen reference within 0.05 mm, in the
+displayed order. A custom profile without one of these explicit frame tags
+remains supported, but is **not** identified as either built-in stage preset.
+The CT export utility now writes `gk_may15_ct` and checks the measured
+magnet locations. Re-export any older May-15 JSON profile to enable
+automatic dropdown identification.
+
+The existing A1 reference preset is independent of this stage dropdown;
+clicking **Use A1 reference profile** switches back to A1 mode.
+
 ## Gamma Knife CT setup
 
 Run hall-effect-motion-tracking/scripts/fit_gk_05152026_ct_rigid.py with the May-15 CT workbook and original raw dataset, producing one dataset folder containing manifest.json and baseline_calibration.csv. Then from magnetic_board_driver run:
