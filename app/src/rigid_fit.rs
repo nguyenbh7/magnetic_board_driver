@@ -228,6 +228,8 @@ pub struct RigidLiveFit {
     enabled: bool,
     frames: [VecDeque<BoardSnapshot>; 3],
     presence: BoardPresence,
+    /// Optional no-magnet capture for A1; CT profiles already contain fixed baselines.
+    background_raw: [Option<[[f64;3];16]>;3],
     generation: u64,
     busy: bool,
     last_dispatched_us: Option<u64>,
@@ -245,6 +247,7 @@ pub struct RigidLiveFit {
 impl RigidLiveFit {
     pub fn set_profile(&mut self, profile: RigidProfile) {
         self.profile = Some(profile);
+        self.background_raw = [None;3];
         self.enabled = true;
         self.reset_stream();
         self.status = "Waiting for synchronized board frames".into();
@@ -279,6 +282,26 @@ impl RigidLiveFit {
         self.completed = 0;
         self.rejected = 0;
         self.last_elapsed_ms = None;
+    }
+
+    /// Capture raw no-magnet backgrounds on all three boards (A1 only).
+    pub fn capture_a1_background(&mut self) -> Result<(), String> {
+        if !self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 ")) {
+            return Err("Background capture is only offered for the A1 reference; CT uses frozen fitted background".into());
+        }
+        let mut captures = [None;3];
+        for board_id in 0..3 {
+            let frame = self.frames[board_id].back().ok_or("No frame available on every board")?;
+            let mut raw = [[0.0;3];16];
+            for (i,v) in frame.fields_mt.iter().enumerate() {
+                raw[i] = v.ok_or("Background frame is missing sensors")?;
+            }
+            captures[board_id] = Some(raw);
+        }
+        self.background_raw = captures;
+        self.reset_stream();
+        self.status = "A1 no-magnet background captured; ready for magnets".into();
+        Ok(())
     }
 
     pub fn reset_zero(&mut self) {
@@ -370,7 +393,9 @@ impl RigidLiveFit {
             for (i, raw) in samples.iter().enumerate() {
                 let Some(raw) = raw else { continue };
                 let gain = b.sensor_gains.as_ref().map(|g| g[i]).unwrap_or(1.0);
-                let converted = mat_vec(b.raw_to_world, *raw);
+                let background = self.background_raw[b.raw_board_id as usize]
+                    .as_ref().map(|samples| samples[i]).unwrap_or([0.0;3]);
+                let converted = mat_vec(b.raw_to_world, sub(*raw, background));
                 observations.push(Observation {
                     sensor_mm: b.sensors_mm[i],
                     measured_mt: [
@@ -500,7 +525,7 @@ fn rodrigues(v: [f64; 3]) -> [[f64; 3]; 3] {
     let k2 = mul_matrix(k,k);
     let mut result = [[0.0;3];3];
     for i in 0..3 { for j in 0..3 {
-        result[i][j] = if i==j {1.0} else {0.0} + alpha*k[i][j] + beta*k2[i][j];
+        result[i][j] = (if i==j {1.0} else {0.0}) + alpha*k[i][j] + beta*k2[i][j];
     }}
     result
 }
@@ -527,8 +552,7 @@ fn quadrature(magnet: &RigidMagnet, center: [f64; 3], axis: [f64; 3]) -> Vec<([f
     out
 }
 
-fn predict(profile: &RigidProfile, pose: [f64; 6], sensor: [f64; 3], sources: &[Vec<([f64; 3],[f64; 3],f64)>]) -> [f64;3] {
-    let _ = (profile, pose); // sources have already been transformed.
+fn predict(sensor: [f64; 3], sources: &[Vec<([f64; 3],[f64; 3],f64)>]) -> [f64;3] {
     let mut result = [0.0;3];
     for magnet_sources in sources {
         for &(top,bottom,w) in magnet_sources {
@@ -556,7 +580,7 @@ fn residual(profile: &RigidProfile, observations: &[Observation], pose: [f64;6])
     }
     let mut out = Vec::with_capacity(3*observations.len());
     for sample in observations {
-        let modeled = predict(profile,pose,sample.sensor_mm,&sources);
+        let modeled = predict(sample.sensor_mm,&sources);
         for i in 0..3 { out.push(modeled[i]-sample.measured_mt[i]); }
     }
     if out.iter().any(|x| !x.is_finite()) { return None; }
@@ -669,7 +693,7 @@ mod tests {
         }).collect::<Vec<_>>();
         let observations = profile.boards.iter().flat_map(|b|
             b.sensors_mm.iter().map(|&sensor_mm| Observation {
-                sensor_mm, measured_mt: predict(&profile,truth,sensor_mm,&sources)
+                sensor_mm, measured_mt: predict(sensor_mm,&sources)
             })
         ).collect::<Vec<_>>();
         let fit = optimize_pose(&profile,&observations,[0.0,0.0,30.0,0.0,0.0,0.0]).unwrap();
