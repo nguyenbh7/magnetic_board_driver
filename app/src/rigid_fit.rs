@@ -703,6 +703,55 @@ mod tests {
     }
 
     #[test]
+    fn cylinder_quadrature_matches_analytic_on_axis() {
+        let magnet = RigidMagnet {
+            center_mm: [0.0,0.0,0.0], axis: [0.0,0.0,1.0],
+            diameter_mm: 7.9375, thickness_mm: 6.35, remanence_mt: 1480.0,
+        };
+        let z: f64 = 30.0;
+        let r = magnet.diameter_mm * 0.5;
+        let half = magnet.thickness_mm * 0.5;
+        let expected = magnet.remanence_mt*0.5 * (
+            (z+half) / ((z+half).powi(2)+r*r).sqrt()
+            - (z-half) / ((z-half).powi(2)+r*r).sqrt()
+        );
+        let actual = predict([0.0,0.0,z], &[quadrature(&magnet,magnet.center_mm,magnet.axis)]);
+        assert!(((actual[2]-expected)/expected).abs()<0.005);
+        assert!(actual[0].abs()<1e-8 && actual[1].abs()<1e-8);
+    }
+
+    #[test]
+    fn synchronized_frames_create_one_job_and_reset_invalidates_it() {
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        live.set_presence(BoardPresence {
+            board_mask: 0b111, sensor_masks: [0xffff;3],
+        });
+        let mut job = None;
+        for cycle in 0..2 {
+            for board_id in 0..3 {
+                let mut frame = BoardFrame::default();
+                frame.board_id = board_id;
+                frame.frame_id = cycle;
+                frame.sensor_mask = 0xffff;
+                frame.base_time_us = 100_000+100_000*cycle as u64+board_id as u64;
+                for sample in &mut frame.samples {sample.bz_ut = 300.0;}
+                job = live.receive_frame(&frame).or(job);
+            }
+        }
+        let job = job.expect("Three bracketed board streams must provide a joint fit job");
+        assert_eq!(job.observations.len(),48);
+        assert!(live.summary().busy);
+        live.reset_stream();
+        live.apply_completion(RigidFitCompletion {
+            generation: job.generation, time_us:job.time_us,
+            result:Some(RigidFitResult {pose: [0.0;6],rmse_mt:0.0,sensor_count:48}),
+            elapsed_ms: 1.0,
+        });
+        assert!(live.summary().result.is_none());
+    }
+
+    #[test]
     fn interpolation_refuses_unbracketed_samples() {
         let mut q = VecDeque::new();
         q.push_back(BoardSnapshot {time_us:100,fields_mt:[Some([0.0;3]);16]});
