@@ -8,6 +8,7 @@ use std::time::Instant;
 use data_transfer::rpc::{BoardFrame, BoardPresence};
 use serde::Deserialize;
 use crate::live_fit::DisplacementPoint;
+use crate::stage_presets::MagnetLocationPreset;
 
 const HISTORY_LEN: usize = 600;
 const FRAME_BUFFER_LEN: usize = 8;
@@ -209,6 +210,7 @@ impl RigidFitJob {
 #[derive(Debug, Clone)]
 pub struct RigidSummary {
     pub enabled: bool,
+    pub location_preset: Option<MagnetLocationPreset>,
     pub profile_name: Option<String>,
     pub status: String,
     pub result: Option<RigidFitResult>,
@@ -225,6 +227,7 @@ pub struct RigidSummary {
 #[derive(Default)]
 pub struct RigidLiveFit {
     profile: Option<RigidProfile>,
+    location_preset: Option<MagnetLocationPreset>,
     enabled: bool,
     frames: [VecDeque<BoardSnapshot>; 3],
     presence: BoardPresence,
@@ -246,13 +249,36 @@ pub struct RigidLiveFit {
 
 impl RigidLiveFit {
     pub fn set_profile(&mut self, profile: RigidProfile) {
+        // Switching to an actual calibrated profile also selects the matching
+        // stage reference, if any; never allow stale location references to
+        // override measured board/sensor geometry.
+        self.location_preset = MagnetLocationPreset::identify_profile(&profile);
         self.profile = Some(profile);
         self.background_raw = [None;3];
         self.enabled = true;
         self.reset_stream();
-        self.status = if self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 ")) {
-            "Capture all three A1 no-magnet backgrounds before fitting".into()
-        } else { "Waiting for synchronized board frames".into() };
+    }
+
+    /// Select known magnet centers without pretending that a center-only
+    /// reference is sufficient to fit magnetic fields in three dimensions.
+    /// If an already loaded full calibrated profile matches exactly, keep it.
+    /// Otherwise discard the stale profile and block fitting until the user
+    /// imports a matching complete board/magnet calibration JSON.
+    pub fn select_location_preset(&mut self, preset: MagnetLocationPreset) {
+        let matching = self.profile.as_ref().is_some_and(|p| preset.matches_profile(p));
+        self.location_preset = Some(preset);
+        if !matching {
+            self.profile = None;
+            self.background_raw = [None; 3];
+        }
+        self.enabled = matching;
+        self.reset_stream();
+        if !matching {
+            self.status = format!(
+                "{} centers selected (reference only). Load matching sensor geometry,                  axes, magnet calibration and board background JSON to enable fitting.",
+                preset.title()
+            );
+        }
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -262,6 +288,9 @@ impl RigidLiveFit {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled && self.profile.is_some();
         self.reset_stream();
+        if enabled && self.profile.is_none() && self.location_preset.is_some() {
+            self.status = "Location-only preset: load the matching full calibrated geometry JSON before enabling fits".into();
+        }
     }
 
     pub fn enabled(&self) -> bool { self.enabled }
@@ -346,6 +375,7 @@ impl RigidLiveFit {
         });
         RigidSummary {
             enabled: self.enabled,
+            location_preset: self.location_preset,
             profile_name: self.profile.as_ref().map(|p| p.name.clone()),
             status: self.status.clone(),
             result: self.result.clone(),
@@ -721,6 +751,29 @@ mod tests {
         for i in 0..3 {assert!((fit.pose[i]-truth[i]).abs()<0.05);}
         for i in 3..6 {assert!((fit.pose[i]-truth[i]).abs()<0.004);}
         assert!(fit.rmse_mt<1e-4);
+    }
+
+    #[test]
+    fn stage_selection_never_reuses_incompatible_calibration() {
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        assert!(live.enabled());
+        live.select_location_preset(MagnetLocationPreset::LinearStageCt);
+        assert!(!live.enabled());
+        assert!(live.profile.is_none());
+        live.set_enabled(true);
+        assert!(!live.enabled());
+        let mut ct_like = RigidProfile::a1_reference().unwrap();
+        for (magnet, center) in ct_like.magnets.iter_mut()
+            .zip(MagnetLocationPreset::LinearStageCt.centers_mm()) {
+            magnet.center_mm = center;
+        }
+        live.set_profile(ct_like);
+        assert_eq!(live.summary().location_preset, Some(MagnetLocationPreset::LinearStageCt));
+        assert!(live.enabled());
+        live.select_location_preset(MagnetLocationPreset::RotationStage);
+        assert!(!live.enabled());
+        assert!(live.profile.is_none());
     }
 
     #[test]
