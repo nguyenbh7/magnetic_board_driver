@@ -78,6 +78,20 @@ def main() -> int:
 
     geom = gk.load_ct_geometry(args.ct_xlsx, TRANSFORMS)
     centers = np.vstack([geom["magnet_centers"][b] for b in PHYSICAL])
+    # Same CT reference as the desktop app's Linear-stage preset. Fail loudly
+    # if another CT workbook/session is accidentally exported under this ID.
+    reference_centers = np.array([
+        [180.2, 114.4, 114.3],
+        [104.1, 95.2, -14.3],
+        [17.7, 105.0, 112.4],
+    ], dtype=float)
+    max_diff = float(np.max(np.abs(centers - reference_centers)))
+    if max_diff > 0.05:
+        parser.error(
+            "CT centers differ from the May-15 linear-stage preset by "
+            f"up to {max_diff:.3f} mm. Verify CT workbook, magnet assignment and "
+            "coordinate convention; do not relabel this as the May-15 profile."
+        )
     field_model = manifest["field_model"]
     diameter = float(field_model["diameter_mm_nominal"]) if (
         "diameter_mm_nominal" in field_model
@@ -114,6 +128,7 @@ def main() -> int:
     radians = np.deg2rad(float(manifest["optimizer"]["rotation_component_bound_deg"]))
     profile = {
         "name": f"GK CT May-15 {manifest['dataset']} (frozen geometry/calibration)",
+        "coordinate_frame": "gk_may15_ct",
         "origin_mm": np.mean(centers, axis=0).tolist(),
         "boards": boards,
         "magnets": magnets,
