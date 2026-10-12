@@ -740,7 +740,7 @@ mod tests {
             board_mask: 0b111, sensor_masks: [0xffff;3],
         });
         let mut job = None;
-        for cycle in 0..2 {
+        for cycle in 0..4 {
             for board_id in 0..3 {
                 let mut frame = BoardFrame::default();
                 frame.board_id = board_id;
@@ -749,6 +749,10 @@ mod tests {
                 frame.base_time_us = 100_000+100_000*cycle as u64+board_id as u64;
                 for sample in &mut frame.samples {sample.bz_ut = 300.0;}
                 job = live.receive_frame(&frame).or(job);
+            }
+            if cycle == 1 {
+                assert!(job.is_none(), "A1 must not fit without a background capture");
+                live.capture_a1_background().unwrap();
             }
         }
         let job = job.expect("Three bracketed board streams must provide a joint fit job");
