@@ -595,7 +595,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
-            context.rigid_fit.reset_stream();
+            context.rigid_fit.clear_background_for_new_port();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveFits;
             context.stream_status = "idle".to_string();
