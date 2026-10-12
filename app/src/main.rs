@@ -12,12 +12,14 @@ use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod displacement_plot;
-use displacement_plot::displacement_plot;
+use displacement_plot::{displacement_plot, rotation_plot};
 mod sensor_trace;
 mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
+mod rigid_fit;
+use rigid_fit::{RigidFitCompletion, RigidFitJob, RigidLiveFit, RigidProfile, RigidSummary};
 use live_fit::{BoardFitSummary, BoardLiveFits, FitCompletion, FitJob, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
@@ -78,6 +80,14 @@ enum Message {
     RecievedField(data_transfer::rpc::SensorField),
     ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
     FitCompleted(FitCompletion),
+    RigidFitCompleted(RigidFitCompletion),
+    UseA1RigidProfile,
+    LoadRigidProfile,
+    RigidProfilePicked(Option<PathBuf>),
+    ToggleRigidFit,
+    CaptureRigidBackground,
+    ResetRigidZero,
+    CopyRigidStatus,
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
@@ -167,6 +177,7 @@ struct Context {
     dashboard_tab: DashboardTab,
     board_presence: BoardPresence,
     live_fits: BoardLiveFits,
+    rigid_fit: RigidLiveFit,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -314,6 +325,31 @@ fn board_fit_status_text(summary: &BoardFitSummary) -> String {
     )
 }
 
+fn rigid_fit_status_text(summary: &RigidSummary) -> String {
+    let name = summary.profile_name.as_deref().unwrap_or("No profile loaded");
+    let mut text = format!(
+        "Rigid 6-DOF · {} · {} · {} · worker {} · completed {} · rejected {} · last {:.1} ms",
+        name, if summary.enabled { "enabled" } else { "disabled" }, summary.status,
+        if summary.busy { "busy" } else { "idle" },
+        summary.completed, summary.rejected, summary.last_duration_ms.unwrap_or(0.0)
+    );
+    if let Some(result) = &summary.result {
+        let p = result.pose;
+        text.push_str(&format!(
+            "\nAbsolute pose: translation [{:.3}, {:.3}, {:.3}] mm, rotation vector [{:.3}, {:.3}, {:.3}] deg, field RMSE {:.5} mT, sensors {}",
+            p[0], p[1], p[2], p[3].to_degrees(), p[4].to_degrees(), p[5].to_degrees(),
+            result.rmse_mt, result.sensor_count
+        ));
+    }
+    if let (Some(t), Some(angle)) = (summary.translation_from_zero, summary.rotation_from_zero_deg) {
+        text.push_str(&format!(
+            "\nRelative to rigid zero: dx={:.3}, dy={:.3}, dz={:.3} mm; rotation={:.3} deg",
+            t[0], t[1], t[2], angle
+        ));
+    }
+    text
+}
+
 fn sensor_position_from_index(sensor_index: usize) -> (f32, f32, f32) {
     SENSOR_POSITIONS_MM[sensor_index]
 }
@@ -422,6 +458,7 @@ fn all_diagnostics_text(context: &Context) -> String {
         context.received_stream_frames,
     ));
     lines.push(log_status_text(context));
+    lines.push(rigid_fit_status_text(&context.rigid_fit.summary()));
 
     for summary in context.live_fits.board_summaries() {
         lines.push(board_cadence_text(&summary));
@@ -429,6 +466,16 @@ fn all_diagnostics_text(context: &Context) -> String {
     }
 
     lines.join("\n")
+}
+
+fn open_rigid_profile(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select rigid-body geometry/calibration JSON")
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
 fn open_file(
@@ -536,6 +583,10 @@ async fn run_fit_job(job: FitJob) -> FitCompletion {
     async_std::task::spawn_blocking(move || job.run()).await
 }
 
+async fn run_rigid_fit_job(job: RigidFitJob) -> RigidFitCompletion {
+    async_std::task::spawn_blocking(move || job.run()).await
+}
+
 fn update(context: &mut Context, message: Message) -> Task<Message> {
 
     //println!("{:#?}", message);
@@ -544,6 +595,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
+            context.rigid_fit.reset_stream();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveFits;
             context.stream_status = "idle".to_string();
@@ -597,6 +649,52 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits.set_board_magnet_preset(board_id, preset);
             Task::none()
         }
+        Message::UseA1RigidProfile => {
+            match RigidProfile::a1_reference() {
+                Ok(profile) => context.rigid_fit.set_profile(profile),
+                Err(e) => context.rigid_fit.set_status(format!("A1 profile error: {e}")),
+            }
+            Task::none()
+        }
+        Message::LoadRigidProfile => {
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, open_rigid_profile))
+                .then(Task::future)
+                .map(Message::RigidProfilePicked)
+        }
+        Message::RigidProfilePicked(path) => {
+            if let Some(path) = path {
+                match std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|src| RigidProfile::from_json(&src)) {
+                    Ok(profile) => context.rigid_fit.set_profile(profile),
+                    Err(e) => context.rigid_fit.set_status(format!("Rigid profile load failed: {e}")),
+                }
+            }
+            Task::none()
+        }
+        Message::ToggleRigidFit => {
+            let enabled = !context.rigid_fit.enabled();
+            context.rigid_fit.set_enabled(enabled);
+            Task::none()
+        }
+        Message::ResetRigidZero => {
+            context.rigid_fit.reset_zero();
+            Task::none()
+        }
+        Message::CaptureRigidBackground => {
+            if let Err(e) = context.rigid_fit.capture_a1_background() {
+                context.rigid_fit.set_status(format!("Background: {e}"));
+            }
+            Task::none()
+        }
+        Message::RigidFitCompleted(completion) => {
+            context.rigid_fit.apply_completion(completion);
+            Task::none()
+        }
+        Message::CopyRigidStatus => {
+            iced::clipboard::write(rigid_fit_status_text(&context.rigid_fit.summary()))
+        }
         Message::RecievedField(sensor_field) => {
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
@@ -626,6 +724,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             let mut tasks = Vec::new();
 
+            if let Some(job) = context.rigid_fit.receive_frame(&frame) {
+                tasks.push(Task::perform(
+                    run_rigid_fit_job(job),
+                    Message::RigidFitCompleted,
+                ));
+            }
+
             if let Some(job) = fit_job {
                 tasks.push(Task::perform(
                     run_fit_job(job),
@@ -648,6 +753,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
+            context.rigid_fit.reset_stream();
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
 
@@ -667,6 +773,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             context.board_presence = presence;
             context.live_fits.set_presence(context.board_presence.clone());
+            context.rigid_fit.set_presence(context.board_presence.clone());
             context.sensor_traces.set_presence(context.board_presence.clone());
 
             context.stream_status = "restarting firmware stream".to_string();
@@ -720,6 +827,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             
         }
         Message::FieldStreamStopped => {
+            context.rigid_fit.reset_stream();
             context.stream_status = "idle".to_string();
             Task::none()
         },
@@ -970,10 +1078,33 @@ fn view(context: &Context) -> Element<'_, Message> {
     let live_fit_widget = {
         let summaries = context.live_fits.board_summaries();
 
+        let rigid = context.rigid_fit.summary();
+        let enabled_label = if rigid.enabled { "Disable rigid fit" } else { "Enable rigid fit" };
+        let pose_label = rigid_fit_status_text(&rigid);
+        let mut rigid_content = column![
+            text("Rigid-body live fit — 6 DOF, all three boards / all three magnets"),
+            row![
+                button("Use A1 reference profile").on_press(Message::UseA1RigidProfile),
+                button("Load rigid geometry (.json)").on_press(Message::LoadRigidProfile),
+                button(enabled_label).on_press(Message::ToggleRigidFit),
+                button("Set rigid zero").on_press(Message::ResetRigidZero),
+            ].spacing(8),
+            row![
+                button("Capture A1 no-magnet background").on_press(Message::CaptureRigidBackground),
+                button("Copy rigid diagnostics").on_press(Message::CopyRigidStatus),
+            ].spacing(8),
+            text("Translation is of the profile's rigid origin; rotation uses an axis-angle rotation vector (deg)."),
+            text(pose_label),
+        ].spacing(6);
+        if rigid.enabled {
+            rigid_content = rigid_content
+                .push(displacement_plot(u16::MAX, rigid.displacement_history))
+                .push(rotation_plot(u16::MAX, rigid.rotation_history));
+        }
         let mut live_fit_content = column![
-            text("Live magnet fits by board")
-        ]
-        .spacing(12);
+            container(rigid_content).padding(10),
+            text("Independent single-magnet fits by board (unchanged)"),
+        ].spacing(12);
 
         if summaries.is_empty() {
             live_fit_content = live_fit_content.push(text("No detected boards"));
