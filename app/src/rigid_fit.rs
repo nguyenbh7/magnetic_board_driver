@@ -26,6 +26,11 @@ const LEGENDRE_WEIGHTS: [f64; 4] = [
 #[derive(Debug, Clone, Deserialize)]
 pub struct RigidProfile {
     pub name: String,
+    /// A tagged coordinate frame is needed before selecting a measured stage preset.
+    /// Older/untagged files remain loadable as custom profiles but are never
+    /// silently identified with CT or rotation-stage reference locations.
+    #[serde(default)]
+    pub coordinate_frame: Option<String>,
     /// Point about which the baseline constellation rotates.
     pub origin_mm: [f64; 3],
     /// Each board names its actual firmware ID; this is not a physical board index.
@@ -764,6 +769,7 @@ mod tests {
         live.set_enabled(true);
         assert!(!live.enabled());
         let mut ct_like = RigidProfile::a1_reference().unwrap();
+        ct_like.coordinate_frame = Some("gk_may15_ct".to_owned());
         for (magnet, center) in ct_like.magnets.iter_mut()
             .zip(MagnetLocationPreset::LinearStageCt.centers_mm()) {
             magnet.center_mm = center;
