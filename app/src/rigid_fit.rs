@@ -272,6 +272,15 @@ impl RigidLiveFit {
     }
 
     pub fn reset_stream(&mut self) {
+        self.status = if !self.enabled {
+            "Rigid fitting disabled".into()
+        } else if self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 "))
+            && self.background_raw.iter().any(Option::is_none)
+        {
+            "Capture all three A1 no-magnet backgrounds before fitting".into()
+        } else {
+            "Waiting for synchronized board frames".into()
+        };
         self.generation = self.generation.wrapping_add(1);
         self.frames.iter_mut().for_each(VecDeque::clear);
         self.busy = false;
