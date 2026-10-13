@@ -84,6 +84,12 @@ impl MagnetLocationPreset {
     }
 
     pub fn summary(self) -> String {
+        // Keep the frequently shared A1 demo screen compact; unlike the
+        // Gamma Knife references, its detailed calibrated offsets are already
+        // bundled in the runnable profile.
+        if self == Self::A1Demo {
+            return "A1 V1 · 110 mm three-board triangle · Board 0 upper-left, Board 1 lower-left, Board 2 right · calibrated magnet offsets/axes/strengths bundled".into();
+        }
         let mut lines = vec![format!(
             "{} · {}",
             self.title(),
