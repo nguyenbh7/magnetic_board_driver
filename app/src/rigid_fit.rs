@@ -980,7 +980,7 @@ mod tests {
             let job = job.unwrap_or_else(|| panic!("no interpolated fit at stage {stage}"));
             assert!(!job.cold_start || stage == 1);
             if stage == 3 {
-                assert_eq!(job.seed[..3], [30.0, 30.0, 65.0]);
+                assert_eq!(&job.seed[..3], &[30.0, 30.0, 65.0]);
                 let warm_only = optimize_pose(&job.profile, &job.observations, job.seed)
                     .expect("finite trapped warm-start fit");
                 assert!(
