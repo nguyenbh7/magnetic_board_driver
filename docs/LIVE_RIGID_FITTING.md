@@ -38,8 +38,8 @@ calibrated locations**, not independently CT-measured locations.
    `scripts/build_a1_v1_two_job_3mfs.ps1`. It first lifts the nozzle to
    **Z256** and moves to **X132.401 Y250**. At its single intentional
    **`M400 U1` background pause**, leave the carrier installed. While paused
-   and streaming, press **Capture A1 parked background** in the live app.
-   The UI should show **A1 parked background: captured (3 boards)**.
+   and streaming, press **Capture A1 background** in the live app.
+   The UI should show **A1 background: captured (3 boards)**.
 4. Resume Job 2. As the magnets approach the measurement positions, wait
    until the 6-DOF status reports **Tracking** (an accepted fit, not a
    rejection). At a stationary, stable fit, press **Set rigid zero**.
@@ -50,12 +50,13 @@ calibrated locations**, not independently CT-measured locations.
    ground truth for the A1 rotation DOFs.
 
 **No magnet removal is needed to capture Job 2 background.** The
-intentional far-field parked location is designed to make the magnets'
-Hall contribution negligible. The app simply snapshots one complete
-raw frame per board there, not an extended noise average. **The app
-does not know the printer position**, so the operator must confirm
-the actual Job 2 pause before clicking capture. If the carrier or
-pedestal geometry changes, do not assume the same park is still
+far-field separation and one deliberate pause are already controlled by
+the Job 2 G-code/3MF, not by the fitting app. At that pause, click the
+app's existing **Capture A1 background** button. The app simply snapshots
+one complete raw frame per board; it does not communicate with the
+printer, reposition the carrier, or inspect its machine coordinates.
+The operator confirms the correct pause before capture. If the carrier
+or pedestal geometry changes, do not assume the parking position remains
 magnetically negligible or mechanically safe.
 
 Re-selecting A1 **reloads the profile and requires a fresh parked
@@ -65,7 +66,7 @@ unchanged.
 
 The **Enable/Disable rigid fit**, **Set rigid zero** and **Copy rigid
 diagnostics** controls continue to work in A1 mode. The
-**Capture A1 parked background** button only appears when A1 is selected.
+**Capture A1 background** button only appears when A1 is selected.
 
 ## Default Gamma Knife stage magnet locations
 
