@@ -1503,6 +1503,35 @@ fn view(context: &Context) -> Element<'_, Message> {
     content.push(dashboard).padding(10).into()
 }
 
+#[cfg(test)]
+mod tracking_mode_ui_tests {
+    use super::*;
+
+    #[test]
+    fn algorithm_selection_is_independent_of_the_three_plot_tabs() {
+        let mut context = Context::default();
+        assert_eq!(context.dashboard_tab, DashboardTab::LiveTracking);
+        assert_eq!(context.tracking_mode, TrackingMode::Rigid6Dof);
+        assert!(!context.live_fits.fit_enabled());
+
+        let _ = update(&mut context, Message::SelectTrackingMode(TrackingMode::Independent));
+        assert_eq!(context.tracking_mode, TrackingMode::Independent);
+        assert!(context.live_fits.fit_enabled());
+        // No background capture is required to activate independent fitting.
+        assert!(!context.live_fits.board_summaries().iter().any(|b| b.has_background));
+
+        let _ = update(&mut context, Message::SelectDashboardTab(DashboardTab::SensorTraces));
+        assert!(context.live_fits.fit_enabled());
+        let _ = update(&mut context, Message::SelectDashboardTab(DashboardTab::Both));
+        assert_eq!(context.tracking_mode, TrackingMode::Independent);
+        assert!(context.live_fits.fit_enabled());
+
+        let _ = update(&mut context, Message::SelectTrackingMode(TrackingMode::Rigid6Dof));
+        assert!(!context.live_fits.fit_enabled());
+        assert_eq!(context.dashboard_tab, DashboardTab::Both);
+    }
+}
+
 #[tokio::main]
 pub async fn main() -> iced::Result {
     iced::application(Context::default, update, view)
