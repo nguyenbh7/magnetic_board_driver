@@ -1112,7 +1112,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
     );
 
-    let (live_tracking_widget, diagnostics_widget) = {
+    let live_tracking_widget = {
         let summaries = context.live_fits.board_summaries();
 
         let rigid = context.rigid_fit.summary();
@@ -1123,9 +1123,9 @@ fn view(context: &Context) -> Element<'_, Message> {
             .unwrap_or_else(|| "Custom calibrated geometry (or no setup selected)".into());
         let setup_help = if is_a1_demo {
             if rigid.a1_background_ready {
-                "A1 background captured. Resume the motion program and set rigid zero after the first accepted fit."
+                "A1 background captured. Resume the motion program, then set rigid zero after an accepted fit."
             } else {
-                "Capture the A1 baseline when the motion program has moved the magnets away from the boards."
+                "Rigid fitting waits for the A1 baseline at the G-code background pause. You can view Sensor Traces or switch to Independent fits immediately."
             }
         } else if rigid.location_preset.is_some() {
             "Gamma Knife stage references specify magnet centers only. Load matching complete CT/stage board geometry and magnetic calibration JSON to track."
@@ -1167,25 +1167,15 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(format!("Status: {}", rigid.status)),
             text(fit_quality),
         ].spacing(7);
-        if is_a1_demo {
-            rigid_content = rigid_content.push(
-                row![
-                    button("Capture background (all 3 boards)").on_press(Message::CaptureRigidBackground),
-                    text(if rigid.a1_background_ready {
-                        "Background: captured"
-                    } else {
-                        "Background: required"
-                    }),
-                ].spacing(8)
-            );
-        }
-        if rigid.enabled {
-            rigid_content = rigid_content
-                .push(rigid_xyz_plot(rigid.xyz_history))
-                .push(rotation_plot(u16::MAX, rigid.rotation_history));
-        }
+        // Always show the charts, including before the first background
+        // capture or before any fitted pose exists. The canvases display
+        // "Waiting..." rather than making the whole tracking view disappear.
+        rigid_content = rigid_content
+            .push(rigid_xyz_plot(rigid.xyz_history))
+            .push(rotation_plot(u16::MAX, rigid.rotation_history));
         let mut live_fit_content = column![
-            text("Independent magnet fits (optional diagnostics)"),
+            text("Independent magnet tracking — one fitted magnet per board"),
+            text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
         ].spacing(12);
 
         if summaries.is_empty() {
@@ -1228,18 +1218,24 @@ fn view(context: &Context) -> Element<'_, Message> {
                 let cadence_text = board_cadence_text(&summary);
                 let fit_status_text = board_fit_status_text(&summary);
 
+                let mut board_controls = row![
+                    text(format!("Board {}", summary.board_id)),
+                    button("Reset displacement zero")
+                        .on_press(Message::ResetBoardDisplacement(summary.board_id)),
+                    button("Calibrate magnet / set zero")
+                        .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
+                ].spacing(12);
+                // An A1 snapshot can feed all three fitting boards at once.
+                // Keep individual capture for custom/other board setups.
+                if !is_a1_demo {
+                    board_controls = board_controls.push(
+                        button("Capture board background")
+                            .on_press(Message::CaptureBoardBackground(summary.board_id))
+                    );
+                }
                 let board_card = container(
                     column![
-                        row![
-                            text(format!("Board {}", summary.board_id)),
-                            button("Capture board background")
-                                .on_press(Message::CaptureBoardBackground(summary.board_id)),
-                            button("Reset displacement zero")
-                                .on_press(Message::ResetBoardDisplacement(summary.board_id)),
-                            button("Calibrate magnet / set zero")
-                                .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
-                        ]
-                        .spacing(12),
+                        board_controls,
 
                         row![
                             text("Magnet:"),
@@ -1291,28 +1287,35 @@ fn view(context: &Context) -> Element<'_, Message> {
             }
         }
 
-        let independent_label = if context.live_fits.fit_enabled() {
-            "Pause independent fits"
-        } else {
-            "Run independent fits"
+        let selected_content = match context.tracking_mode {
+            TrackingMode::Rigid6Dof => container(rigid_content).padding(10),
+            TrackingMode::Independent => container(live_fit_content).padding(10),
         };
-        let diagnostic_content = column![
+
+        let mut mode_header = column![
             row![
-                button(independent_label).on_press(Message::ToggleIndependentFits),
-                button("Copy rigid diagnostics").on_press(Message::CopyRigidStatus),
-            ].spacing(8),
-            text(if context.live_fits.fit_enabled() {
-                "Independent fitting active — may reduce the rigid solver's live update rate."
-            } else {
-                "Independent fitting paused — board frames, background snapshots, traces and logging remain active."
-            }),
-            text(pose_label),
-            live_fit_content,
-        ].spacing(10);
-        (
-            container(rigid_content).padding(10),
-            container(diagnostic_content).padding(10),
-        )
+                text("Tracking model:"),
+                pick_list(
+                    TrackingMode::ALL.to_vec(),
+                    Some(context.tracking_mode),
+                    Message::SelectTrackingMode,
+                ),
+            ].spacing(10),
+        ].spacing(7);
+
+        if is_a1_demo {
+            mode_header = mode_header.push(row![
+                button("Capture background (all 3 boards)")
+                    .on_press(Message::CaptureRigidBackground),
+                text(if rigid.a1_background_ready {
+                    "A1 background: captured"
+                } else {
+                    "A1 background: not captured (rigid fit needs it)"
+                }),
+            ].spacing(8));
+        }
+
+        container(mode_header.push(selected_content)).padding(10)
     };
 
     let sensor_trace_widget = {
@@ -1442,15 +1445,13 @@ fn view(context: &Context) -> Element<'_, Message> {
 
     let tab_selector = row![
         button("Live Tracking").on_press(Message::SelectDashboardTab(DashboardTab::LiveTracking)),
-        button("Diagnostics").on_press(Message::SelectDashboardTab(DashboardTab::Diagnostics)),
-        button("Sensor traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
+        button("Sensor Traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
         button("Both").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
     ]
     .spacing(8);
 
     let active_dashboard_widget = match context.dashboard_tab {
         DashboardTab::LiveTracking => live_tracking_widget,
-        DashboardTab::Diagnostics => diagnostics_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
         DashboardTab::Both => {
             container(
@@ -1468,7 +1469,11 @@ fn view(context: &Context) -> Element<'_, Message> {
         tab_selector,
         active_dashboard_widget,
     ].spacing(12);
-    if context.dashboard_tab == DashboardTab::Diagnostics {
+    // Keep advanced board/timing settings accessible when the independent
+    // tracking mode is selected, without adding a fourth dashboard tab.
+    if context.dashboard_tab == DashboardTab::LiveTracking
+        && context.tracking_mode == TrackingMode::Independent
+    {
         dashboard_sections = dashboard_sections.push(mlx_widget);
     }
     let dashboard_content = container(dashboard_sections).width(Length::Fill);
@@ -1490,7 +1495,9 @@ fn view(context: &Context) -> Element<'_, Message> {
         scale_controls,
         serial_selector,
     ].spacing(10);
-    if context.dashboard_tab == DashboardTab::Diagnostics {
+    if context.dashboard_tab == DashboardTab::LiveTracking
+        && context.tracking_mode == TrackingMode::Independent
+    {
         content = content.push(ping_widget);
     }
     content.push(dashboard).padding(10).into()
