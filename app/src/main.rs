@@ -856,7 +856,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             
         }
         Message::FieldStreamStopped => {
-            context.rigid_fit.reset_stream();
+            // Freeze the completed rigid history for review (same behavior as
+            // independent plots). The next StartFieldStream still resets
+            // fitting state for a fresh acquisition.
+            context.rigid_fit.stop_stream();
             context.stream_status = "idle".to_string();
             Task::none()
         },
