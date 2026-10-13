@@ -11,16 +11,56 @@ Experimental desktop-app feature branch: feature/live-rigid-body-fit.
 
 The joint six-DOF fitter runs alongside the unchanged independent single-board fits. It interpolates three complete BoardFrame streams to a common bracketed timestamp and jointly fits XYZ translation (mm) and rotation-vector components (radians). All three finite-cylinder magnet fields contribute at all 48 Hall sensors. Relative magnet centers/axes, strengths, sensor positions, board rotations, gains, and backgrounds are fixed by the loaded geometry profile. Fits run off the UI thread; new fits are skipped while a worker is busy.
 
-## A1 reference setup
+## A1 V1 live-demo setup (Zoom-ready)
 
-Press **Use A1 reference profile**. This uses the 110-mm triangle and per-magnet calibration recorded in hall-effect-motion-tracking/data/reference/a1_v1_rigid_constellation_2026-10-05.json. The field convention is model = [By,-Bx,Bz]; Board 2 is right, Board 0 upper-left, Board 1 lower-left. This is an effective fitted calibration, not independently verified physical magnet offsets.
+Choose **Tracking setup → A1 V1 — calibrated demo** from the drop-down
+above the rigid-fit graphs. This automatically loads the bundled reference
+profile; no CT workbook or custom JSON is required. A1 uses the 110-mm
+triangle and per-magnet calibration in
+`hall-effect-motion-tracking/data/reference/a1_v1_rigid_constellation_2026-10-05.json`.
+The field convention is model = [By,-Bx,Bz], with Board 2 on the right,
+Board 0 upper-left, and Board 1 lower-left. Magnet offsets are **effective
+calibrated locations**, not independently CT-measured locations.
 
-With all magnets REMOVED, stream complete frames from all three boards and press **Capture A1 no-magnet background**. The current version captures one complete frame per board and is not a long-duration background average. Then install the magnets, fit the pose, and press **Set rigid zero** to reference displacement and angular motion to the current pose. Do not capture a no-magnet background while magnets are installed.
+**Prepare for a screen-shared demo:**
+
+1. Start the app and three-board sensor streaming; confirm Boards 0/1/2
+   are present and providing data. Select **A1 V1 — calibrated demo**.
+2. With **all three magnets physically removed**, wait for complete frames
+   and press **Capture A1 no-magnet background**. The UI should show
+   **A1 background: captured (3 boards)**. This snapshots one complete
+   frame per board, **not** a long-duration noise average. Never click
+   this button while magnets are installed.
+3. Attach all three magnets in the same A1 V1 geometry and polarity used
+   for calibration. Wait until the rigid fitting status says **Tracking**
+   (accepted 6-DOF pose, not a fit rejection).
+4. At the demonstration's stationary reference pose, press **Set rigid zero**.
+   The UI shows **Rigid zero: set**, and the translation and rotation
+   graphs now reference that pose.
+5. Move the calibrated rigid A1 toolhead in small deliberate translations
+   (and only physically safe small rotations). Show the **3-D translation
+   magnitude** and **relative rotation angle** live; check completed-fit
+   count and fitted field RMSE in the status. Rotation is the fitted
+   estimate and is **not** independently validated by an angular
+   ground-truth instrument yet.
+
+Re-selecting A1 **reloads the profile and requires a fresh background
+capture**. Changing the serial connection also clears its capture. If the
+A1 mount, magnet orientations, board placements, or magnet type changed,
+the bundled calibration is not automatically valid—recalibrate before
+making quantitative claims. The independent per-board view/logging is
+left unchanged.
+
+The **Enable/Disable rigid fit**, **Set rigid zero** and **Copy rigid
+diagnostics** controls continue to work in A1 mode. The no-magnet capture
+button only appears when A1 is selected.
 
 ## Default Gamma Knife stage magnet locations
 
-The Live Fits dashboard now offers a **Stage magnet locations** dropdown. These are
-measured/reference **magnet centers**, not interchangeable complete fitting profiles.
+The Live Fits dashboard now offers a **Tracking setup** dropdown:
+**A1 V1** (complete bundled demo calibration), **Linear stage — May-15 CT**
+(reference centers), and **Rotation stage** (reference centers). Only
+the two Gamma Knife stage selections are magnet-center-only references.
 
 - **Linear stage — May-15 CT**: in the May-15 CT world frame, Left/M1
   (180.20, 114.40, 114.30) mm, Top/M2 (104.10, 95.20, -14.30) mm,
@@ -36,7 +76,7 @@ measured/reference **magnet centers**, not interchangeable complete fitting prof
   `magnet-simulations`. The 25-mm tangent board geometry there is a
   **simulation assumption**, not independently measured sensor poses.
 
-Selecting either dropdown reference **does not fabricate sensor positions,
+Selecting either **Gamma Knife** dropdown reference **does not fabricate sensor positions,
 magnet axes, board orientations, or per-board field corrections**. If the
 currently loaded full profile is incompatible, live rigid fitting is disabled;
 the selected reference points are shown and the app requests a complete
@@ -55,8 +95,9 @@ The CT export utility now writes `gk_may15_ct` and checks the measured
 magnet locations. Re-export any older May-15 JSON profile to enable
 automatic dropdown identification.
 
-The existing A1 reference preset is independent of this stage dropdown;
-clicking **Use A1 reference profile** switches back to A1 mode.
+Selecting **A1 V1 — calibrated demo** switches back to the bundled A1
+profile, clears the previous background and rigid zero, and lets you
+capture a fresh no-magnet background before tracking.
 
 ## Gamma Knife CT setup
 
