@@ -1025,3 +1025,41 @@ fn determinant_3x3(a: [[f64; 3]; 3]) -> f64 {
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
 }
+#[cfg(test)]
+mod ui_background_tests {
+    use super::*;
+
+    #[test]
+    fn one_a1_snapshot_populates_all_three_board_backgrounds() {
+        let mut live = BoardLiveFits::default();
+        live.set_presence(BoardPresence {
+            board_mask: 0b111,
+            sensor_masks: [0xffff; 3],
+        });
+        assert!(!live.fit_enabled()); // default live-demo mode
+        let mut snapshot = [[[0.0; 3]; 16]; 3];
+        for board in 0..3 {
+            for sensor in 0..16 {
+                snapshot[board][sensor] = [
+                    board as f64, sensor as f64 / 100.0,
+                    (board * 16 + sensor) as f64 / 1000.0
+                ];
+            }
+        }
+        live.apply_background_snapshot(&snapshot);
+        for board in 0..3 {
+            let fitted = &live.boards[&(board as u16)];
+            let background = fitted.background.as_ref().expect("shared background available");
+            assert_eq!(background.len(), 16);
+            for sensor in 0..16 {
+                assert_eq!(background[&(sensor as u8)], snapshot[board][sensor]);
+            }
+        }
+        live.set_fit_enabled(true);
+        assert!(live.fit_enabled());
+        live.set_fit_enabled(false);
+        assert!(!live.fit_enabled());
+        // Pause doesn't remove the captured background.
+        assert!(live.boards[&0].background.is_some());
+    }
+}
