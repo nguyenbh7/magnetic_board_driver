@@ -121,8 +121,7 @@ background capture**. Changing the serial connection also clears its
 capture. The existing per-board fit view and magnetic logging are
 unchanged.
 
-The **Enable/Disable rigid fit** and **Set rigid zero** controls remain on
-Live Tracking. **Copy all diagnostics** is at the top of the dashboard. The
+The tracking-model selector starts the chosen optimizer automatically once its required calibration is ready. **Set rigid zero** remains in the Rigid 6-DOF panel; there is no separate Enable/Disable rigid fit button. **Copy all diagnostics** is at the top of the dashboard. The
 **Capture background (all 3 boards)** button only appears for A1.
 
 ## Default Gamma Knife stage magnet locations
