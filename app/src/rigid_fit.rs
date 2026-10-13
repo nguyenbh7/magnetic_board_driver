@@ -795,7 +795,7 @@ mod tests {
         assert!(status.profile_name.as_deref().is_some_and(|n| n.starts_with("A1 ")));
         assert!(!status.a1_background_ready);
         assert!(!status.zero_ready);
-        assert!(status.status.contains("Capture"));
+        assert!(status.status.contains("Job 2 far-field pause"));
         live.set_enabled(false);
         assert!(!live.enabled());
         live.select_location_preset(MagnetLocationPreset::A1Demo);
