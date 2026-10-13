@@ -935,6 +935,33 @@ mod tests {
     }
 
     #[test]
+    fn independent_mode_keeps_raw_background_frames_without_running_rigid_solver() {
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        live.set_presence(BoardPresence {
+            board_mask: 0b111,
+            sensor_masks: [0xffff; 3],
+        });
+        for cycle in 0..2 {
+            for board_id in 0..3 {
+                let mut frame = BoardFrame::default();
+                frame.board_id = board_id;
+                frame.frame_id = cycle;
+                frame.sensor_mask = 0xffff;
+                frame.base_time_us = 100_000 + 100_000 * cycle as u64 + board_id as u64;
+                for (index, sample) in frame.samples.iter_mut().enumerate() {
+                    sample.bz_ut = (board_id as f32 * 100.0) + index as f32;
+                }
+                assert!(live.receive_frame(&frame, false).is_none());
+            }
+        }
+        assert_eq!(live.summary().completed, 0);
+        let raw = live.capture_a1_background().expect("capture works without rigid fitting");
+        assert_eq!(raw[1][7][2], 0.107); // raw 107 microtesla -> 0.107 mT
+        assert!(live.summary().a1_background_ready);
+    }
+
+    #[test]
     fn interpolation_refuses_unbracketed_samples() {
         let mut q = VecDeque::new();
         q.push_back(BoardSnapshot {time_us:100,fields_mt:[Some([0.0;3]);16]});
