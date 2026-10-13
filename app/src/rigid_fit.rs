@@ -362,6 +362,20 @@ impl RigidLiveFit {
         self.last_elapsed_ms = None;
     }
 
+    /// Stop acquisition without discarding the completed measurement.
+    ///
+    /// Keeping the last accepted pose, zero reference, and displacement/XYZ/
+    /// rotation histories lets the user inspect plots after Stop Field Stream,
+    /// just as they can with the independent fits. Still invalidate in-flight
+    /// optimization and drop buffered frames so no stale completion can
+    /// modify the frozen graphs after acquisition stops.
+    pub fn stop_stream(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.frames.iter_mut().for_each(VecDeque::clear);
+        self.busy = false;
+        self.status = "Field stream stopped; last rigid fit and plots retained".into();
+    }
+
     /// Capture the existing raw A1 background (one complete frame per board).
     /// Timing and the magnet separation are controlled by the printer G-code.
     pub fn capture_a1_background(&mut self) -> Result<[[[f64; 3]; 16]; 3], String> {
@@ -1135,6 +1149,62 @@ mod tests {
             elapsed_ms: 1.0,
         });
         assert!(live.summary().result.is_none());
+    }
+
+    #[test]
+    fn stopping_stream_preserves_rigid_plots_but_invalidates_pending_fit() {
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        let generation = live.generation;
+        live.apply_completion(RigidFitCompletion {
+            generation, time_us: 1_000_000,
+            result: Some(RigidFitResult {
+                pose: [0.0, 0.0, 25.0, 0.0, 0.0, 0.0],
+                rmse_mt: 0.03, sensor_count: 48,
+            }),
+            elapsed_ms: 5.0,
+        });
+        live.reset_zero();
+        live.apply_completion(RigidFitCompletion {
+            generation, time_us: 2_000_000,
+            result: Some(RigidFitResult {
+                pose: [5.0, -3.0, 25.0, 0.0, 0.0, 0.0],
+                rmse_mt: 0.03, sensor_count: 48,
+            }),
+            elapsed_ms: 5.0,
+        });
+        let before = live.summary();
+        assert!(before.zero_ready);
+        assert_eq!(before.xyz_history.len(), 1);
+        assert_eq!(before.rotation_history.len(), 1);
+        assert_eq!(before.displacement_history.len(), 1);
+
+        live.stop_stream();
+        let stopped = live.summary();
+        assert!(stopped.status.contains("stopped"));
+        assert!(stopped.zero_ready);
+        assert_eq!(stopped.completed, before.completed);
+        assert_eq!(stopped.rejected, before.rejected);
+        assert_eq!(stopped.xyz_history.len(), before.xyz_history.len());
+        assert_eq!(stopped.rotation_history.len(), before.rotation_history.len());
+        assert_eq!(stopped.displacement_history.len(), before.displacement_history.len());
+        assert_eq!(stopped.xyz_history[0].dx_mm, 5.0);
+        assert_eq!(stopped.xyz_history[0].dy_mm, -3.0);
+        assert_eq!(stopped.result.unwrap().pose, [5.0, -3.0, 25.0, 0.0, 0.0, 0.0]);
+        assert!(live.frames.iter().all(VecDeque::is_empty));
+        assert!(!live.busy);
+
+        // Any solver task launched before Stop must not change the frozen plot.
+        live.apply_completion(RigidFitCompletion {
+            generation, time_us: 3_000_000,
+            result: Some(RigidFitResult {
+                pose: [15.0, 0.0, 25.0, 0.0, 0.0, 0.0],
+                rmse_mt: 0.03, sensor_count: 48,
+            }),
+            elapsed_ms: 5.0,
+        });
+        assert_eq!(live.summary().xyz_history.len(), 1);
+        assert_eq!(live.summary().completed, before.completed);
     }
 
     #[test]
