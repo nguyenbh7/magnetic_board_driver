@@ -682,7 +682,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CaptureRigidBackground => {
-            if let Err(e) = context.rigid_fit.capture_a1_parked_background() {
+            if let Err(e) = context.rigid_fit.capture_a1_background() {
                 context.rigid_fit.set_status(format!("Background: {e}"));
             }
             Task::none()
@@ -1085,9 +1085,9 @@ fn view(context: &Context) -> Element<'_, Message> {
             .unwrap_or_else(|| "Custom calibrated geometry (or no setup selected)".into());
         let setup_help = if is_a1_demo {
             if rigid.a1_background_ready {
-                "A1 demo: parked background captured. Resume Job 2, wait for accepted fits, then Set rigid zero. Keep the carrier installed."
+                "A1 background captured. Resume the motion program and set rigid zero after the first accepted fit."
             } else {
-                "A1 demo: with magnet carrier INSTALLED, run Job 2 to its far-field background pause at X132.401 Y250 Z256. Capture while parked, then resume."
+                "Capture the A1 baseline when the motion program has moved the magnets away from the boards."
             }
         } else if rigid.location_preset.is_some() {
             "Gamma Knife stage references specify magnet centers only. Load matching complete CT/stage board geometry and magnetic calibration JSON to track."
@@ -1121,11 +1121,11 @@ fn view(context: &Context) -> Element<'_, Message> {
         if is_a1_demo {
             rigid_content = rigid_content.push(
                 row![
-                    button("Capture A1 parked background").on_press(Message::CaptureRigidBackground),
+                    button("Capture A1 background").on_press(Message::CaptureRigidBackground),
                     text(if rigid.a1_background_ready {
-                        "A1 parked background: captured (3 boards)"
+                        "A1 background: captured (3 boards)"
                     } else {
-                        "A1 parked background: required (Job 2 far-field pause)"
+                        "A1 background: not captured"
                     }),
                 ].spacing(8)
             );
