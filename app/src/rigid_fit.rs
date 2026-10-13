@@ -213,6 +213,14 @@ impl RigidFitJob {
 }
 
 #[derive(Debug, Clone)]
+pub struct RigidXyzPoint {
+    pub time_s: f64,
+    pub dx_mm: f64,
+    pub dy_mm: f64,
+    pub dz_mm: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct RigidSummary {
     pub enabled: bool,
     pub location_preset: Option<MagnetLocationPreset>,
@@ -225,6 +233,7 @@ pub struct RigidSummary {
     pub translation_from_zero: Option<[f64; 3]>,
     pub rotation_from_zero_deg: Option<f64>,
     pub displacement_history: Vec<DisplacementPoint>,
+    pub xyz_history: Vec<RigidXyzPoint>,
     pub rotation_history: Vec<DisplacementPoint>,
     pub busy: bool,
     pub completed: u64,
@@ -252,6 +261,7 @@ pub struct RigidLiveFit {
     result: Option<RigidFitResult>,
     zero_pose: Option<[f64; 6]>,
     displacement: VecDeque<DisplacementPoint>,
+    xyz: VecDeque<RigidXyzPoint>,
     rotation: VecDeque<DisplacementPoint>,
     status: String,
 }
@@ -338,6 +348,7 @@ impl RigidLiveFit {
         self.zero_pose = None;
         self.result = None;
         self.displacement.clear();
+        self.xyz.clear();
         self.rotation.clear();
         self.completed = 0;
         self.rejected = 0;
@@ -346,23 +357,22 @@ impl RigidLiveFit {
 
     /// Capture the existing raw A1 background (one complete frame per board).
     /// Timing and the magnet separation are controlled by the printer G-code.
-    pub fn capture_a1_background(&mut self) -> Result<(), String> {
+    pub fn capture_a1_background(&mut self) -> Result<[[[f64; 3]; 16]; 3], String> {
         if !self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 ")) {
             return Err("Background capture is only offered for the A1 reference; CT uses frozen fitted background".into());
         }
-        let mut captures = [None;3];
+        let mut captures = [[[0.0; 3]; 16]; 3];
         for board_id in 0..3 {
             let frame = self.frames[board_id].back().ok_or("No frame available on every board")?;
-            let mut raw = [[0.0;3];16];
-            for (i,v) in frame.fields_mt.iter().enumerate() {
-                raw[i] = v.ok_or("Background frame is missing sensors")?;
+            for (i, v) in frame.fields_mt.iter().enumerate() {
+                captures[board_id][i] = v.ok_or("Background frame is missing sensors")?;
             }
-            captures[board_id] = Some(raw);
         }
-        self.background_raw = captures;
+        // Publish only after every sensor on every board has been checked.
+        self.background_raw = captures.map(Some);
         self.reset_stream();
         self.status = "A1 background captured on all 3 boards".into();
-        Ok(())
+        Ok(captures)
     }
 
     pub fn clear_background_for_new_port(&mut self) {
@@ -376,6 +386,7 @@ impl RigidLiveFit {
             self.zero_pose = Some(result.pose);
             self.first_time_us = self.last_dispatched_us;
             self.displacement.clear();
+            self.xyz.clear();
             self.rotation.clear();
             self.status = "Tracking; rigid zero set to current pose".into();
         } else {
@@ -412,6 +423,7 @@ impl RigidLiveFit {
             translation_from_zero: rel.map(|r| r.0),
             rotation_from_zero_deg: rel.map(|r| r.1),
             displacement_history: self.displacement.iter().cloned().collect(),
+            xyz_history: self.xyz.iter().cloned().collect(),
             rotation_history: self.rotation.iter().cloned().collect(),
             busy: self.busy,
             completed: self.completed,
@@ -538,8 +550,15 @@ impl RigidLiveFit {
         let angle_deg = ((trace - 1.0) * 0.5).clamp(-1.0, 1.0).acos() * RAD_TO_DEG;
         let time_s = completion.time_us.saturating_sub(initial_time) as f64 / 1_000_000.0;
         self.displacement.push_back(DisplacementPoint {time_s, displacement_mm: translation_norm});
+        self.xyz.push_back(RigidXyzPoint {
+            time_s,
+            dx_mm: translation[0],
+            dy_mm: translation[1],
+            dz_mm: translation[2],
+        });
         self.rotation.push_back(DisplacementPoint {time_s, displacement_mm: angle_deg});
         while self.displacement.len() > HISTORY_LEN { self.displacement.pop_front(); }
+        while self.xyz.len() > HISTORY_LEN { self.xyz.pop_front(); }
         while self.rotation.len() > HISTORY_LEN { self.rotation.pop_front(); }
         self.result = Some(result);
         self.status = "Tracking".into();
