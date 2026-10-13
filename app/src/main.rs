@@ -90,7 +90,7 @@ enum Message {
     RigidProfilePicked(Option<PathBuf>),
     ToggleRigidFit,
     CaptureRigidBackground,
-    ToggleIndependentFits,
+    SelectTrackingMode(TrackingMode),
     ResetRigidZero,
     CopyRigidStatus,
     ReceivedBoardPresence(BoardPresence),
@@ -139,9 +139,28 @@ enum Message {
 enum DashboardTab {
     #[default]
     LiveTracking,
-    Diagnostics,
     SensorTraces,
     Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TrackingMode {
+    #[default]
+    Rigid6Dof,
+    Independent,
+}
+
+impl Display for TrackingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rigid6Dof => "Rigid 6-DOF",
+            Self::Independent => "Independent fits",
+        })
+    }
+}
+
+impl TrackingMode {
+    const ALL: [Self; 2] = [Self::Rigid6Dof, Self::Independent];
 }
 
 #[derive(Debug, Clone, Default)]
@@ -181,6 +200,7 @@ struct Context {
     sensor_grids: BTreeMap<u8, SensorGrid>,
     sensor_traces: SensorTraceState,
     dashboard_tab: DashboardTab,
+    tracking_mode: TrackingMode,
     board_presence: BoardPresence,
     live_fits: BoardLiveFits,
     rigid_fit: RigidLiveFit,
@@ -604,6 +624,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.clear_background_for_new_port();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveTracking;
+            context.tracking_mode = TrackingMode::Rigid6Dof;
             context.stream_status = "idle".to_string();
             context.received_stream_frames = 0;
             Task::none()
@@ -692,9 +713,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ToggleIndependentFits => {
-            let enable = !context.live_fits.fit_enabled();
-            context.live_fits.set_fit_enabled(enable);
+        Message::SelectTrackingMode(mode) => {
+            context.tracking_mode = mode;
+            // Independent field fitting is deliberately opt-in via this
+            // visible selector; it does not require any background capture.
+            context.live_fits.set_fit_enabled(mode == TrackingMode::Independent);
             Task::none()
         }
         Message::RigidFitCompleted(completion) => {
@@ -733,7 +756,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             let mut tasks = Vec::new();
 
-            if let Some(job) = context.rigid_fit.receive_frame(&frame) {
+            if let Some(job) = context.rigid_fit.receive_frame(
+                &frame,
+                context.tracking_mode == TrackingMode::Rigid6Dof,
+            ) {
                 tasks.push(Task::perform(
                     run_rigid_fit_job(job),
                     Message::RigidFitCompleted,
@@ -1018,11 +1044,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SelectDashboardTab(tab) => {
-            // Returning to the demo keeps expensive independent magnet fits
-            // from silently competing with the joint rigid solver.
-            if matches!(tab, DashboardTab::LiveTracking | DashboardTab::Both) {
-                context.live_fits.set_fit_enabled(false);
-            }
+            // Switching between plots does not change the selected fitter:
+            // Both always shows the same tracking mode plus sensor traces.
             context.dashboard_tab = tab;
             Task::none()
         }
