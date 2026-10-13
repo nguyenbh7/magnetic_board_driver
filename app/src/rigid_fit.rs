@@ -769,6 +769,118 @@ mod tests {
     #[test]
     fn profile_is_valid() { RigidProfile::a1_reference().unwrap(); }
 
+    /// Small recorded-data fixture, NOT fields synthesized from the profile
+    /// currently under test. Captured with the 3-board A1 V1 demo at gaps
+    /// 25/30/40 mm while the carrier was moving in X or Y.
+    ///
+    /// This must fail if any bundled magnet polarity is inadvertently
+    /// reversed again, or if coordinate/magnetic-model changes move fitted
+    /// XYZ substantially or push field residuals above acceptance.
+    #[test]
+    fn measured_a1_three_gap_moving_fit_polarity_regression() {
+        let profile = RigidProfile::a1_reference().expect("bundled A1 profile");
+        let mut raw_ut = [[[[0.0_f64; 3]; 16]; 3]; 4];
+        let mut rows_seen = [[false; 3]; 4];
+
+        for row in include_str!("../testdata/a1_three_gap_fields_ut.csv").lines() {
+            if row.is_empty() || row.starts_with('#') {
+                continue;
+            }
+            let mut fields = row.split(',');
+            let stage = match fields.next().expect("stage") {
+                "background" => 0,
+                "25" => 1,
+                "30" => 2,
+                "40" => 3,
+                value => panic!("unknown recorded stage {value}"),
+            };
+            let board: usize = fields.next().expect("board").parse().expect("board ID");
+            assert!(board < 3, "unexpected board ID");
+            assert!(!rows_seen[stage][board], "duplicate recorded stage/board");
+            rows_seen[stage][board] = true;
+            let values: Vec<f64> = fields.map(|s| s.parse().expect("recorded µT")).collect();
+            assert_eq!(values.len(), 16 * 3, "truncated measured board frame");
+            for sensor in 0..16 {
+                raw_ut[stage][board][sensor] = [
+                    values[sensor*3],
+                    values[sensor*3+1],
+                    values[sensor*3+2],
+                ];
+            }
+        }
+        assert!(rows_seen.iter().flatten().all(|&seen| seen), "incomplete real-data fixture");
+
+        // The measured BG is a stationary median of the first 8 seconds.
+        // The expected poses come from independently reconstructing the
+        // actual XY motion and commanded 25/30/40 mm gap sequence.
+        let expected_translation = [
+            [-4.926, -0.078, 26.650],
+            [ 1.299, -0.111, 31.652],
+            [-0.017, -2.052, 41.672],
+        ];
+        let gaps = [25, 30, 40];
+        for case in 0..3 {
+            let mut observations = Vec::with_capacity(48);
+            for board in &profile.boards {
+                let b = board.raw_board_id as usize;
+                for sensor in 0..16 {
+                    let observed_raw_mt = raw_ut[case+1][b][sensor].map(|v| v / 1000.0);
+                    let background_mt = raw_ut[0][b][sensor].map(|v| v / 1000.0);
+                    let corrected = mat_vec(
+                        board.raw_to_world,
+                        sub(observed_raw_mt, background_mt),
+                    );
+                    let gain = board.sensor_gains.as_ref()
+                        .map(|g| g[sensor]).unwrap_or(1.0);
+                    let measured_mt = std::array::from_fn(|i| {
+                        corrected[i] / gain - board.background_mt[i]
+                    });
+                    observations.push(Observation {
+                        sensor_mm: board.sensors_mm[sensor],
+                        measured_mt,
+                    });
+                }
+            }
+
+            let xyz = expected_translation[case];
+            let seed = [0.0, 0.0, xyz[2], 0.0, 0.0, 0.0];
+            let fit = optimize_pose(&profile, &observations, seed)
+                .unwrap_or_else(|| panic!("{} mm: optimization failed", gaps[case]));
+            assert!(
+                fit.rmse_mt < profile.max_rmse_mt,
+                "{} mm: recorded moving pose RMSE {:.4} mT exceeds {:.4} mT",
+                gaps[case], fit.rmse_mt, profile.max_rmse_mt,
+            );
+            assert_eq!(fit.sensor_count, 48);
+            for (axis, expected) in xyz.iter().enumerate() {
+                assert!(
+                    (fit.pose[axis] - expected).abs() < 0.75,
+                    "{} mm: XYZ axis {} recovered {:.3} mm, expected {:.3} mm",
+                    gaps[case], axis, fit.pose[axis], expected,
+                );
+            }
+
+            // Ensure each of the three signs is genuinely constrained
+            // by measured fields, not merely checked by a literal
+            // sign assertion in the configuration file.
+            for magnet_index in 0..3 {
+                let mut wrong_polarity = profile.clone();
+                wrong_polarity.magnets[magnet_index].remanence_mt *= -1.0;
+                let residuals = residual(&wrong_polarity, &observations, fit.pose)
+                    .expect("finite wrong-polarity residuals");
+                let wrong_rmse = (
+                    residuals.iter().map(|r| r*r).sum::<f64>() / residuals.len() as f64
+                ).sqrt();
+                assert!(
+                    wrong_rmse > profile.max_rmse_mt,
+                    "{} mm: magnet {} sign flip unexpectedly fits measured fields",
+                    gaps[case], magnet_index,
+                );
+            }
+        }
+    }
+
+
     #[test]
     fn rodrigues_is_orthogonal_and_rotates_axes() {
         let r = rodrigues([0.0,0.0,PI/2.0]);
