@@ -216,6 +216,9 @@ impl RigidFitJob {
 pub struct RigidSummary {
     pub enabled: bool,
     pub location_preset: Option<MagnetLocationPreset>,
+    /// True only after background captured on all 3 A1 boards.
+    pub a1_background_ready: bool,
+    pub zero_ready: bool,
     pub profile_name: Option<String>,
     pub status: String,
     pub result: Option<RigidFitResult>,
@@ -264,12 +267,23 @@ impl RigidLiveFit {
         self.reset_stream();
     }
 
-    /// Select known magnet centers without pretending that a center-only
-    /// reference is sufficient to fit magnetic fields in three dimensions.
-    /// If an already loaded full calibrated profile matches exactly, keep it.
-    /// Otherwise discard the stale profile and block fitting until the user
-    /// imports a matching complete board/magnet calibration JSON.
+    /// The A1 selection loads the bundled complete calibration automatically.
+    /// The CT/rotation-stage selections are reference centers only until the
+    /// user imports matching calibrated sensor geometry and magnetic nuisance data.
     pub fn select_location_preset(&mut self, preset: MagnetLocationPreset) {
+        if preset == MagnetLocationPreset::A1Demo {
+            match RigidProfile::a1_reference() {
+                Ok(profile) => self.set_profile(profile),
+                Err(error) => {
+                    self.profile = None;
+                    self.location_preset = Some(preset);
+                    self.enabled = false;
+                    self.reset_stream();
+                    self.status = format!("Cannot load bundled A1 V1 setup: {error}");
+                }
+            }
+            return;
+        }
         let matching = self.profile.as_ref().is_some_and(|p| preset.matches_profile(p));
         self.location_preset = Some(preset);
         if !matching {
@@ -280,7 +294,7 @@ impl RigidLiveFit {
         self.reset_stream();
         if !matching {
             self.status = format!(
-                "{} centers selected (reference only). Load matching sensor geometry,                  axes, magnet calibration and board background JSON to enable fitting.",
+                "{} reference centers selected. Load a matching complete sensor/board/magnet calibration JSON before fitting.",
                 preset.title()
             );
         }
@@ -356,10 +370,15 @@ impl RigidLiveFit {
     }
 
     pub fn reset_zero(&mut self) {
-        self.zero_pose = self.result.as_ref().map(|r| r.pose);
-        self.first_time_us = self.last_dispatched_us;
-        self.displacement.clear();
-        self.rotation.clear();
+        if let Some(result) = &self.result {
+            self.zero_pose = Some(result.pose);
+            self.first_time_us = self.last_dispatched_us;
+            self.displacement.clear();
+            self.rotation.clear();
+            self.status = "Tracking; rigid zero set to current pose".into();
+        } else {
+            self.status = "Cannot set rigid zero yet: wait for an accepted fit".into();
+        }
     }
 
     pub fn summary(&self) -> RigidSummary {
@@ -381,6 +400,10 @@ impl RigidLiveFit {
         RigidSummary {
             enabled: self.enabled,
             location_preset: self.location_preset,
+            a1_background_ready: self.profile.as_ref()
+                .is_some_and(|p| p.name.starts_with("A1 "))
+                && self.background_raw.iter().all(Option::is_some),
+            zero_ready: self.zero_pose.is_some(),
             profile_name: self.profile.as_ref().map(|p| p.name.clone()),
             status: self.status.clone(),
             result: self.result.clone(),
@@ -756,6 +779,29 @@ mod tests {
         for i in 0..3 {assert!((fit.pose[i]-truth[i]).abs()<0.05);}
         for i in 3..6 {assert!((fit.pose[i]-truth[i]).abs()<0.004);}
         assert!(fit.rmse_mt<1e-4);
+    }
+
+    #[test]
+    fn choosing_a1_demo_loads_bundled_profile_and_requires_background() {
+        let mut live = RigidLiveFit::default();
+        live.select_location_preset(MagnetLocationPreset::A1Demo);
+        let status = live.summary();
+        assert_eq!(status.location_preset, Some(MagnetLocationPreset::A1Demo));
+        assert!(status.enabled);
+        assert!(status.profile_name.as_deref().is_some_and(|n| n.starts_with("A1 ")));
+        assert!(!status.a1_background_ready);
+        assert!(!status.zero_ready);
+        assert!(status.status.contains("Capture"));
+        live.set_enabled(false);
+        assert!(!live.enabled());
+        live.select_location_preset(MagnetLocationPreset::A1Demo);
+        assert!(live.enabled());
+        // An A1 fit must not be reused with Gamma Knife coordinates.
+        live.select_location_preset(MagnetLocationPreset::RotationStage);
+        assert!(live.profile.is_none());
+        assert!(!live.enabled());
+        live.select_location_preset(MagnetLocationPreset::A1Demo);
+        assert!(live.enabled());
     }
 
     #[test]
