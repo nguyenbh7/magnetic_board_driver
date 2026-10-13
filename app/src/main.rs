@@ -1282,8 +1282,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             live_fit_content,
         ].spacing(10);
         (
-            container(rigid_content).padding(10).into(),
-            container(diagnostic_content).padding(10).into(),
+            container(rigid_content).padding(10),
+            container(diagnostic_content).padding(10),
         )
     };
 
