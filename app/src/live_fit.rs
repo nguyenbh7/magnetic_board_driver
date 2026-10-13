@@ -292,11 +292,12 @@ impl BoardLiveFits {
 
         let board_id = field.board_id;
         let expected_sensor_count = self.expected_sensor_count(board_id).unwrap_or(16);
+        let fit_enabled = self.fit_enabled;
 
         let board = self.boards.entry(board_id).or_default();
 
         if let Some(frame) = board.current_frame.update(field, expected_sensor_count) {
-            return board.update_from_completed_frame(frame, self.fit_enabled);
+            return board.update_from_completed_frame(frame, fit_enabled);
         }
 
         None
