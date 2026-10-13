@@ -9,7 +9,7 @@ Experimental desktop-app feature branch: feature/live-rigid-body-fit.
     cargo test -p app
     cargo run -p app --release
 
-The joint six-DOF fitter shares the live Hall streams with the existing independent single-board fitters, but the expensive independent fitting workers are **paused by default** for the demo. Independent fitting can be activated from Diagnostics. The joint fitter interpolates three complete BoardFrame streams to a common bracketed timestamp and jointly fits XYZ translation (mm) and rotation-vector components (radians). All three finite-cylinder magnet fields contribute at all 48 Hall sensors. Relative magnet centers/axes, strengths, sensor positions, board rotations, gains, and backgrounds are fixed by the loaded geometry profile. Fits run off the UI thread; new fits are skipped while a worker is busy.
+The joint six-DOF fitter shares the live Hall streams with the existing independent single-board fitters, but the expensive independent fitting workers are **paused by default** for the demo. Select **Tracking model → Independent fits** under **Live Tracking** to run the independent fitters. The joint fitter interpolates three complete BoardFrame streams to a common bracketed timestamp and jointly fits XYZ translation (mm) and rotation-vector components (radians). All three finite-cylinder magnet fields contribute at all 48 Hall sensors. Relative magnet centers/axes, strengths, sensor positions, board rotations, gains, and backgrounds are fixed by the loaded geometry profile. Fits run off the UI thread; new fits are skipped while a worker is busy.
 
 ## Live Tracking, Sensor Traces, and Both
 
@@ -68,6 +68,37 @@ reference origin relative to the rigid zero pose. Independent-board
 curves represent motion of individual fitted magnets. Neither is a
 Gamma Knife Nose reconstruction unless an explicit Nose lever arm
 is used.
+
+## A1 polarity correction and recorded-data regression (2026-10-13)
+
+The bundled `app/config/a1_rigid_reference.json` now uses the
+**positive** effective remanence magnitudes, respectively **1307.072,
+1372.343, and 1410.267 mT** for Boards 0, 1 and 2. The earlier
+negative signs were inconsistent with measured field polarity. The
+physical magnet axes remain oriented near -Z; axis vectors and
+remanence-sign conventions must not be interchanged casually.
+
+The new `measured_a1_three_gap_moving_fit_polarity_regression` unit test
+uses `app/testdata/a1_three_gap_fields_ut.csv`, a small **recorded**
+fixture extracted from `All_Boards_RigidBody_Demo.bin`. It contains
+parked/background magnetic measurements and complete three-board
+measurements while moving at each of the **25, 30, and 40 mm** gaps.
+The test recreates the production raw-to-world and sensor-gain
+transformations, optimizes all six pose coordinates, checks that
+field RMSE stays **below 0.150 mT**, and checks recovered XYZ against
+independently reconstructed positions (within 0.75 mm). Finally, it
+tests that reversing **any single magnet's** sign at the recovered
+pose causes a measurable field-model mismatch exceeding the threshold.
+
+An independent Python cross-check of the recorded fixture gave
+RMSE **0.0312 / 0.0214 / 0.0135 mT** at the three gaps. This
+numerical check is **not a compiled Rust test run**; run
+`cargo test -p app` on a machine with the Rust toolchain.
+
+This regression prevents accidental profile/forward-model polarity
+regressions; it does not independently validate angular accuracy,
+guarantee live-frame acceptance, or replace synchronization/hardware
+tests. The acceptance limit remains `max_rmse_mt = 0.15`.
 
 ## A1 V1 live-demo setup (Zoom-ready)
 
