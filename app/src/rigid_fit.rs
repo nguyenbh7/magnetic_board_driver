@@ -315,14 +315,6 @@ impl RigidLiveFit {
         self.status = status.into();
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled && self.profile.is_some();
-        self.reset_stream();
-        if enabled && self.profile.is_none() && self.location_preset.is_some() {
-            self.status = "Location-only preset: load the matching full calibrated geometry JSON before enabling fits".into();
-        }
-    }
-
     pub fn enabled(&self) -> bool { self.enabled }
 
     pub fn set_presence(&mut self, presence: BoardPresence) {
@@ -820,8 +812,7 @@ mod tests {
         assert!(!status.a1_background_ready);
         assert!(!status.zero_ready);
         assert!(status.status.contains("Capture A1 background"));
-        live.set_enabled(false);
-        assert!(!live.enabled());
+        // Reselecting the A1 preset keeps its full fitting profile ready.
         live.select_location_preset(MagnetLocationPreset::A1Demo);
         assert!(live.enabled());
         // An A1 fit must not be reused with Gamma Knife coordinates.
@@ -840,8 +831,8 @@ mod tests {
         live.select_location_preset(MagnetLocationPreset::LinearStageCt);
         assert!(!live.enabled());
         assert!(live.profile.is_none());
-        live.set_enabled(true);
-        assert!(!live.enabled());
+        // A location-only stage selection cannot enable fitting without
+        // importing a matching full calibration profile.
         let mut ct_like = RigidProfile::a1_reference().unwrap();
         ct_like.coordinate_frame = Some("gk_may15_ct".to_owned());
         for (magnet, center) in ct_like.magnets.iter_mut()
