@@ -88,7 +88,6 @@ enum Message {
     SelectMagnetLocations(MagnetLocationPreset),
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
-    ToggleRigidFit,
     CaptureRigidBackground,
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
@@ -697,11 +696,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ToggleRigidFit => {
-            let enabled = !context.rigid_fit.enabled();
-            context.rigid_fit.set_enabled(enabled);
-            Task::none()
-        }
         Message::ResetRigidZero => {
             context.rigid_fit.reset_zero();
             Task::none()
@@ -1116,7 +1110,6 @@ fn view(context: &Context) -> Element<'_, Message> {
         let summaries = context.live_fits.board_summaries();
 
         let rigid = context.rigid_fit.summary();
-        let enabled_label = if rigid.enabled { "Disable rigid fit" } else { "Enable rigid fit" };
         let pose_label = rigid_fit_status_text(&rigid);
         let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
         let selected_setup = rigid.location_preset.map(|preset| preset.summary())
@@ -1154,7 +1147,6 @@ fn view(context: &Context) -> Element<'_, Message> {
                 pick_list(MagnetLocationPreset::ALL.to_vec(),
                     rigid.location_preset, Message::SelectMagnetLocations),
                 button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
-                button(enabled_label).on_press(Message::ToggleRigidFit),
             ].spacing(8),
             text(selected_setup),
             text(setup_help),
