@@ -903,6 +903,31 @@ mod tests {
     }
 
     #[test]
+    fn accepted_rigid_poses_produce_signed_xyz_and_zero_reset() {
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        let generation = live.generation;
+        for (time_us, dx, dy) in [(1_000_000, 0.0, 0.0), (2_000_000, 5.0, -5.0)] {
+            live.apply_completion(RigidFitCompletion {
+                generation, time_us,
+                result: Some(RigidFitResult {
+                    pose: [dx, dy, 30.0, 0.0, 0.0, 0.0],
+                    rmse_mt: 0.0, sensor_count: 48,
+                }),
+                elapsed_ms: 1.0,
+            });
+        }
+        let history = live.summary().xyz_history;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].dx_mm, 5.0);
+        assert_eq!(history[1].dy_mm, -5.0);
+        assert_eq!(history[1].dz_mm, 0.0);
+        assert_eq!(history[1].time_s, 1.0);
+        live.reset_zero();
+        assert!(live.summary().xyz_history.is_empty());
+    }
+
+    #[test]
     fn interpolation_refuses_unbracketed_samples() {
         let mut q = VecDeque::new();
         q.push_back(BoardSnapshot {time_us:100,fields_mt:[Some([0.0;3]);16]});
