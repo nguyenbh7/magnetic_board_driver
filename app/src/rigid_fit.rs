@@ -182,24 +182,39 @@ pub struct RigidFitCompletion {
 impl RigidFitJob {
     pub fn run(self) -> RigidFitCompletion {
         let start = Instant::now();
-        let mut seeds = vec![self.seed];
-        if self.cold_start {
-            seeds.push(self.profile.initial_pose);
-            // For the A1 profile Z is an absolute gap; for CT the initial pose
-            // is zero translation and these extra Z guesses are not appropriate.
-            if self.profile.name.starts_with("A1 ") {
-                for z in [22.0, 32.0, 44.0] {
+        // Warm-start is fast during ordinary tracking, but the weak far-field
+        // A1 signal can lead to a falsely accepted pose on an XYZ bound.
+        // As the carrier approaches a board, reusing that trapped seed can
+        // yield a ~1.6 mT residual even though the calibrated model fits the
+        // same measured fields at <0.04 mT. Retry from calibrated seeds only
+        // when the warm-start RMSE fails the existing acceptance threshold.
+        let mut best = optimize_pose(&self.profile, &self.observations, self.seed);
+        let a1 = self.profile.name.starts_with("A1 ");
+        if self.cold_start || (a1 && best.as_ref()
+            .is_none_or(|r| r.rmse_mt > self.profile.max_rmse_mt))
+        {
+            let mut seeds = vec![self.profile.initial_pose];
+            // A1 Z is an absolute magnet-board gap. The CT/GK profile
+            // uses relative displacement; do not introduce A1 gap seeds.
+            if a1 {
+                for z in [22.0, 32.0, 44.0, 55.0] {
                     let mut pose = self.profile.initial_pose;
                     pose[2] = z;
                     seeds.push(pose);
                 }
             }
-        }
-        let mut best: Option<RigidFitResult> = None;
-        for seed in seeds {
-            if let Some(result) = optimize_pose(&self.profile, &self.observations, seed) {
-                if best.as_ref().is_none_or(|b| result.rmse_mt < b.rmse_mt) {
-                    best = Some(result);
+            for seed in seeds {
+                if seed == self.seed { continue; }
+                if let Some(result) = optimize_pose(&self.profile, &self.observations, seed) {
+                    if best.as_ref().is_none_or(|b| result.rmse_mt < b.rmse_mt) {
+                        best = Some(result);
+                    }
+                }
+                // During ordinary A1 tracking, stop once recovery has
+                // produced an acceptable fit; extra seeds waste CPU.
+                if !self.cold_start && best.as_ref()
+                    .is_some_and(|b| b.rmse_mt <= self.profile.max_rmse_mt) {
+                    break;
                 }
             }
         }
