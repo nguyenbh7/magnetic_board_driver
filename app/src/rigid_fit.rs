@@ -896,6 +896,116 @@ mod tests {
     }
 
 
+    /// Replays *measured* raw fields from the second A1 demo through the
+    /// production frame -> synchronization -> job -> completion path.
+    /// The approach to 25 mm previously got stuck using a far-field pose
+    /// on the XYZ bounds: warm-only RMSE rose to roughly 1.6 mT while a
+    /// properly initialized fit remained <0.04 mT.
+    #[test]
+    fn measured_a1_live_approach_recovers_from_far_field_seed() {
+        let mut recorded = [[[[0.0_f32; 3]; 16]; 3]; 7];
+        let mut present = [[false; 3]; 7];
+        for line in include_str!("../testdata/a1_second_demo_live_approach_ut.csv").lines() {
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let mut fields = line.split(',');
+            let stage = match fields.next().expect("stage") {
+                "background" => 0,
+                "weak" => 1,
+                "approach" => 2,
+                "moving" => 3,
+                "gap25" => 4,
+                "gap30" => 5,
+                "gap40" => 6,
+                stage => panic!("unexpected measured stage {stage}"),
+            };
+            let board: usize = fields.next().expect("board ID").parse().unwrap();
+            assert!(board < 3 && !present[stage][board]);
+            present[stage][board] = true;
+            let fields: Vec<f32> = fields.map(|v| v.parse().expect("raw microtesla")).collect();
+            assert_eq!(fields.len(), 48);
+            for sensor in 0..16 {
+                recorded[stage][board][sensor] = [
+                    fields[3*sensor], fields[3*sensor+1], fields[3*sensor+2],
+                ];
+            }
+        }
+        assert!(present.iter().flatten().all(|&ready| ready));
+
+        let mut live = RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        live.set_presence(BoardPresence { board_mask: 0b111, sensor_masks: [0xffff; 3] });
+
+        for stage in 0..7 {
+            // A weak far-field measurement can be accepted while XYZ lies on
+            // optimizer bounds. Force that *observed* failure condition before
+            // the recorded moving-approach frame to make the test deterministic.
+            if stage == 3 {
+                live.result = Some(RigidFitResult {
+                    pose: [30.0, 30.0, 65.0, 0.0, 0.0, 0.0],
+                    rmse_mt: 0.05,
+                    sensor_count: 48,
+                });
+            }
+            let mut job = None;
+            // Provide two nearby real-field board cycles per sampled stage so
+            // the app's normal three-board temporal interpolation is exercised.
+            // Timestamps here are replay ticks; magnetic XYZ triples are from
+            // the actual second demo's captured complete board frames.
+            for cycle in 0..2 {
+                for board in 0..3 {
+                    let mut frame = BoardFrame::default();
+                    frame.board_id = board as u16;
+                    frame.frame_id = (2 * stage + cycle) as u32;
+                    frame.sensor_mask = 0xffff;
+                    frame.base_time_us = 1_000_000 * (stage as u64 + 1)
+                        + 30_000 * cycle as u64 + 3_000 * board as u64;
+                    for (sensor, sample) in frame.samples.iter_mut().enumerate() {
+                        let value = recorded[stage][board][sensor];
+                        sample.bx_ut = value[0];
+                        sample.by_ut = value[1];
+                        sample.bz_ut = value[2];
+                        sample.time_offset_us = 175 * sensor as u16;
+                    }
+                    if let Some(next) = live.receive_frame(&frame, true) {
+                        assert!(job.is_none(), "more than one in-flight fit");
+                        job = Some(next);
+                    }
+                }
+            }
+            if stage == 0 {
+                assert!(job.is_none(), "no fit should run without background");
+                live.capture_a1_background().expect("recorded background");
+                continue;
+            }
+            let job = job.unwrap_or_else(|| panic!("no interpolated fit at stage {stage}"));
+            assert!(!job.cold_start || stage == 1);
+            if stage == 3 {
+                assert_eq!(job.seed[..3], [30.0, 30.0, 65.0]);
+                let warm_only = optimize_pose(&job.profile, &job.observations, job.seed)
+                    .expect("finite trapped warm-start fit");
+                assert!(
+                    warm_only.rmse_mt > job.profile.max_rmse_mt,
+                    "regression fixture no longer triggers trapped-seed failure: {:.3} mT",
+                    warm_only.rmse_mt,
+                );
+            }
+            let completion = job.run();
+            let fit = completion.result.as_ref().expect("optimizer returned pose");
+            assert!(
+                fit.rmse_mt < 0.15,
+                "stage {stage} was rejected: {:.4} mT", fit.rmse_mt,
+            );
+            live.apply_completion(completion);
+            assert_eq!(live.summary().rejected, 0, "live rejection at stage {stage}");
+            if stage == 4 {
+                live.reset_zero();
+                assert!(live.summary().zero_ready);
+            }
+        }
+        assert_eq!(live.summary().completed, 6);
+        assert_eq!(live.summary().rejected, 0);
+    }
+
     #[test]
     fn rodrigues_is_orthogonal_and_rotates_axes() {
         let r = rodrigues([0.0,0.0,PI/2.0]);
