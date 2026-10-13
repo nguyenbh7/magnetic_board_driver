@@ -432,7 +432,9 @@ impl RigidLiveFit {
         }
     }
 
-    pub fn receive_frame(&mut self, frame: &BoardFrame) -> Option<RigidFitJob> {
+    /// Always receive the board's raw frames for A1 background capture.
+    /// Only launch the expensive rigid solver when its tracking mode is selected.
+    pub fn receive_frame(&mut self, frame: &BoardFrame, fit_active: bool) -> Option<RigidFitJob> {
         if !self.enabled { return None; }
         let profile = self.profile.as_ref()?;
         let b_id = frame.board_id as usize;
@@ -464,6 +466,11 @@ impl RigidLiveFit {
         if queue.back().is_some_and(|f| f.time_us >= t) { return None; }
         queue.push_back(BoardSnapshot { time_us: t, fields_mt });
         while queue.len() > FRAME_BUFFER_LEN { queue.pop_front(); }
+
+        // In independent mode, continue buffering three-board fields, but
+        // don't fit. That keeps shared A1 background capture functional
+        // without forcing the rigid solver to compete for CPU.
+        if !fit_active { return None; }
 
         if profile.name.starts_with("A1 ") && self.background_raw.iter().any(Option::is_none) {
             self.status = "Awaiting A1 background capture on all three boards".into();
@@ -883,7 +890,7 @@ mod tests {
                 frame.sensor_mask = 0xffff;
                 frame.base_time_us = 100_000+100_000*cycle as u64+board_id as u64;
                 for sample in &mut frame.samples {sample.bz_ut = 300.0;}
-                job = live.receive_frame(&frame).or(job);
+                job = live.receive_frame(&frame, true).or(job);
             }
             if cycle == 1 {
                 assert!(job.is_none(), "A1 must not fit without a background capture");
