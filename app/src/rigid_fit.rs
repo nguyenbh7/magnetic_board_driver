@@ -239,9 +239,8 @@ pub struct RigidLiveFit {
     enabled: bool,
     frames: [VecDeque<BoardSnapshot>; 3],
     presence: BoardPresence,
-    /// A1 far-field parking-pose background capture, with magnets still attached.
-    /// The operator must confirm Job 2 is at its verified pause; the app does
-    /// not read printer XYZ or independently check the distance to magnets.
+    /// A1 reference background from live sensor frames; the printer's G-code
+    /// is responsible for moving the magnets sufficiently far away.
     background_raw: [Option<[[f64;3];16]>;3],
     generation: u64,
     busy: bool,
@@ -327,7 +326,7 @@ impl RigidLiveFit {
         } else if self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 "))
             && self.background_raw.iter().any(Option::is_none)
         {
-            "Park the A1 magnet carrier at the Job 2 far-field pause (X132.401 Y250 Z256), then capture backgrounds on all 3 boards".into()
+            "Capture A1 background on all 3 boards before fitting".into()
         } else {
             "Waiting for synchronized board frames".into()
         };
@@ -345,10 +344,9 @@ impl RigidLiveFit {
         self.last_elapsed_ms = None;
     }
 
-    /// Capture raw far-field backgrounds at the A1 Job 2 parked-pose pause.
-    /// Magnet carrier remains attached; its field must be negligible at this
-    /// location for this background to represent the board-only baseline.
-    pub fn capture_a1_parked_background(&mut self) -> Result<(), String> {
+    /// Capture the existing raw A1 background (one complete frame per board).
+    /// Timing and the magnet separation are controlled by the printer G-code.
+    pub fn capture_a1_background(&mut self) -> Result<(), String> {
         if !self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 ")) {
             return Err("Background capture is only offered for the A1 reference; CT uses frozen fitted background".into());
         }
@@ -363,7 +361,7 @@ impl RigidLiveFit {
         }
         self.background_raw = captures;
         self.reset_stream();
-        self.status = "A1 parked background captured on all 3 boards; resume Job 2 and wait for accepted fits".into();
+        self.status = "A1 background captured on all 3 boards".into();
         Ok(())
     }
 
@@ -456,7 +454,7 @@ impl RigidLiveFit {
         while queue.len() > FRAME_BUFFER_LEN { queue.pop_front(); }
 
         if profile.name.starts_with("A1 ") && self.background_raw.iter().any(Option::is_none) {
-            self.status = "Awaiting A1 parked-background capture at Job 2 far-field pause (X132.401 Y250 Z256)".into();
+            self.status = "Awaiting A1 background capture on all three boards".into();
             return None;
         }
         if self.busy { return None; }
@@ -795,7 +793,7 @@ mod tests {
         assert!(status.profile_name.as_deref().is_some_and(|n| n.starts_with("A1 ")));
         assert!(!status.a1_background_ready);
         assert!(!status.zero_ready);
-        assert!(status.status.contains("Job 2 far-field pause"));
+        assert!(status.status.contains("Capture A1 background"));
         live.set_enabled(false);
         assert!(!live.enabled());
         live.select_location_preset(MagnetLocationPreset::A1Demo);
@@ -870,7 +868,7 @@ mod tests {
             }
             if cycle == 1 {
                 assert!(job.is_none(), "A1 must not fit without a background capture");
-                live.capture_a1_parked_background().unwrap();
+                live.capture_a1_background().unwrap();
             }
         }
         let job = job.expect("Three bracketed board streams must provide a joint fit job");
