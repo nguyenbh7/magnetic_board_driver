@@ -13,6 +13,8 @@ use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod displacement_plot;
 use displacement_plot::{displacement_plot, rotation_plot};
+mod rigid_xyz_plot;
+use rigid_xyz_plot::rigid_xyz_plot;
 mod sensor_trace;
 mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
@@ -88,6 +90,7 @@ enum Message {
     RigidProfilePicked(Option<PathBuf>),
     ToggleRigidFit,
     CaptureRigidBackground,
+    ToggleIndependentFits,
     ResetRigidZero,
     CopyRigidStatus,
     ReceivedBoardPresence(BoardPresence),
@@ -135,7 +138,8 @@ enum Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum DashboardTab {
     #[default]
-    LiveFits,
+    LiveTracking,
+    Diagnostics,
     SensorTraces,
     Both,
 }
@@ -599,7 +603,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits = BoardLiveFits::default();
             context.rigid_fit.clear_background_for_new_port();
             context.sensor_traces = SensorTraceState::default();
-            context.dashboard_tab = DashboardTab::LiveFits;
+            context.dashboard_tab = DashboardTab::LiveTracking;
             context.stream_status = "idle".to_string();
             context.received_stream_frames = 0;
             Task::none()
@@ -682,9 +686,15 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CaptureRigidBackground => {
-            if let Err(e) = context.rigid_fit.capture_a1_background() {
-                context.rigid_fit.set_status(format!("Background: {e}"));
+            match context.rigid_fit.capture_a1_background() {
+                Ok(raw) => context.live_fits.apply_background_snapshot(&raw),
+                Err(e) => context.rigid_fit.set_status(format!("Background: {e}")),
             }
+            Task::none()
+        }
+        Message::ToggleIndependentFits => {
+            let enable = !context.live_fits.fit_enabled();
+            context.live_fits.set_fit_enabled(enable);
             Task::none()
         }
         Message::RigidFitCompleted(completion) => {
@@ -1074,7 +1084,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
     );
 
-    let live_fit_widget = {
+    let (live_tracking_widget, diagnostics_widget) = {
         let summaries = context.live_fits.board_summaries();
 
         let rigid = context.rigid_fit.summary();
@@ -1094,50 +1104,60 @@ fn view(context: &Context) -> Element<'_, Message> {
         } else {
             "Select A1 V1 for an immediate calibrated demo, or load your own complete rigid geometry JSON."
         };
+        let fit_quality = rigid.result.as_ref()
+            .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
+                r.rmse_mt, r.sensor_count, rigid.completed.saturating_sub(rigid.rejected),
+                rigid.rejected, rigid.last_duration_ms.unwrap_or(0.0)))
+            .unwrap_or_else(|| format!("No accepted fit yet · {} completed / {} rejected",
+                rigid.completed, rigid.rejected));
+        let position_line = rigid.translation_from_zero
+            .map(|d| {
+                let magnitude = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
+                format!("X {:+.2} mm     Y {:+.2} mm     Z {:+.2} mm     |Δr| {:.2} mm",
+                    d[0], d[1], d[2], magnitude)
+            }).unwrap_or_else(|| "XYZ: waiting for accepted fit and zero".into());
+        let rotation_line = rigid.rotation_from_zero_deg
+            .map(|angle| format!("Relative rotation: {:.2}°", angle))
+            .unwrap_or_else(|| "Relative rotation: awaiting fit".into());
         let mut rigid_content = column![
-            text("Rigid-body live fit — 6 DOF, all three boards / all three magnets"),
+            text("Live Tracking — joint 6-DOF rigid body"),
             row![
-                text("Tracking setup:"),
-                pick_list(
-                    MagnetLocationPreset::ALL.to_vec(),
-                    rigid.location_preset,
-                    Message::SelectMagnetLocations,
-                ),
+                text("Setup:"),
+                pick_list(MagnetLocationPreset::ALL.to_vec(),
+                    rigid.location_preset, Message::SelectMagnetLocations),
+                button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
+                button(enabled_label).on_press(Message::ToggleRigidFit),
             ].spacing(8),
             text(selected_setup),
             text(setup_help),
             row![
-                button("Load calibrated geometry (.json)").on_press(Message::LoadRigidProfile),
-                button(enabled_label).on_press(Message::ToggleRigidFit),
                 button("Set rigid zero").on_press(Message::ResetRigidZero),
+                text(if rigid.zero_ready { "Zero: set" } else { "Zero: awaiting fit" }),
             ].spacing(8),
-            row![
-                button("Copy rigid diagnostics").on_press(Message::CopyRigidStatus),
-                text(if rigid.zero_ready { "Rigid zero: set" } else { "Rigid zero: waiting for accepted fit" }),
-            ].spacing(8),
-            text("Translation is of the profile's rigid origin; rotation is the magnitude of the zero-relative rigid-body rotation (deg)."),
-            text(pose_label),
-        ].spacing(6);
+            text(position_line),
+            text(rotation_line),
+            text(format!("Status: {}", rigid.status)),
+            text(fit_quality),
+        ].spacing(7);
         if is_a1_demo {
             rigid_content = rigid_content.push(
                 row![
-                    button("Capture A1 background").on_press(Message::CaptureRigidBackground),
+                    button("Capture background (all 3 boards)").on_press(Message::CaptureRigidBackground),
                     text(if rigid.a1_background_ready {
-                        "A1 background: captured (3 boards)"
+                        "Background: captured"
                     } else {
-                        "A1 background: not captured"
+                        "Background: required"
                     }),
                 ].spacing(8)
             );
         }
         if rigid.enabled {
             rigid_content = rigid_content
-                .push(displacement_plot(u16::MAX, rigid.displacement_history))
+                .push(rigid_xyz_plot(rigid.xyz_history))
                 .push(rotation_plot(u16::MAX, rigid.rotation_history));
         }
         let mut live_fit_content = column![
-            container(rigid_content).padding(10),
-            text("Independent single-magnet fits by board (unchanged)"),
+            text("Independent magnet fits (optional diagnostics)"),
         ].spacing(12);
 
         if summaries.is_empty() {
@@ -1243,7 +1263,28 @@ fn view(context: &Context) -> Element<'_, Message> {
             }
         }
 
-        container(live_fit_content)
+        let independent_label = if context.live_fits.fit_enabled() {
+            "Pause independent fits"
+        } else {
+            "Run independent fits"
+        };
+        let diagnostic_content = column![
+            row![
+                button(independent_label).on_press(Message::ToggleIndependentFits),
+                button("Copy rigid diagnostics").on_press(Message::CopyRigidStatus),
+            ].spacing(8),
+            text(if context.live_fits.fit_enabled() {
+                "Independent fitting active — may reduce the rigid solver's live update rate."
+            } else {
+                "Independent fitting paused — board frames, background snapshots, traces and logging remain active."
+            }),
+            text(pose_label),
+            live_fit_content,
+        ].spacing(10);
+        (
+            container(rigid_content).padding(10).into(),
+            container(diagnostic_content).padding(10).into(),
+        )
     };
 
     let sensor_trace_widget = {
@@ -1372,19 +1413,21 @@ fn view(context: &Context) -> Element<'_, Message> {
     .padding(10);
 
     let tab_selector = row![
-        button("Live fits").on_press(Message::SelectDashboardTab(DashboardTab::LiveFits)),
+        button("Live Tracking").on_press(Message::SelectDashboardTab(DashboardTab::LiveTracking)),
+        button("Diagnostics").on_press(Message::SelectDashboardTab(DashboardTab::Diagnostics)),
         button("Sensor traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
         button("Both").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
     ]
     .spacing(8);
 
     let active_dashboard_widget = match context.dashboard_tab {
-        DashboardTab::LiveFits => live_fit_widget,
+        DashboardTab::LiveTracking => live_tracking_widget,
+        DashboardTab::Diagnostics => diagnostics_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
         DashboardTab::Both => {
             container(
                 row![
-                    live_fit_widget.width(Length::FillPortion(1)),
+                    live_tracking_widget.width(Length::FillPortion(1)),
                     sensor_trace_widget.width(Length::FillPortion(1)),
                 ]
                 .spacing(12)
@@ -1392,16 +1435,15 @@ fn view(context: &Context) -> Element<'_, Message> {
         }
     };
     
-    let dashboard_content = container(
-        column![
-            stream_widget,
-            tab_selector,
-            active_dashboard_widget,
-            mlx_widget,
-        ]
-        .spacing(12)
-    )
-    .width(Length::Fill);
+    let mut dashboard_sections = column![
+        stream_widget,
+        tab_selector,
+        active_dashboard_widget,
+    ].spacing(12);
+    if context.dashboard_tab == DashboardTab::Diagnostics {
+        dashboard_sections = dashboard_sections.push(mlx_widget);
+    }
+    let dashboard_content = container(dashboard_sections).width(Length::Fill);
 
     let dashboard = scrollable(dashboard_content)
         .width(Length::Fill)
@@ -1416,15 +1458,14 @@ fn view(context: &Context) -> Element<'_, Message> {
     ]
     .spacing(8);
 
-    column![
+    let mut content = column![
         scale_controls,
         serial_selector,
-        ping_widget,
-        dashboard,
-    ]
-    .spacing(10)
-    .padding(10)
-    .into()
+    ].spacing(10);
+    if context.dashboard_tab == DashboardTab::Diagnostics {
+        content = content.push(ping_widget);
+    }
+    content.push(dashboard).padding(10).into()
 }
 
 #[tokio::main]
