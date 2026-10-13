@@ -453,5 +453,6 @@
     0.78539816339745,
     0.78539816339745
   ],
-  "max_rmse_mt": 0.15
+  "max_rmse_mt": 0.15,
+  "coordinate_frame": "a1_v1_rigid"
 }
