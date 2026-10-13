@@ -9,7 +9,46 @@ Experimental desktop-app feature branch: feature/live-rigid-body-fit.
     cargo test -p app
     cargo run -p app --release
 
-The joint six-DOF fitter runs alongside the unchanged independent single-board fits. It interpolates three complete BoardFrame streams to a common bracketed timestamp and jointly fits XYZ translation (mm) and rotation-vector components (radians). All three finite-cylinder magnet fields contribute at all 48 Hall sensors. Relative magnet centers/axes, strengths, sensor positions, board rotations, gains, and backgrounds are fixed by the loaded geometry profile. Fits run off the UI thread; new fits are skipped while a worker is busy.
+The joint six-DOF fitter shares the live Hall streams with the existing independent single-board fitters, but the expensive independent fitting workers are **paused by default** for the demo. Independent fitting can be activated from Diagnostics. The joint fitter interpolates three complete BoardFrame streams to a common bracketed timestamp and jointly fits XYZ translation (mm) and rotation-vector components (radians). All three finite-cylinder magnet fields contribute at all 48 Hall sensors. Relative magnet centers/axes, strengths, sensor positions, board rotations, gains, and backgrounds are fixed by the loaded geometry profile. Fits run off the UI thread; new fits are skipped while a worker is busy.
+
+## Dashboard views (October 2026)
+
+The dashboard now has four tabs:
+
+- **Live Tracking** (default): complete rigid tracking setup selector, one
+  background-capture button for A1, rigid zero, signed XYZ translations,
+  fitted rotation, and field RMS/update diagnostics. This is the primary
+  Zoom screen-share view.
+- **Diagnostics**: unchanged individual Board 0/1/2 fit plots, per-board
+  calibration/background controls, frame/cadence statistics, raw single-sensor
+  query and MLX Hall settings. Click **Run independent fits** to turn on
+  the legacy magnet optimizers; click **Pause independent fits** to stop
+  them. Switching back to Live Tracking or Both pauses these optional workers
+  to avoid consuming CPU during the rigid demo.
+- **Sensor traces**: retained raw Bx/By/Bz sensor plots, with per-board
+  sensor selection independent of whether the old per-magnet fits are running.
+- **Both**: retained side-by-side **Live Tracking + Sensor traces** plots,
+  ideal for showing how the raw Hall fields respond while the joint 6-DOF
+  pose is updated.
+
+**A1 shared background:** The single **Capture background (all 3 boards)**
+button snapshots the 16 raw XYZ Hall samples on each of Boards 0/1/2 from
+the live rigid frame buffer, validates completeness, and distributes the
+*same* sample arrays to both the joint rigid fitter and the legacy
+independent fitters. Each fitter retains its own coordinate conventions,
+magnet calibration and baseline corrections. The capture invalidates
+previous fitted zeros. Even with independent fitting paused, board frame
+accumulation, magnetic field traces and raw logging continue. Separate
+per-board capture buttons are still present in Diagnostics for exceptional
+troubleshooting. Gamma Knife CT rigid profiles use their own frozen
+calibrated backgrounds; the A1 shared capture is not offered there.
+
+Signed XYZ traces represent **the translation of the calibrated rigid
+origin relative to the zero pose**, not independently reconstructed magnet
+positions or a Gamma Knife Nose marker. The rotation trace is the magnitude
+of zero-relative estimated rigid rotation. The numeric total-displacement
+readout is the norm of relative XYZ translation. These quantities are
+experimental model estimates and require hardware validation.
 
 ## A1 V1 live-demo setup (Zoom-ready)
 
@@ -38,8 +77,8 @@ calibrated locations**, not independently CT-measured locations.
    `scripts/build_a1_v1_two_job_3mfs.ps1`. It first lifts the nozzle to
    **Z256** and moves to **X132.401 Y250**. At its single intentional
    **`M400 U1` background pause**, leave the carrier installed. While paused
-   and streaming, press **Capture A1 background** in the live app.
-   The UI should show **A1 background: captured (3 boards)**.
+   and streaming, press **Capture background (all 3 boards)** in the live app.
+   The UI should show **Background: captured**.
 4. Resume Job 2. As the magnets approach the measurement positions, wait
    until the 6-DOF status reports **Tracking** (an accepted fit, not a
    rejection). At a stationary, stable fit, press **Set rigid zero**.
@@ -52,7 +91,7 @@ calibrated locations**, not independently CT-measured locations.
 **No magnet removal is needed to capture Job 2 background.** The
 far-field separation and one deliberate pause are already controlled by
 the Job 2 G-code/3MF, not by the fitting app. At that pause, click the
-app's existing **Capture A1 background** button. The app simply snapshots
+app's existing **Capture background (all 3 boards)** button. The app simply snapshots
 one complete raw frame per board; it does not communicate with the
 printer, reposition the carrier, or inspect its machine coordinates.
 The operator confirms the correct pause before capture. If the carrier
@@ -64,13 +103,13 @@ background capture**. Changing the serial connection also clears its
 capture. The existing per-board fit view and magnetic logging are
 unchanged.
 
-The **Enable/Disable rigid fit**, **Set rigid zero** and **Copy rigid
-diagnostics** controls continue to work in A1 mode. The
-**Capture A1 background** button only appears when A1 is selected.
+The **Enable/Disable rigid fit** and **Set rigid zero** controls remain on
+Live Tracking; **Copy rigid diagnostics** is under Diagnostics. The
+**Capture background (all 3 boards)** button only appears for A1.
 
 ## Default Gamma Knife stage magnet locations
 
-The Live Fits dashboard now offers a **Tracking setup** dropdown:
+The Live Tracking dashboard offers a **Tracking setup** dropdown:
 **A1 V1** (complete bundled demo calibration), **Linear stage — May-15 CT**
 (reference centers), and **Rotation stage** (reference centers). Only
 the two Gamma Knife stage selections are magnet-center-only references.
@@ -95,7 +134,7 @@ currently loaded full profile is incompatible, live rigid fitting is disabled;
 the selected reference points are shown and the app requests a complete
 calibration profile. The user can still run independent per-board fits.
 
-To activate a matching stage fit, press **Load rigid geometry (.json)** and
+To activate a matching stage fit, press **Load geometry (.json)** and
 choose a full profile with the corresponding coordinate-frame key:
 
 - `"coordinate_frame": "gk_may15_ct"` for the May-15 CT linear reference.
@@ -122,7 +161,7 @@ Run hall-effect-motion-tracking/scripts/fit_gk_05152026_ct_rigid.py with the May
       --fit-results "PATH_TO_RESULTS\gk_05152026_ct_rigid\gk_data_05152026" `
       --output .\app\config\gk_ct_live_profile.json
 
-Choose **Load rigid geometry (.json)** in the app and select this exported file. The exporter verifies CT sensor index correspondence identity,identity,flip_rot180 and physical-to-raw Left<-1, Top<-0, Right<-2. It rotates historical raw Hall fields into CT coordinates, rather than applying the A1 [By,-Bx,Bz] transform. The fixed per-board CT backgrounds are already part of the profile; do NOT capture an A1 no-magnet background.
+Choose **Load geometry (.json)** in the app and select this exported file. The exporter verifies CT sensor index correspondence identity,identity,flip_rot180 and physical-to-raw Left<-1, Top<-0, Right<-2. It rotates historical raw Hall fields into CT coordinates, rather than applying the A1 [By,-Bx,Bz] transform. The fixed per-board CT backgrounds are already part of the profile; do NOT capture an A1 no-magnet background.
 
 A May-15 profile cannot be assumed valid after remounting a headrest, changing magnet orientation, moving sensors or changing the background field. Regenerate the geometry/calibration for the actual apparatus.
 
@@ -132,7 +171,7 @@ Profile fields: name, origin_mm, boards (raw_board_id, 16 sensors_mm in firmware
 
 Each frame is timestamped using sample offsets; interpolation requires bracketing and <=120 ms gap on either side, with at least eight usable sensors per board. The solver uses the Python model's 4x12 magnetic-charge face quadrature but an independent six-parameter damped least-squares optimizer, NOT the SciPy trust-region-reflective implementation. It warm-starts from the previous pose, rejects fits above the configured RMS threshold, and cancels stale completions by generation.
 
-The UI displays absolute translation and rotation vector, zero-relative translation and angular change, RMS field residual, sensor count, worker duration, counts and plots. Copy rigid diagnostics captures these results. Existing logging and legacy per-board plots are unchanged.
+Live Tracking shows zero-relative signed XYZ translation, numeric 3-D magnitude, and zero-relative rotation, plus fit field residual and worker status. Diagnostics provides absolute translation/rotation vectors, frame statistics, and per-board fit plots and controls. Copy rigid diagnostics captures the detailed pose/status. Existing logging and raw Hall sensor trace functionality are unchanged.
 
 ## Validation required
 
