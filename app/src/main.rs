@@ -1209,7 +1209,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                     column![
                         row![
                             text(format!("Board {}", summary.board_id)),
-                            button("Capture no-magnet background")
+                            button("Capture board background")
                                 .on_press(Message::CaptureBoardBackground(summary.board_id)),
                             button("Reset displacement zero")
                                 .on_press(Message::ResetBoardDisplacement(summary.board_id)),
