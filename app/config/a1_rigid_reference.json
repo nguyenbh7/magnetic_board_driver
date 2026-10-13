@@ -396,7 +396,7 @@
       ],
       "diameter_mm": 7.9375,
       "thickness_mm": 6.35,
-      "remanence_mt": -1307.0720876799999
+      "remanence_mt": 1307.0720876799999
     },
     {
       "center_mm": [
@@ -411,7 +411,7 @@
       ],
       "diameter_mm": 7.9375,
       "thickness_mm": 6.35,
-      "remanence_mt": -1372.3439889600002
+      "remanence_mt": 1372.3439889600002
     },
     {
       "center_mm": [
@@ -426,7 +426,7 @@
       ],
       "diameter_mm": 7.9375,
       "thickness_mm": 6.35,
-      "remanence_mt": -1410.267963172
+      "remanence_mt": 1410.267963172
     }
   ],
   "initial_pose": [
