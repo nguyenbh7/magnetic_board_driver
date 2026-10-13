@@ -83,7 +83,6 @@ enum Message {
     ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
     FitCompleted(FitCompletion),
     RigidFitCompleted(RigidFitCompletion),
-    UseA1RigidProfile,
     SelectMagnetLocations(MagnetLocationPreset),
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
@@ -656,13 +655,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.select_location_preset(preset);
             Task::none()
         }
-        Message::UseA1RigidProfile => {
-            match RigidProfile::a1_reference() {
-                Ok(profile) => context.rigid_fit.set_profile(profile),
-                Err(e) => context.rigid_fit.set_status(format!("A1 profile error: {e}")),
-            }
-            Task::none()
-        }
         Message::LoadRigidProfile => {
             iced::window::oldest()
                 .and_then(|id| iced::window::run(id, open_rigid_profile))
@@ -1088,35 +1080,56 @@ fn view(context: &Context) -> Element<'_, Message> {
         let rigid = context.rigid_fit.summary();
         let enabled_label = if rigid.enabled { "Disable rigid fit" } else { "Enable rigid fit" };
         let pose_label = rigid_fit_status_text(&rigid);
-        let selected_locations = rigid.location_preset.map(|preset| preset.summary())
-            .unwrap_or_else(|| {
-                "Selected magnet locations: calibrated profile (A1/custom), or none loaded".into()
-            });
+        let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
+        let selected_setup = rigid.location_preset.map(|preset| preset.summary())
+            .unwrap_or_else(|| "Custom calibrated geometry (or no setup selected)".into());
+        let setup_help = if is_a1_demo {
+            if rigid.a1_background_ready {
+                "A1 demo: background captured. Install the magnets, wait for accepted fits, then click Set rigid zero and move the stage."
+            } else {
+                "A1 demo: REMOVE all magnets first, stream all three boards, then capture the no-magnet background. Install magnets only afterward."
+            }
+        } else if rigid.location_preset.is_some() {
+            "Gamma Knife stage references specify magnet centers only. Load matching complete CT/stage board geometry and magnetic calibration JSON to track."
+        } else {
+            "Select A1 V1 for an immediate calibrated demo, or load your own complete rigid geometry JSON."
+        };
         let mut rigid_content = column![
             text("Rigid-body live fit — 6 DOF, all three boards / all three magnets"),
             row![
-                text("Stage magnet locations:"),
+                text("Tracking setup:"),
                 pick_list(
                     MagnetLocationPreset::ALL.to_vec(),
                     rigid.location_preset,
                     Message::SelectMagnetLocations,
                 ),
             ].spacing(8),
-            text(selected_locations),
-            text("Stage presets provide measured magnet centers only. A matching calibrated board/sensor/magnet profile is required for live fitting; no cross-frame substitution is performed."),
+            text(selected_setup),
+            text(setup_help),
             row![
-                button("Use A1 reference profile").on_press(Message::UseA1RigidProfile),
-                button("Load rigid geometry (.json)").on_press(Message::LoadRigidProfile),
+                button("Load calibrated geometry (.json)").on_press(Message::LoadRigidProfile),
                 button(enabled_label).on_press(Message::ToggleRigidFit),
                 button("Set rigid zero").on_press(Message::ResetRigidZero),
             ].spacing(8),
             row![
-                button("Capture A1 no-magnet background").on_press(Message::CaptureRigidBackground),
                 button("Copy rigid diagnostics").on_press(Message::CopyRigidStatus),
+                text(if rigid.zero_ready { "Rigid zero: set" } else { "Rigid zero: waiting for accepted fit" }),
             ].spacing(8),
-            text("Translation is of the profile's rigid origin; rotation uses an axis-angle rotation vector (deg)."),
+            text("Translation is of the profile's rigid origin; rotation is the magnitude of the zero-relative rigid-body rotation (deg)."),
             text(pose_label),
         ].spacing(6);
+        if is_a1_demo {
+            rigid_content = rigid_content.push(
+                row![
+                    button("Capture A1 no-magnet background").on_press(Message::CaptureRigidBackground),
+                    text(if rigid.a1_background_ready {
+                        "A1 background: captured (3 boards)"
+                    } else {
+                        "A1 background: required (remove magnets first)"
+                    }),
+                ].spacing(8)
+            );
+        }
         if rigid.enabled {
             rigid_content = rigid_content
                 .push(displacement_plot(u16::MAX, rigid.displacement_history))
