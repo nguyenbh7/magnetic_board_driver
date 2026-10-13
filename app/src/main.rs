@@ -1018,6 +1018,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SelectDashboardTab(tab) => {
+            // Returning to the demo keeps expensive independent magnet fits
+            // from silently competing with the joint rigid solver.
+            if matches!(tab, DashboardTab::LiveTracking | DashboardTab::Both) {
+                context.live_fits.set_fit_enabled(false);
+            }
             context.dashboard_tab = tab;
             Task::none()
         }
