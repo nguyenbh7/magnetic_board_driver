@@ -263,3 +263,19 @@ A fit accepted very far from the boards **does not** establish an
 accurate physical XYZ reference just because RMSE is low. Set rigid
 zero at each 30-second centered height hold after a recent accepted fit.
 
+## Plot retention on field-stream stop
+
+**Stop Field Stream** now leaves the last rigid-body signed-XYZ,
+displacement, and relative-rotation histories visible for review, as
+the independent-fit graphs already do. It retains the most recent
+accepted pose, zero reference, field-RMSE readout and acceptance
+counters. The stop event invalidates in-flight fitting jobs and drops
+raw frame buffers, so an old completion cannot overwrite the frozen
+plots.
+
+**Start Field Stream** intentionally resets the rigid measurement
+histories for a new run. Explicit profile/background changes and
+**Set rigid zero** retain their existing reset semantics. The
+`stopping_stream_preserves_rigid_plots_but_invalidates_pending_fit`
+regression test covers the stop behavior.
+
