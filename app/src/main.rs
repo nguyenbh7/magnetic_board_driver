@@ -12,12 +12,18 @@ use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod displacement_plot;
-use displacement_plot::displacement_plot;
+use displacement_plot::{displacement_plot, rotation_plot};
+mod rigid_xyz_plot;
+use rigid_xyz_plot::rigid_xyz_plot;
 mod sensor_trace;
 mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
+mod rigid_fit;
+mod stage_presets;
+use stage_presets::MagnetLocationPreset;
+use rigid_fit::{RigidFitCompletion, RigidFitJob, RigidLiveFit, RigidProfile, RigidSummary};
 use live_fit::{BoardFitSummary, BoardLiveFits, FitCompletion, FitJob, MagnetPreset};
 use rfd::FileHandle;
 use sensor_monitor::MagneticData;
@@ -78,6 +84,14 @@ enum Message {
     RecievedField(data_transfer::rpc::SensorField),
     ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
     FitCompleted(FitCompletion),
+    RigidFitCompleted(RigidFitCompletion),
+    SelectMagnetLocations(MagnetLocationPreset),
+    LoadRigidProfile,
+    RigidProfilePicked(Option<PathBuf>),
+    CaptureRigidBackground,
+    SelectTrackingMode(TrackingMode),
+    ResetRigidZero,
+    CopyRigidStatus,
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
     CalibrateBoardMagnet(u16),
@@ -123,9 +137,29 @@ enum Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum DashboardTab {
     #[default]
-    LiveFits,
+    LiveTracking,
     SensorTraces,
     Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TrackingMode {
+    #[default]
+    Rigid6Dof,
+    Independent,
+}
+
+impl Display for TrackingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rigid6Dof => "Rigid 6-DOF",
+            Self::Independent => "Independent fits",
+        })
+    }
+}
+
+impl TrackingMode {
+    const ALL: [Self; 2] = [Self::Rigid6Dof, Self::Independent];
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,8 +199,10 @@ struct Context {
     sensor_grids: BTreeMap<u8, SensorGrid>,
     sensor_traces: SensorTraceState,
     dashboard_tab: DashboardTab,
+    tracking_mode: TrackingMode,
     board_presence: BoardPresence,
     live_fits: BoardLiveFits,
+    rigid_fit: RigidLiveFit,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -314,6 +350,31 @@ fn board_fit_status_text(summary: &BoardFitSummary) -> String {
     )
 }
 
+fn rigid_fit_status_text(summary: &RigidSummary) -> String {
+    let name = summary.profile_name.as_deref().unwrap_or("No calibrated profile loaded");
+    let mut text = format!(
+        "Rigid 6-DOF · {} · {} · {} · worker {} · completed {} · rejected {} · last {:.1} ms",
+        name, if summary.enabled { "enabled" } else { "disabled" }, summary.status,
+        if summary.busy { "busy" } else { "idle" },
+        summary.completed, summary.rejected, summary.last_duration_ms.unwrap_or(0.0)
+    );
+    if let Some(result) = &summary.result {
+        let p = result.pose;
+        text.push_str(&format!(
+            "\nAbsolute pose: translation [{:.3}, {:.3}, {:.3}] mm, rotation vector [{:.3}, {:.3}, {:.3}] deg, field RMSE {:.5} mT, sensors {}",
+            p[0], p[1], p[2], p[3].to_degrees(), p[4].to_degrees(), p[5].to_degrees(),
+            result.rmse_mt, result.sensor_count
+        ));
+    }
+    if let (Some(t), Some(angle)) = (summary.translation_from_zero, summary.rotation_from_zero_deg) {
+        text.push_str(&format!(
+            "\nRelative to rigid zero: dx={:.3}, dy={:.3}, dz={:.3} mm; rotation={:.3} deg",
+            t[0], t[1], t[2], angle
+        ));
+    }
+    text
+}
+
 fn sensor_position_from_index(sensor_index: usize) -> (f32, f32, f32) {
     SENSOR_POSITIONS_MM[sensor_index]
 }
@@ -422,6 +483,7 @@ fn all_diagnostics_text(context: &Context) -> String {
         context.received_stream_frames,
     ));
     lines.push(log_status_text(context));
+    lines.push(rigid_fit_status_text(&context.rigid_fit.summary()));
 
     for summary in context.live_fits.board_summaries() {
         lines.push(board_cadence_text(&summary));
@@ -429,6 +491,16 @@ fn all_diagnostics_text(context: &Context) -> String {
     }
 
     lines.join("\n")
+}
+
+fn open_rigid_profile(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select rigid-body geometry/calibration JSON")
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
 fn open_file(
@@ -536,6 +608,10 @@ async fn run_fit_job(job: FitJob) -> FitCompletion {
     async_std::task::spawn_blocking(move || job.run()).await
 }
 
+async fn run_rigid_fit_job(job: RigidFitJob) -> RigidFitCompletion {
+    async_std::task::spawn_blocking(move || job.run()).await
+}
+
 fn update(context: &mut Context, message: Message) -> Task<Message> {
 
     //println!("{:#?}", message);
@@ -544,8 +620,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
+            context.rigid_fit.clear_background_for_new_port();
             context.sensor_traces = SensorTraceState::default();
-            context.dashboard_tab = DashboardTab::LiveFits;
+            context.dashboard_tab = DashboardTab::LiveTracking;
+            context.tracking_mode = TrackingMode::Rigid6Dof;
             context.stream_status = "idle".to_string();
             context.received_stream_frames = 0;
             Task::none()
@@ -597,6 +675,52 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits.set_board_magnet_preset(board_id, preset);
             Task::none()
         }
+        Message::SelectMagnetLocations(preset) => {
+            context.rigid_fit.select_location_preset(preset);
+            Task::none()
+        }
+        Message::LoadRigidProfile => {
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, open_rigid_profile))
+                .then(Task::future)
+                .map(Message::RigidProfilePicked)
+        }
+        Message::RigidProfilePicked(path) => {
+            if let Some(path) = path {
+                match std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|src| RigidProfile::from_json(&src)) {
+                    Ok(profile) => context.rigid_fit.set_profile(profile),
+                    Err(e) => context.rigid_fit.set_status(format!("Rigid profile load failed: {e}")),
+                }
+            }
+            Task::none()
+        }
+        Message::ResetRigidZero => {
+            context.rigid_fit.reset_zero();
+            Task::none()
+        }
+        Message::CaptureRigidBackground => {
+            match context.rigid_fit.capture_a1_background() {
+                Ok(raw) => context.live_fits.apply_background_snapshot(&raw),
+                Err(e) => context.rigid_fit.set_status(format!("Background: {e}")),
+            }
+            Task::none()
+        }
+        Message::SelectTrackingMode(mode) => {
+            context.tracking_mode = mode;
+            // Independent field fitting is deliberately opt-in via this
+            // visible selector; it does not require any background capture.
+            context.live_fits.set_fit_enabled(mode == TrackingMode::Independent);
+            Task::none()
+        }
+        Message::RigidFitCompleted(completion) => {
+            context.rigid_fit.apply_completion(completion);
+            Task::none()
+        }
+        Message::CopyRigidStatus => {
+            iced::clipboard::write(rigid_fit_status_text(&context.rigid_fit.summary()))
+        }
         Message::RecievedField(sensor_field) => {
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
@@ -626,6 +750,16 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             let mut tasks = Vec::new();
 
+            if let Some(job) = context.rigid_fit.receive_frame(
+                &frame,
+                context.tracking_mode == TrackingMode::Rigid6Dof,
+            ) {
+                tasks.push(Task::perform(
+                    run_rigid_fit_job(job),
+                    Message::RigidFitCompleted,
+                ));
+            }
+
             if let Some(job) = fit_job {
                 tasks.push(Task::perform(
                     run_fit_job(job),
@@ -648,6 +782,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
+            context.rigid_fit.reset_stream();
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
 
@@ -667,6 +802,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
             context.board_presence = presence;
             context.live_fits.set_presence(context.board_presence.clone());
+            context.rigid_fit.set_presence(context.board_presence.clone());
             context.sensor_traces.set_presence(context.board_presence.clone());
 
             context.stream_status = "restarting firmware stream".to_string();
@@ -720,6 +856,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             
         }
         Message::FieldStreamStopped => {
+            context.rigid_fit.reset_stream();
             context.stream_status = "idle".to_string();
             Task::none()
         },
@@ -901,6 +1038,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SelectDashboardTab(tab) => {
+            // Switching between plots does not change the selected fitter:
+            // Both always shows the same tracking mode plus sensor traces.
             context.dashboard_tab = tab;
             Task::none()
         }
@@ -967,13 +1106,69 @@ fn view(context: &Context) -> Element<'_, Message> {
         ]
     );
 
-    let live_fit_widget = {
+    let live_tracking_widget = {
         let summaries = context.live_fits.board_summaries();
 
+        let rigid = context.rigid_fit.summary();
+        let pose_label = rigid_fit_status_text(&rigid);
+        let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
+        let selected_setup = rigid.location_preset.map(|preset| preset.summary())
+            .unwrap_or_else(|| "Custom calibrated geometry (or no setup selected)".into());
+        let setup_help = if is_a1_demo {
+            if rigid.a1_background_ready {
+                "A1 background captured. Resume the motion program, then set rigid zero after an accepted fit."
+            } else {
+                "Rigid fitting waits for the A1 baseline at the G-code background pause. You can view Sensor Traces or switch to Independent fits immediately."
+            }
+        } else if rigid.location_preset.is_some() {
+            "Gamma Knife stage references specify magnet centers only. Load matching complete CT/stage board geometry and magnetic calibration JSON to track."
+        } else {
+            "Select A1 V1 for an immediate calibrated demo, or load your own complete rigid geometry JSON."
+        };
+        let fit_quality = rigid.result.as_ref()
+            .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
+                r.rmse_mt, r.sensor_count, rigid.completed.saturating_sub(rigid.rejected),
+                rigid.rejected, rigid.last_duration_ms.unwrap_or(0.0)))
+            .unwrap_or_else(|| format!("No accepted fit yet · {} completed / {} rejected",
+                rigid.completed, rigid.rejected));
+        let position_line = rigid.translation_from_zero
+            .map(|d| {
+                let magnitude = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
+                format!("X {:+.2} mm     Y {:+.2} mm     Z {:+.2} mm     |Δr| {:.2} mm",
+                    d[0], d[1], d[2], magnitude)
+            }).unwrap_or_else(|| "XYZ: waiting for accepted fit and zero".into());
+        let rotation_line = rigid.rotation_from_zero_deg
+            .map(|angle| format!("Relative rotation: {:.2}°", angle))
+            .unwrap_or_else(|| "Relative rotation: awaiting fit".into());
+        let mut rigid_content = column![
+            text("Live Tracking — joint 6-DOF rigid body"),
+            row![
+                text("Setup:"),
+                pick_list(MagnetLocationPreset::ALL.to_vec(),
+                    rigid.location_preset, Message::SelectMagnetLocations),
+                button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
+            ].spacing(8),
+            text(selected_setup),
+            text(setup_help),
+            row![
+                button("Set rigid zero").on_press(Message::ResetRigidZero),
+                text(if rigid.zero_ready { "Zero: set" } else { "Zero: awaiting fit" }),
+            ].spacing(8),
+            text(position_line),
+            text(rotation_line),
+            text(format!("Status: {}", rigid.status)),
+            text(fit_quality),
+        ].spacing(7);
+        // Always show the charts, including before the first background
+        // capture or before any fitted pose exists. The canvases display
+        // "Waiting..." rather than making the whole tracking view disappear.
+        rigid_content = rigid_content
+            .push(rigid_xyz_plot(rigid.xyz_history))
+            .push(rotation_plot(u16::MAX, rigid.rotation_history));
         let mut live_fit_content = column![
-            text("Live magnet fits by board")
-        ]
-        .spacing(12);
+            text("Independent magnet tracking — one fitted magnet per board"),
+            text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
+        ].spacing(12);
 
         if summaries.is_empty() {
             live_fit_content = live_fit_content.push(text("No detected boards"));
@@ -1015,18 +1210,24 @@ fn view(context: &Context) -> Element<'_, Message> {
                 let cadence_text = board_cadence_text(&summary);
                 let fit_status_text = board_fit_status_text(&summary);
 
+                let mut board_controls = row![
+                    text(format!("Board {}", summary.board_id)),
+                    button("Reset displacement zero")
+                        .on_press(Message::ResetBoardDisplacement(summary.board_id)),
+                    button("Calibrate magnet / set zero")
+                        .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
+                ].spacing(12);
+                // An A1 snapshot can feed all three fitting boards at once.
+                // Keep individual capture for custom/other board setups.
+                if !is_a1_demo {
+                    board_controls = board_controls.push(
+                        button("Capture board background")
+                            .on_press(Message::CaptureBoardBackground(summary.board_id))
+                    );
+                }
                 let board_card = container(
                     column![
-                        row![
-                            text(format!("Board {}", summary.board_id)),
-                            button("Capture no-magnet background")
-                                .on_press(Message::CaptureBoardBackground(summary.board_id)),
-                            button("Reset displacement zero")
-                                .on_press(Message::ResetBoardDisplacement(summary.board_id)),
-                            button("Calibrate magnet / set zero")
-                                .on_press(Message::CalibrateBoardMagnet(summary.board_id)),
-                        ]
-                        .spacing(12),
+                        board_controls,
 
                         row![
                             text("Magnet:"),
@@ -1078,7 +1279,35 @@ fn view(context: &Context) -> Element<'_, Message> {
             }
         }
 
-        container(live_fit_content)
+        let selected_content = match context.tracking_mode {
+            TrackingMode::Rigid6Dof => container(rigid_content).padding(10),
+            TrackingMode::Independent => container(live_fit_content).padding(10),
+        };
+
+        let mut mode_header = column![
+            row![
+                text("Tracking model:"),
+                pick_list(
+                    TrackingMode::ALL.to_vec(),
+                    Some(context.tracking_mode),
+                    Message::SelectTrackingMode,
+                ),
+            ].spacing(10),
+        ].spacing(7);
+
+        if is_a1_demo {
+            mode_header = mode_header.push(row![
+                button("Capture background (all 3 boards)")
+                    .on_press(Message::CaptureRigidBackground),
+                text(if rigid.a1_background_ready {
+                    "A1 background: captured"
+                } else {
+                    "A1 background: not captured (rigid fit needs it)"
+                }),
+            ].spacing(8));
+        }
+
+        container(mode_header.push(selected_content)).padding(10)
     };
 
     let sensor_trace_widget = {
@@ -1207,19 +1436,19 @@ fn view(context: &Context) -> Element<'_, Message> {
     .padding(10);
 
     let tab_selector = row![
-        button("Live fits").on_press(Message::SelectDashboardTab(DashboardTab::LiveFits)),
-        button("Sensor traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
+        button("Live Tracking").on_press(Message::SelectDashboardTab(DashboardTab::LiveTracking)),
+        button("Sensor Traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
         button("Both").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
     ]
     .spacing(8);
 
     let active_dashboard_widget = match context.dashboard_tab {
-        DashboardTab::LiveFits => live_fit_widget,
+        DashboardTab::LiveTracking => live_tracking_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
         DashboardTab::Both => {
             container(
                 row![
-                    live_fit_widget.width(Length::FillPortion(1)),
+                    live_tracking_widget.width(Length::FillPortion(1)),
                     sensor_trace_widget.width(Length::FillPortion(1)),
                 ]
                 .spacing(12)
@@ -1227,16 +1456,19 @@ fn view(context: &Context) -> Element<'_, Message> {
         }
     };
     
-    let dashboard_content = container(
-        column![
-            stream_widget,
-            tab_selector,
-            active_dashboard_widget,
-            mlx_widget,
-        ]
-        .spacing(12)
-    )
-    .width(Length::Fill);
+    let mut dashboard_sections = column![
+        stream_widget,
+        tab_selector,
+        active_dashboard_widget,
+    ].spacing(12);
+    // Keep advanced board/timing settings accessible when the independent
+    // tracking mode is selected, without adding a fourth dashboard tab.
+    if context.dashboard_tab == DashboardTab::LiveTracking
+        && context.tracking_mode == TrackingMode::Independent
+    {
+        dashboard_sections = dashboard_sections.push(mlx_widget);
+    }
+    let dashboard_content = container(dashboard_sections).width(Length::Fill);
 
     let dashboard = scrollable(dashboard_content)
         .width(Length::Fill)
@@ -1251,15 +1483,45 @@ fn view(context: &Context) -> Element<'_, Message> {
     ]
     .spacing(8);
 
-    column![
+    let mut content = column![
         scale_controls,
         serial_selector,
-        ping_widget,
-        dashboard,
-    ]
-    .spacing(10)
-    .padding(10)
-    .into()
+    ].spacing(10);
+    if context.dashboard_tab == DashboardTab::LiveTracking
+        && context.tracking_mode == TrackingMode::Independent
+    {
+        content = content.push(ping_widget);
+    }
+    content.push(dashboard).padding(10).into()
+}
+
+#[cfg(test)]
+mod tracking_mode_ui_tests {
+    use super::*;
+
+    #[test]
+    fn algorithm_selection_is_independent_of_the_three_plot_tabs() {
+        let mut context = Context::default();
+        assert_eq!(context.dashboard_tab, DashboardTab::LiveTracking);
+        assert_eq!(context.tracking_mode, TrackingMode::Rigid6Dof);
+        assert!(!context.live_fits.fit_enabled());
+
+        let _ = update(&mut context, Message::SelectTrackingMode(TrackingMode::Independent));
+        assert_eq!(context.tracking_mode, TrackingMode::Independent);
+        assert!(context.live_fits.fit_enabled());
+        // No background capture is required to activate independent fitting.
+        assert!(!context.live_fits.board_summaries().iter().any(|b| b.has_background));
+
+        let _ = update(&mut context, Message::SelectDashboardTab(DashboardTab::SensorTraces));
+        assert!(context.live_fits.fit_enabled());
+        let _ = update(&mut context, Message::SelectDashboardTab(DashboardTab::Both));
+        assert_eq!(context.tracking_mode, TrackingMode::Independent);
+        assert!(context.live_fits.fit_enabled());
+
+        let _ = update(&mut context, Message::SelectTrackingMode(TrackingMode::Rigid6Dof));
+        assert!(!context.live_fits.fit_enabled());
+        assert_eq!(context.dashboard_tab, DashboardTab::Both);
+    }
 }
 
 #[tokio::main]

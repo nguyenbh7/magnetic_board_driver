@@ -11,6 +11,9 @@ const MOMENT_NORM_PRIOR_WEIGHT_MT: f64 = 0.25;
 pub struct BoardLiveFits {
     boards: BTreeMap<u16, BoardLiveFitState>,
     presence: BoardPresence,
+    // Keep complete frames/background snapshots in both UI modes,
+    // but never launch expensive independent fitting unless requested.
+    fit_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +214,37 @@ impl Default for MagnetPreset {
 }
 
 impl BoardLiveFits {
+    pub fn fit_enabled(&self) -> bool { self.fit_enabled }
+
+    pub fn set_fit_enabled(&mut self, enabled: bool) {
+        if self.fit_enabled == enabled { return; }
+        self.fit_enabled = enabled;
+        for board in self.boards.values_mut() {
+            // Any in-flight completion from the previous fitting state is stale.
+            board.fit_generation = board.fit_generation.wrapping_add(1);
+            board.fit_in_progress = false;
+            board.result = None;
+            board.origin = None;
+            board.start_time_us = None;
+            board.last_fit_time_us = None;
+            board.displacement_history.clear();
+        }
+    }
+
+    /// Use the *same* raw three-board snapshots as the rigid A1 fitter.
+    /// Call only after that fitter has successfully captured complete frames;
+    /// the individual fits retain their own field/model conventions.
+    pub fn apply_background_snapshot(&mut self, raw_mt: &[[[f64; 3]; 16]; 3]) {
+        for (id, frame) in raw_mt.iter().enumerate() {
+            if let Some(board) = self.boards.get_mut(&(id as u16)) {
+                let background = frame.iter().enumerate()
+                    .map(|(index, field)| (index as u8, *field))
+                    .collect::<BTreeMap<_, _>>();
+                board.set_background(background);
+            }
+        }
+    }
+
     pub fn set_presence(&mut self, presence: BoardPresence) {
         self.presence = presence;
 
@@ -258,11 +292,12 @@ impl BoardLiveFits {
 
         let board_id = field.board_id;
         let expected_sensor_count = self.expected_sensor_count(board_id).unwrap_or(16);
+        let fit_enabled = self.fit_enabled;
 
         let board = self.boards.entry(board_id).or_default();
 
         if let Some(frame) = board.current_frame.update(field, expected_sensor_count) {
-            return board.update_from_completed_frame(frame);
+            return board.update_from_completed_frame(frame, fit_enabled);
         }
 
         None
@@ -384,7 +419,7 @@ pub struct BoardFitSummary {
     pub last_fit_duration_ms: Option<f64>,
 }
 impl BoardLiveFitState {
-    fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame) -> Option<FitJob> {
+    fn update_from_completed_frame(&mut self, frame: CompletedBoardFrame, fit_enabled: bool) -> Option<FitJob> {
         let frame_mid_time_us =
             frame.frame_start_time_us
                 + (frame.frame_end_time_us.saturating_sub(frame.frame_start_time_us) / 2);
@@ -422,6 +457,10 @@ impl BoardLiveFitState {
         }
 
         self.latest_raw_samples = raw_samples.clone();
+
+        // Diagnostics may be hidden, but this cached complete frame is still
+        // needed for background capture and cadence/board availability.
+        if !fit_enabled { return None; }
 
         if self.fit_in_progress {
             return None;
@@ -571,6 +610,10 @@ impl BoardLiveFitState {
             .map(|sample| (sample.sensor_index, sample.field))
             .collect::<BTreeMap<_, _>>();
 
+        self.set_background(background);
+    }
+
+    fn set_background(&mut self, background: BTreeMap<u8, [f64; 3]>) {
         self.background = Some(background);
 
         // Existing calibration and displacement zero are no longer valid
@@ -982,4 +1025,42 @@ fn determinant_3x3(a: [[f64; 3]; 3]) -> f64 {
     a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+}
+#[cfg(test)]
+mod ui_background_tests {
+    use super::*;
+
+    #[test]
+    fn one_a1_snapshot_populates_all_three_board_backgrounds() {
+        let mut live = BoardLiveFits::default();
+        live.set_presence(BoardPresence {
+            board_mask: 0b111,
+            sensor_masks: [0xffff; 3],
+        });
+        assert!(!live.fit_enabled()); // default live-demo mode
+        let mut snapshot = [[[0.0; 3]; 16]; 3];
+        for board in 0..3 {
+            for sensor in 0..16 {
+                snapshot[board][sensor] = [
+                    board as f64, sensor as f64 / 100.0,
+                    (board * 16 + sensor) as f64 / 1000.0
+                ];
+            }
+        }
+        live.apply_background_snapshot(&snapshot);
+        for board in 0..3 {
+            let fitted = &live.boards[&(board as u16)];
+            let background = fitted.background.as_ref().expect("shared background available");
+            assert_eq!(background.len(), 16);
+            for sensor in 0..16 {
+                assert_eq!(background[&(sensor as u8)], snapshot[board][sensor]);
+            }
+        }
+        live.set_fit_enabled(true);
+        assert!(live.fit_enabled());
+        live.set_fit_enabled(false);
+        assert!(!live.fit_enabled());
+        // Pause doesn't remove the captured background.
+        assert!(live.boards[&0].background.is_some());
+    }
 }
