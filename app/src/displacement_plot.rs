@@ -9,13 +9,24 @@ const PLOT_HEIGHT: f32 = 180.0;
 pub struct DisplacementPlot {
     board_id: u16,
     points: Vec<DisplacementPoint>,
+    angular: bool,
 }
 
 pub fn displacement_plot<Message: 'static>(
     board_id: u16,
     points: Vec<DisplacementPoint>,
 ) -> Element<'static, Message> {
-    canvas(DisplacementPlot { board_id, points })
+    canvas(DisplacementPlot { board_id, points, angular: false })
+        .width(Length::Fill)
+        .height(Length::Fixed(PLOT_HEIGHT))
+        .into()
+}
+
+pub fn rotation_plot<Message: 'static>(
+    board_id: u16,
+    points: Vec<DisplacementPoint>,
+) -> Element<'static, Message> {
+    canvas(DisplacementPlot { board_id, points, angular: true })
         .width(Length::Fill)
         .height(Length::Fixed(PLOT_HEIGHT))
         .into()
@@ -56,7 +67,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
 
         draw_label(
             &mut frame,
-            "Displacement (mm)",
+            if self.angular { "Rotation (deg)" } else { "Displacement (mm)" },
             Point::new(plot_left, 2.0),
             11.0,
             label_color,
@@ -209,7 +220,7 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
 
             draw_label(
                 &mut frame,
-                format!("{:.2} mm @ {:.1} s", last.displacement_mm, last.time_s),
+                format!("{:.2} {} @ {:.1} s", last.displacement_mm, if self.angular { "deg" } else { "mm" }, last.time_s),
                 Point::new(plot_right - 112.0, plot_top + 4.0),
                 11.0,
                 label_color,

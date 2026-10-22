@@ -12,7 +12,8 @@ defmt = "0.3"
 defmt-rtt = "0.4"
 
 postcard = { version = "1.0.10", features = ["embedded-io-06", "use-std"] }
-serde = { version = "1.0.215", default-features = false }
+serde = { version = "1.0.215", default-features = false, features = ["derive"] }
+serde_json = "1.0"
 data_transfer = {path="../data_transfer", features=["use-std"]}
 serialport = "4.6.0"
 embedded-io = { version = "0.6.1", features = ["std"] }
