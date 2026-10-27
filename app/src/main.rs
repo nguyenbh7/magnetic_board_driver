@@ -1054,7 +1054,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                 "Select a new .bin filename before starting the stream.".to_string()
             } else { context.log_notice.clone() }),
             text("Logging: 1. Select File (new filename). 2. Start Field Stream. 3. Stop Field Stream to pause; restarting appends to the open log. 4. Stop logging to flush and close."),
-            text("A stream without a selected file is live-only (unsaved). After Stop logging, select a NEW filename. Existing files are protected."),
+            text("Stop logging closes the file but does not stop the stream. Streaming without a selected log is live-only (unsaved). Choose a NEW filename for the next experiment; existing files are protected."),
         ]
     );
 
