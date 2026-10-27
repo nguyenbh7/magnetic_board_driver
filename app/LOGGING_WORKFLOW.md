@@ -4,6 +4,10 @@ The desktop app records `MLXBF002` compact board-frame binary logs.
 
 ## Workflow
 
+The desktop app groups the instructions, file-selection controls, current/last
+filename, log status, and warnings inside a **Measurement logging** bordered
+panel. Follow the numbered instructions shown at the top of the panel.
+
 1. Select **Select File** and choose a **new** `.bin` filename. The app creates
    that file with the `MLXBF002` header, and refuses names that already exist.
 2. Click **Start Field Stream** to begin acquiring data. The active sensor
