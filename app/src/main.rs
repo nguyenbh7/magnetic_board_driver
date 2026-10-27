@@ -114,7 +114,8 @@ enum Message {
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
     StopLogging,
-    WroteFile(usize),
+    WroteFile(Result<usize, String>),
+    LogFlushed(Result<(), String>),
     UpdateMlxGain(String),
     UpdateMlxResolution(String),
     UpdateMlxHallConf(String),
@@ -214,6 +215,11 @@ struct Context {
     log_queue: VecDeque<BoardFrame>,
     log_write_in_progress: bool,
     log_stop_requested: bool,
+    log_finalize_in_progress: bool,
+    log_write_failed: bool,
+    log_file_dialog_open: bool,
+    log_file_path: Option<PathBuf>,
+    log_notice: String,
     stream_status: String,
     received_stream_frames: u64,
 }
@@ -435,7 +441,7 @@ fn log_status_text(context: &Context) -> String {
         let state = if context.log_stop_requested {
             "stopping"
         } else {
-            "recording"
+            if context.stream_status == "receiving" { "recording" } else { "open / waiting for stream" }
         };
         let pending = context.log_queue.len()
             + if context.log_write_in_progress { 1 } else { 0 };
@@ -483,6 +489,8 @@ fn all_diagnostics_text(context: &Context) -> String {
         context.received_stream_frames,
     ));
     lines.push(log_status_text(context));
+    if !context.log_notice.is_empty() { lines.push(format!("Log notice: {}", context.log_notice)); }
+    if let Some(path) = &context.log_file_path { lines.push(format!("Log filename (current or last): {}", path.display())); }
     lines.push(rigid_fit_status_text(&context.rigid_fit.summary()));
 
     for summary in context.live_fits.board_summaries() {
@@ -507,7 +515,7 @@ fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
     let dialog = rfd::AsyncFileDialog::new()
-        .set_title("Open a file...")
+        .set_title("Select a NEW log filename (existing files are protected)")
         .set_directory("/")
         .add_filter("bin", &["bin"])
         .set_parent(&window);
@@ -557,47 +565,60 @@ async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscrip
     Some(SensorSubscription::new(subs))
 }
 
-async fn write_frame_data(writer: &Mutex<BufWriter<File>>, frame: &BoardFrame) -> usize {
+
+ // Never truncate a previous recording. The existence check and create are atomic.
+fn create_new_log(path: &std::path::Path) -> std::io::Result<BufWriter<File>> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(b"MLXBF002")?;
+    writer.flush()?;
+    Ok(writer)
+}
+
+async fn write_frame_data(
+    writer: &Mutex<BufWriter<File>>,
+    frame: &BoardFrame,
+) -> Result<usize, String> {
     let mut writer = writer.lock().await;
     let mut data = [0; BoardFrame::POSTCARD_MAX_SIZE];
-
-    if let Ok(encoded) = postcard::to_slice(frame, &mut data) {
-        let length = (encoded.len() as u32).to_le_bytes();
-        if writer.write_all(&length).is_ok() && writer.write_all(encoded).is_ok() {
-            return length.len() + encoded.len();
-        }
-    }
-
-    0
+    let encoded = postcard::to_slice(frame, &mut data)
+        .map_err(|err| format!("Failed to encode BoardFrame: {err}"))?;
+    let length = (encoded.len() as u32).to_le_bytes();
+    writer.write_all(&length).map_err(|err| err.to_string())?;
+    writer.write_all(encoded).map_err(|err| err.to_string())?;
+    Ok(length.len() + encoded.len())
 }
 
 fn next_log_write_task(context: &mut Context) -> Option<Task<Message>> {
-    if context.log_write_in_progress {
+    if context.log_write_in_progress || context.log_finalize_in_progress {
         return None;
     }
 
-    let Some(frame) = context.log_queue.pop_front() else {
-        if context.log_stop_requested {
-            context.file_writer = None;
-            context.log_started_at = None;
-            context.log_stop_requested = false;
+    if let Some(frame) = context.log_queue.pop_front() {
+        let Some(writer) = context.file_writer.as_ref().cloned() else {
+            context.log_queue.clear();
+            return None;
+        };
+        context.log_write_in_progress = true;
+        return Some(Task::perform(
+            async move { write_frame_data(&*writer, &frame).await },
+            Message::WroteFile,
+        ));
+    }
+
+    if context.log_stop_requested {
+        if let Some(writer) = context.file_writer.as_ref().cloned() {
+            context.log_finalize_in_progress = true;
+            return Some(Task::perform(
+                async move { writer.lock().await.flush().map_err(|err| err.to_string()) },
+                Message::LogFlushed,
+            ));
         }
-        return None;
-    };
-
-    let Some(writer) = context.file_writer.as_ref().cloned() else {
-        context.log_queue.clear();
-        return None;
-    };
-
-    context.log_write_in_progress = true;
-
-    Some(Task::perform(
-        async move {
-            write_frame_data(&*writer, &frame).await
-        },
-        Message::WroteFile,
-    ))
+    }
+    None
 }
 
 async fn stop_field_stream(client: HostClient<WireError>) -> () {
@@ -865,37 +886,94 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
 
         Message::SelectFile => {
+            if context.file_writer.is_some() || context.log_stop_requested {
+                context.log_notice = "Close the current log before selecting another file.".into();
+                return Task::none();
+            }
+            if context.log_file_dialog_open {
+                return Task::none();
+            }
+            context.log_file_dialog_open = true;
             iced::window::oldest()
                 .and_then(|id| iced::window::run(id, open_file))
                 .then(Task::future)
                 .map(Message::FileOpened)
         },
-        Message::FileOpened(fh) => {
-            if let Ok(fh) = fh {
-                let path = fh.path();
-                let file = File::create(path).unwrap();
-                let mut writer = BufWriter::new(file);
-                let _ = writer.write_all(b"MLXBF002");
-                let writer = Arc::new(Mutex::new(writer));
-                context.file_writer = Some(writer);
-                context.logged_bytes = 8;
-                context.log_started_at = Some(std::time::Instant::now());
-                context.log_queue.clear();
-                context.log_write_in_progress = false;
-                context.log_stop_requested = false;
+        Message::FileOpened(picked) => {
+            context.log_file_dialog_open = false;
+            if context.file_writer.is_some() || context.log_stop_requested {
+                context.log_notice = "File selection ignored: a log is active.".into();
+                return Task::none();
+            }
+            if let Ok(handle) = picked {
+                let path = handle.path().to_path_buf();
+                match create_new_log(&path) {
+                    Ok(writer) => {
+                        context.file_writer = Some(Arc::new(Mutex::new(writer)));
+                        context.log_file_path = Some(path.clone());
+                        context.logged_bytes = 8;
+                        context.log_started_at = Some(std::time::Instant::now());
+                        context.log_queue.clear();
+                        context.log_write_in_progress = false;
+                        context.log_stop_requested = false;
+                        context.log_finalize_in_progress = false;
+                        context.log_write_failed = false;
+                        context.log_notice = format!(
+                            "New log created: {}. Start Field Stream to record.", path.display()
+                        );
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        context.log_notice = format!(
+                            "EXISTING FILE PROTECTED: {}. Select a different filename.",
+                            path.display()
+                        );
+                    }
+                    Err(err) => {
+                        context.log_notice = format!("Cannot create log {}: {err}", path.display());
+                    }
+                }
             }
             Task::none()
         },
         Message::StopLogging => {
+            if context.file_writer.is_none() || context.log_stop_requested {
+                return Task::none();
+            }
             context.log_stop_requested = true;
-
-            next_log_write_task(context).unwrap_or_else(|| Task::none())
+            context.log_notice = "Stopping log: draining frames and flushing to disk...".into();
+            next_log_write_task(context).unwrap_or_else(Task::none)
         },
-        Message::WroteFile(bytes_written) => {
-            context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
+        Message::WroteFile(result) => {
             context.log_write_in_progress = false;
-
-            next_log_write_task(context).unwrap_or_else(|| Task::none())
+            match result {
+                Ok(bytes_written) => {
+                    context.logged_bytes = context.logged_bytes.saturating_add(bytes_written as u64);
+                }
+                Err(err) => {
+                    context.log_write_failed = true;
+                    context.log_queue.clear();
+                    context.log_stop_requested = true;
+                    context.log_notice = format!(
+                        "LOG WRITE ERROR: {err}. Stopped recording; inspect file integrity."
+                    );
+                }
+            }
+            next_log_write_task(context).unwrap_or_else(Task::none)
+        },
+        Message::LogFlushed(result) => {
+            context.file_writer = None;
+            context.log_started_at = None;
+            context.log_stop_requested = false;
+            context.log_finalize_in_progress = false;
+            context.log_notice = match result {
+                Err(err) => format!(
+                    "LOG FLUSH ERROR: {err}. Inspect file integrity before use."
+                ),
+                Ok(()) if context.log_write_failed =>
+                    "Log closed following a write error; inspect file integrity.".into(),
+                Ok(()) => "Log flushed and closed. Select a NEW filename next time.".into(),
+            };
+            Task::none()
         },
         Message::UpdateMlxGain(s) => {
             context.mlx_gain = s;
@@ -1077,6 +1155,18 @@ fn view(context: &Context) -> Element<'_, Message> {
         text(format!("z: {:.2}", context.ping_field.as_ref().map(|f| f.field.z.map(|z| z.value()).unwrap_or(0.0)).unwrap_or(0.0))),
     ]);
 
+    let mut select_log_button = button("Select File");
+    if context.file_writer.is_none() && !context.log_file_dialog_open {
+        select_log_button = select_log_button.on_press(Message::SelectFile);
+    }
+    let mut stop_log_button = button("Stop logging");
+    if context.file_writer.is_some() && !context.log_stop_requested {
+        stop_log_button = stop_log_button.on_press(Message::StopLogging);
+    }
+    let log_path_label = context.log_file_path.as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "None selected".into());
+
     let stream_widget = container(
         column![
             row![
@@ -1100,12 +1190,13 @@ fn view(context: &Context) -> Element<'_, Message> {
                 button("Copy log stats").on_press(Message::CopyLogStatus),
             ]
             .spacing(8),
-            row![
-                text("File output: "),
-                text_input("File", &context.ping_args.sensor),
-                button("Select File").on_press(Message::SelectFile),
-                button("Stop logging").on_press(Message::StopLogging)
-            ]
+            row![text("File output:"), select_log_button, stop_log_button].spacing(8),
+            text(format!("Current / last log: {log_path_label}")),
+            text(if context.log_notice.is_empty() {
+                "Select a new .bin filename before starting the stream.".to_string()
+            } else { context.log_notice.clone() }),
+            text("Logging: 1. Select File (new filename). 2. Start Field Stream. 3. Stop Field Stream to pause; restarting appends to the open log. 4. Stop logging to flush and close."),
+            text("A stream without a selected file is live-only (unsaved). After Stop logging, select a NEW filename. Existing files are protected."),
         ]
     );
 
@@ -1532,4 +1623,42 @@ pub async fn main() -> iced::Result {
     iced::application(Context::default, update, view)
         .scale_factor(ui_scale_factor)
         .run()
+}
+
+#[cfg(test)]
+mod logging_safety_tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fresh_test_path() -> PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
+            .expect("System clock before Unix epoch").as_nanos();
+        std::env::temp_dir().join(format!(
+            "mlx_logging_protection_{}_{}.bin", std::process::id(), nanos
+        ))
+    }
+
+    #[test]
+    fn existing_log_is_preserved_byte_for_byte() {
+        let path = fresh_test_path();
+        let original = b"MLXBF002 original experiment data";
+        fs::write(&path, original).expect("Create pre-existing log");
+        let err = create_new_log(&path).expect_err("Refuse to overwrite existing log");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn new_log_has_magic_and_cannot_be_reopened() {
+        let path = fresh_test_path();
+        let writer = create_new_log(&path).expect("Create new log");
+        drop(writer);
+        assert_eq!(fs::read(&path).unwrap(), b"MLXBF002");
+        let err = create_new_log(&path).expect_err("Refuse repeated file selection");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"MLXBF002");
+        fs::remove_file(path).unwrap();
+    }
 }
