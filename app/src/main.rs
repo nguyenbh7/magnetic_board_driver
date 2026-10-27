@@ -1025,14 +1025,44 @@ fn view(context: &Context) -> Element<'_, Message> {
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "None selected".into());
 
-    let stream_widget = container(
+    // Keep the complete acquisition workflow in one visually distinct panel.
+    // The instructions deliberately precede Select File and the stream controls.
+    let logging_panel = container(
         column![
+            text("Measurement logging").size(18),
+            text("1. Select File: choose a new, unique .bin filename."),
+            text("2. Start Field Stream: begin acquiring and saving sensor measurements."),
+            text("3. Stop Field Stream to pause; Start Field Stream again to append to the open log."),
+            text("4. Stop logging: finish queued writes, flush the file, and close it."),
+            row![
+                select_log_button,
+                stop_log_button,
+            ].spacing(8),
             row![
                 button("Start Field Stream").on_press(Message::StartFieldStream),
                 button("Stop Field Stream").on_press(Message::StopFieldStream),
-                button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
-            ]
-            .spacing(8),
+            ].spacing(8),
+            text(format!("Current / last log: {log_path_label}")),
+            row![
+                text(log_status_text(context)),
+                button("Copy log stats").on_press(Message::CopyLogStatus),
+            ].spacing(8),
+            text(if context.log_notice.is_empty() {
+                "Select a new .bin filename before starting the stream.".to_string()
+            } else {
+                context.log_notice.clone()
+            }),
+            text("Existing files are protected. Stop logging does not stop the field stream; streaming without an open log displays live data without saving."),
+        ]
+        .spacing(6),
+    )
+    .padding(12)
+    .width(Length::Fill)
+    .style(iced::widget::container::bordered_box);
+
+    let stream_widget = container(
+        column![
+            logging_panel,
             text(format!(
                 "Stream: {} · host frames received {}",
                 if context.stream_status.is_empty() {
@@ -1043,19 +1073,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                 context.received_stream_frames,
             )),
             text(board_presence_text(&context.board_presence)),
-            row![
-                text(log_status_text(context)),
-                button("Copy log stats").on_press(Message::CopyLogStatus),
-            ]
-            .spacing(8),
-            row![text("File output:"), select_log_button, stop_log_button].spacing(8),
-            text(format!("Current / last log: {log_path_label}")),
-            text(if context.log_notice.is_empty() {
-                "Select a new .bin filename before starting the stream.".to_string()
-            } else { context.log_notice.clone() }),
-            text("Logging: 1. Select File (new filename). 2. Start Field Stream. 3. Stop Field Stream to pause; restarting appends to the open log. 4. Stop logging to flush and close."),
-            text("Stop logging closes the file but does not stop the stream. Streaming without a selected log is live-only (unsaved). Choose a NEW filename for the next experiment; existing files are protected."),
+            button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
         ]
+        .spacing(10),
     );
 
     let live_fit_widget = {
