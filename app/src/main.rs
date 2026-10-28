@@ -98,6 +98,7 @@ enum Message {
     CbctProgressTick,
     CancelCbctImport,
     ToggleCbctLog,
+    ToggleCbctDetails,
     CopyCbctCoordinates,
     CaptureRigidBackground,
     SelectTrackingMode(TrackingMode),
@@ -221,6 +222,7 @@ struct Context {
     cbct_progress: Option<Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>>,
     cbct_started: Option<std::time::Instant>,
     cbct_show_log: bool,
+    cbct_show_details: bool,
     cbct_last_log: String,
     mlx_gain: String,
     mlx_resolution: String,
@@ -801,6 +803,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 );
                 context.cbct_geometry = None;
                 context.cbct_last_log.clear();
+                context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
                 context.cbct_progress = Some(Arc::clone(&progress));
                 context.cbct_started = Some(std::time::Instant::now());
@@ -848,6 +851,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 }
                 context.cbct_status = "Cancelling detection...".into();
             }
+            Task::none()
+        }
+        Message::ToggleCbctDetails => {
+            context.cbct_show_details = !context.cbct_show_details;
             Task::none()
         }
         Message::ToggleCbctLog => {
@@ -1423,36 +1430,59 @@ fn view(context: &Context) -> Element<'_, Message> {
                     rigid.location_preset, Message::SelectMagnetLocations),
                 button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
             ].spacing(8),
+            text("DICOM geometry — CT preview"),
             row![
-                button("Import DICOM ZIP").on_press(Message::ImportCbctZip),
-                button("Import DICOM folder").on_press(Message::ImportCbctFolder),
-                button("Open CT detections.json").on_press(Message::LoadCbctDetectionsJson),
-                if context.cbct_geometry.is_some() {
-                    button("Copy all CT positions").on_press(Message::CopyCbctCoordinates)
-                } else {
-                    button("Copy all CT positions")
-                },
+                button("Import ZIP").on_press(Message::ImportCbctZip),
+                button("Import folder").on_press(Message::ImportCbctFolder),
+                button("Open detections.json").on_press(Message::LoadCbctDetectionsJson),
             ].spacing(8),
             text(if context.cbct_status.is_empty() {
-                "CBCT: no initial geometry imported"
-            } else { context.cbct_status.as_str() }),
+                "No DICOM geometry imported".to_string()
+            } else { context.cbct_status.clone() }),
+            // Animated activity indicator: NOT a measured percentage. Detection
+            // stages currently provide no reliable work denominator.
+            text(if let Some(start) = context.cbct_started {
+                let slot = (start.elapsed().as_millis() / 250 % 20) as usize;
+                let mut cells = vec!['░'; 20];
+                for offset in 0..5 { cells[(slot + offset) % 20] = '█'; }
+                format!("{}  Working · {:.0}s elapsed", cells.into_iter().collect::<String>(),
+                    start.elapsed().as_secs_f64())
+            } else { String::new() }),
             row![
-                text(context.cbct_started.map(|start| format!("Elapsed: {:.0}s", start.elapsed().as_secs_f64()))
-                    .unwrap_or_default()),
                 if context.cbct_importing {
                     button("Cancel detection").on_press(Message::CancelCbctImport)
-                } else { button("Cancel detection") },
-                button(if context.cbct_show_log { "Hide detection log" } else { "Show detection log" })
+                } else {
+                    button("Cancel detection")
+                },
+                button(if context.cbct_show_log { "Hide log" } else { "Show log" })
                     .on_press(Message::ToggleCbctLog),
+                button(if context.cbct_show_details { "Hide details" } else { "Show details" })
+                    .on_press(Message::ToggleCbctDetails),
+                if context.cbct_geometry.is_some() {
+                    button("Copy CT positions").on_press(Message::CopyCbctCoordinates)
+                } else {
+                    button("Copy CT positions")
+                },
             ].spacing(8),
+            text(context.cbct_geometry.as_ref().map(|geometry| {
+                format!("{} · {} magnets · {} sensor arrays ({} chips) · {} glass BB candidate\nUnreviewed CT geometry only — magnetic calibration and HDMM identity not verified.",
+                    geometry.scan_path.file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default(),
+                    geometry.magnets.len(), geometry.arrays.len(),
+                    geometry.arrays.iter().map(|a|a.detected_chip_positions_lps_mm.len()).sum::<usize>(),
+                    geometry.markers.len())
+            }).unwrap_or_default()),
+            text(if context.cbct_show_details {
+                context.cbct_geometry.as_ref()
+                    .map(|geometry| geometry.summary())
+                    .unwrap_or_else(|| "No geometry results to display.".into())
+            } else { String::new() }),
             text(if context.cbct_show_log {
                 context.cbct_progress.as_ref()
                     .and_then(|p| p.lock().ok().map(|state| state.log.join("\n")))
-                    .unwrap_or_else(|| context.cbct_last_log.clone())
+                    .unwrap_or_else(|| if context.cbct_last_log.is_empty() {
+                        "No detection log available.".into()
+                    } else { context.cbct_last_log.clone() })
             } else { String::new() }),
-            text(context.cbct_geometry.as_ref()
-                .map(|geometry| geometry.summary())
-                .unwrap_or_else(|| "CT geometry preview is separate from the live magnetic calibration.                 Import a ZIP/DICOM folder or load previously detected CT results.".to_string())),
             text(selected_setup),
             text(setup_help),
             row![
