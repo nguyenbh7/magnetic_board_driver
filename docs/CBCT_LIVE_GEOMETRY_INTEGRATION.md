@@ -212,6 +212,40 @@ compare physical cabling/JST orientation and controlled
 one-board-at-a-time perturbations. Only independently verified
 calibrations should be exported to the live Rust profile.
 
+## Two Hall-to-CBCT mapping screens: ambiguous, not approved (2026-10-27)
+
+Using the **same** 461-frame October-23 Hall recording with the
+separate Scan 1 and Scan 2 geometry exports, candidate raw board
+assignments ranked first in both:
+`raw0→Superior` (r=0.948/0.972),
+`raw1→Right` (r=0.483/0.449),
+`raw2→Left` (r=0.804/0.795).
+Scan 1 top vs runner-up objective scores were nearly tied
+(1.778724 / 1.778077); Scan 2 separated them more clearly
+(1.776955 / 1.460707). Raw 1 remains weak and its
+Scan 2 top two D4 sensor mappings are also effectively tied.
+
+The proposed left-board D4 mapping differs between scans:
+`rot90_flip` (Scan 1), `rot270` (Scan 2).
+This could be a DICOM detector grid-ordering ambiguity rather
+than physical board motion; do **not** approve either transform
+yet. A new research-repo
+`tools/cbct_bridge/audit_cbct_sensor_indexing.py`
+compares both scans' 16 physical chip coordinates after board
+registration to distinguish detector relabeling from inconsistent
+candidate maps. Four synthetic tests have been committed but
+the new script has not yet been run on the real scans.
+The previous 18 bridge tests passed in Windows.
+
+No mapping has been approved for the Rust live profile.
+The magnetic pattern screen ignores full three-magnet
+finite-cylinder vector fields, backgrounds, sensor gains,
+field-axis transforms and physical polarity. The acquisition
+is a short stationary recording, so both CBCT screening runs
+are not independent confirmation. Physical board identification
+and calibration remain necessary before direct CBCT import
+can safely activate tracking.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
