@@ -184,6 +184,22 @@ public repositories unless properly approved/de-identified.
 Record only appropriate provenance and reproduceable algorithms in Git.
 
 
-## First bridge prototype (2026-10-27)
+## Implemented Python bridge (2026-10-27)
 
-The initial standalone Python bridge now exists as a downloadable source bundle in the ChatGPT conversation. It includes a 50-function notebook-derived detector library, a DICOM folder/ZIP CLI, JSON detections and calibration template generation, a fail-closed Rust RigidProfile adapter, and synthetic unit tests. Nine adapter unit tests passed. Full CBCT processing remains unverified here because SimpleITK/TorchIO were unavailable. **Do not mistake this bundle for an already-installed or production-ready part of the Rust app.** To bring it under source control, add the reviewed bundle files to the analysis repository and run them on the two October-23 CBCT datasets, then verify magnetic calibration before enabling live fits.
+The Python bridge source is now maintained in
+[`hall-effect-motion-tracking/tools/cbct_bridge/`](https://github.com/nguyenbh7/hall-effect-motion-tracking/tree/a1-calibration/tools/cbct_bridge)
+on `a1-calibration`, **not** only as a ChatGPT ZIP. The module
+`detector_core.py` contains the 50 importable functions extracted from the
+collaborator's notebook; the folder also includes `cbct_detect.py`,
+`make_calibration_template.py`, `build_rigid_profile.py`,
+`generate_detector.py`, `requirements.txt`, `tests/test_bridge.py`,
+and an operator README. Nine synthetic adapter tests passed locally.
+The detector has **not** yet been validated by rerunning the two CBCT ZIPs
+with the required SimpleITK/TorchIO dependencies.
+
+The Rust GUI integration remains proposed; the current application already
+supports manually loading the exported, reviewed `RigidProfile.json`.
+No raw DICOM, scan outputs, calibration containing patient identifiers,
+or unapproved geometry was committed. Next test on the lab machine:
+`python -m unittest discover -s tests -v` from
+`tools/cbct_bridge`, followed by both CBCT scan CLI runs and image QC.
