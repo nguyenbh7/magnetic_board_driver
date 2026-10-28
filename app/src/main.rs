@@ -1393,22 +1393,12 @@ fn view(context: &Context) -> Element<'_, Message> {
 
         let rigid = context.rigid_fit.summary();
         let pose_label = rigid_fit_status_text(&rigid);
-        let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
         let profile_status = if let Some(name) = &rigid.profile_name {
             format!("Active profile: {name}")
         } else if rigid.location_preset.is_some() {
             "Profile: calibration required (setup reference only)".to_string()
         } else {
             "Active profile: none — load a calibrated Gamma Knife profile".to_string()
-        };
-        let setup_help = if is_a1_demo {
-            if rigid.a1_background_ready {
-                "A1 background captured; set zero after an accepted fit."
-            } else {
-                "A1 fitting requires a background measurement at the G-code pause."
-            }
-        } else {
-            ""
         };
         let fit_quality = rigid.result.as_ref()
             .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
@@ -1425,7 +1415,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         let rotation_line = rigid.rotation_from_zero_deg
             .map(|angle| format!("Relative rotation: {:.2}°", angle))
             .unwrap_or_else(|| "Relative rotation: awaiting fit".into());
-        let mut rigid_content = column![
+        let dicom_panel = container(column![
             text("DICOM Geometry — CT preview"),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
@@ -1479,16 +1469,19 @@ fn view(context: &Context) -> Element<'_, Message> {
                         "No detection log available.".into()
                     } else { context.cbct_last_log.clone() })
             } else { String::new() }),
-            text("Tracking Configuration"),
-            row![
-                text("Setup:"),
-                pick_list(MagnetLocationPreset::GK_SETUP_OPTIONS.to_vec(),
-                    rigid.location_preset, Message::SelectMagnetLocations),
-                button("Load calibrated profile (.json)").on_press(Message::LoadRigidProfile),
-            ].spacing(8),
+        ].spacing(6))
+        .padding(12)
+        .width(Length::Fill)
+        .style(iced::widget::container::bordered_box);
+
+        // DICOM imports are unreviewed geometry, never a tracking profile.
+        // Historical A1/stage presets remain available in the implementation,
+        // but no preset selection is required for the GK import workflow.
+        let tracking_panel = container(column![
+            text("Tracking Configuration & Controls"),
+            text("Model: Joint 6-DOF rigid body"),
+            button("Load calibrated profile (.json)").on_press(Message::LoadRigidProfile),
             text(profile_status),
-            text(setup_help),
-            text("Live Tracking — joint 6-DOF"),
             row![
                 if rigid.result.is_some() {
                     button("Set rigid zero").on_press(Message::ResetRigidZero)
@@ -1501,7 +1494,12 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(rotation_line),
             text(format!("Status: {}", rigid.status)),
             text(fit_quality),
-        ].spacing(7);
+        ].spacing(6))
+        .padding(12)
+        .width(Length::Fill)
+        .style(iced::widget::container::bordered_box);
+
+        let mut rigid_content = column![dicom_panel, tracking_panel].spacing(12);
         // Always show the charts, including before the first background
         // capture or before any fitted pose exists. The canvases display
         // "Waiting..." rather than making the whole tracking view disappear.
