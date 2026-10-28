@@ -684,6 +684,26 @@ The source ZIP includes no autosave/backups
 or generated Gerbers. Do not mistake the
 README existing for successful asset upload.
 
+## Windows 51/51 corrected-index regression tests passed (2026-10-28)
+
+User ran the research-repo CBCT bridge test suite
+after correcting firmware sensor 0 to **bottom-left**
+in the JST-down chip-facing view, versioning the
+unapproved proposal as v2, and rejecting the
+superseded mirrored v1 outputs. **51 tests passed
+in 0.079 seconds** on Windows.
+
+This is software regression verification only:
+the actual October Scan 1/Scan 2 v2 positional
+comparison and v2 local-frame output have
+not yet been supplied or reviewed; raw Hall
+field-axis transformation and magnetic profile
+approval remain unverified and fail-closed.
+The KiCad source ZIP is prepared for user
+local import, but the editable PCB source has
+not yet been confirmed committed/pushed to
+this repository.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
