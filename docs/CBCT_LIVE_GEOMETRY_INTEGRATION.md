@@ -753,6 +753,28 @@ matched pose plus independently calibrated
 background/magnet polarity and strength for
 full three-cylinder vector-field validation.
 
+## Hall-axis candidate regression suite passed 60/60 (2026-10-28)
+
+User reported **60/60 passing tests in 0.094 seconds on Windows**
+for the research-repo CBCT bridge, now including the guarded
+KiCad/Melexis `[By,-Bx,Bz]` axis-hypothesis generator.
+Synthetic tests check proper rotations, source/board IDs, UID
+agreement, mirrored-v1 rejection and continued unapproved status.
+They do **not** physically calibrate the signed raw Hall axes.
+
+The actual October Scan1 `hall_axis_candidates_v2.json`
+result has not yet been supplied for review. The earlier v2
+CBCT chip matching and local-grid matrices were internally
+consistent, but the original October Hall recording's exact
+pose match, manufactured board revision, sensor offsets and
+field-background/polarity evidence remain unverified. Do
+not load or approve a live `RigidProfile` from those
+candidate-only artifacts.
+
+The editable KiCad PCB files were packaged for a local Git
+import; the actual assets are not confirmed pushed merely
+because their README and .gitignore exist.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
