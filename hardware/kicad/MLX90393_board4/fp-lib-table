@@ -1,0 +1,6 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "ProjectFootprints")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr ""))
+  (lib (name "JLCPCB")(type "KiCad")(uri "${KIPRJMOD}/JLCPCB_lib/JLCPCB")(options "")(descr ""))
+  (lib (name "Addafruit")(type "KiCad")(uri "${KIPRJMOD}/Addafruit.pretty")(options "")(descr ""))
+)
