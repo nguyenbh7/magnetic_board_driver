@@ -14,6 +14,9 @@ pub struct CbctGeometry {
     pub qc_directory: PathBuf,
     pub frame_uid: String,
     pub rigid_origin_lps_mm: [f64; 3],
+    /// Columns are body +X (Left->Right), +Y (toward Superior magnet),
+    /// +Z = cross(+X,+Y). Proper right-handed basis in DICOM LPS.
+    pub rigid_axes_to_lps: [[f64; 3]; 3],
     pub magnets: Vec<CbctMagnet>,
     pub arrays: Vec<CbctArray>,
     pub markers: Vec<CbctMarker>,
@@ -24,6 +27,7 @@ pub struct CbctMagnet {
     pub name: String,
     pub center_lps_mm: [f64; 3],
     pub offset_from_origin_mm: [f64; 3],
+    pub offset_in_rigid_frame_mm: [f64; 3],
     pub unsigned_axis_lps: [f64; 3],
 }
 
@@ -41,6 +45,7 @@ pub struct CbctMarker {
     pub name: String,
     pub center_lps_mm: [f64; 3],
     pub offset_from_origin_mm: [f64; 3],
+    pub offset_in_rigid_frame_mm: [f64; 3],
     /// For this detector, 'bb' means candidate CT glass BB.
     /// It must not be labeled HDMM sticker without independent evidence.
     pub classification: String,
@@ -76,6 +81,22 @@ fn offset(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 fn magnitude(a: [f64; 3]) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]
+}
+fn unit(a: [f64; 3]) -> Result<[f64; 3], String> {
+    let length=magnitude(a);
+    if !length.is_finite() || length < 1e-3 {
+        return Err("Three-magnet constellation does not define distinct, non-collinear rigid axes".into());
+    }
+    Ok([a[0]/length,a[1]/length,a[2]/length])
+}
+fn in_basis(vector_lps:[f64;3], e1:[f64;3],e2:[f64;3],e3:[f64;3]) -> [f64;3] {
+    [dot(vector_lps,e1),dot(vector_lps,e2),dot(vector_lps,e3)]
+}
 
 impl CbctGeometry {
     /// Create an initial-geometry preview; no magnetic calibration fields.
@@ -110,6 +131,7 @@ impl CbctGeometry {
                         name: object.name,
                         center_lps_mm: object.center_lps_mm,
                         offset_from_origin_mm: [0.0; 3],
+                        offset_in_rigid_frame_mm: [0.0; 3],
                         unsigned_axis_lps: [axis[0] / len, axis[1] / len, axis[2] / len],
                     });
                 }
@@ -133,6 +155,7 @@ impl CbctGeometry {
                     name: object.name,
                     center_lps_mm: object.center_lps_mm,
                     offset_from_origin_mm: [0.0; 3],
+                    offset_in_rigid_frame_mm: [0.0; 3],
                     classification: "CT glass BB (HDMM sticker identity UNVERIFIED)".into(),
                 }),
                 other => return Err(format!("Unrecognized CT detected object kind: {other}")),
@@ -159,16 +182,46 @@ impl CbctGeometry {
                 *o += v / 3.0;
             }
         }
+        // Rigid coordinate convention: +X from left to right magnet;
+        // +Y toward the superior magnet after orthogonalization;
+        // +Z right-handed. This is a geometric INITIAL frame only.
+        let named_center = |name: &str| magnets.iter()
+            .find(|m|m.name==name).map(|m|m.center_lps_mm);
+        let left=named_center("magnet_left")
+            .ok_or("Missing named left magnet for geometric rigid-body frame")?;
+        let right=named_center("magnet_right")
+            .ok_or("Missing named right magnet for geometric rigid-body frame")?;
+        let top=named_center("magnet_superior")
+            .ok_or("Missing named superior magnet for geometric rigid-body frame")?;
+        let e1=unit(offset(right,left))?;
+        let mid=[(left[0]+right[0])*0.5,(left[1]+right[1])*0.5,(left[2]+right[2])*0.5];
+        let superior_axis=offset(top,mid);
+        let component=dot(superior_axis,e1);
+        let orthogonal=[
+            superior_axis[0]-component*e1[0],
+            superior_axis[1]-component*e1[1],
+            superior_axis[2]-component*e1[2],
+        ];
+        let e2=unit(orthogonal)?;
+        let e3=unit(cross(e1,e2))?;
+        let axes=[
+            [e1[0],e2[0],e3[0]],
+            [e1[1],e2[1],e3[1]],
+            [e1[2],e2[2],e3[2]],
+        ];
         for m in &mut magnets {
             m.offset_from_origin_mm = offset(m.center_lps_mm, origin);
+            m.offset_in_rigid_frame_mm = in_basis(m.offset_from_origin_mm,e1,e2,e3);
         }
         for m in &mut markers {
             m.offset_from_origin_mm = offset(m.center_lps_mm, origin);
+            m.offset_in_rigid_frame_mm = in_basis(m.offset_from_origin_mm,e1,e2,e3);
         }
         Ok(Self {
             scan_path, qc_directory,
             frame_uid: uid,
             rigid_origin_lps_mm: origin,
+            rigid_axes_to_lps: axes,
             magnets, arrays, markers,
         })
     }
@@ -226,7 +279,15 @@ impl CbctGeometry {
             let d=marker.offset_from_origin_mm;
             lines.push(format!("{}: {} at [{:.2}, {:.2}, {:.2}] LPS mm; relative to magnet origin [{:+.2}, {:+.2}, {:+.2}] mm",
                 marker.name,marker.classification,p[0],p[1],p[2],d[0],d[1],d[2]));
+            lines.push(format!(
+                "    Candidate BB lever arm in initial rigid frame: [{:+.2}, {:+.2}, {:+.2}] mm (identity/attachment UNVERIFIED)",
+                marker.offset_in_rigid_frame_mm[0],marker.offset_in_rigid_frame_mm[1],marker.offset_in_rigid_frame_mm[2]));
         }
+        lines.push(format!(
+            "Rigid initial +X (left->right), +Y (toward superior), +Z (right-hand) in LPS: X=[{:.3},{:.3},{:.3}], Y=[{:.3},{:.3},{:.3}], Z=[{:.3},{:.3},{:.3}]",
+            self.rigid_axes_to_lps[0][0],self.rigid_axes_to_lps[1][0],self.rigid_axes_to_lps[2][0],
+            self.rigid_axes_to_lps[0][1],self.rigid_axes_to_lps[1][1],self.rigid_axes_to_lps[2][1],
+            self.rigid_axes_to_lps[0][2],self.rigid_axes_to_lps[1][2],self.rigid_axes_to_lps[2][2]));
         lines.push("HDMM reflective sticker: NOT independently detected/identified; BB-to-HDMM correspondence requires manual confirmation.".into());
         lines.push("Geometry import DOES NOT load or enable a RigidProfile. The magnetic field calibration is a separate step.".into());
         lines.push(format!("Detector review images/JSON: {}", self.qc_directory.display()));
@@ -289,9 +350,14 @@ mod tests {
     fn sample() -> String {
         let mut objects=Vec::new();
         for i in 0..3 {
+            let (magnet_name, magnet_center) = match i {
+                0 => ("magnet_left", [0.,-10.,20.]),
+                1 => ("magnet_right", [20.,-10.,20.]),
+                _ => ("magnet_superior", [10.,20.,20.]),
+            };
             objects.push(serde_json::json!({
-                "kind":"magnet","name":format!("magnet_{i}"),
-                "center_lps_mm":[i as f64*10.0,0.0,20.0],
+                "kind":"magnet","name":magnet_name,
+                "center_lps_mm":magnet_center,
                 "unsigned_axis_lps":[0.,0.,1.]
             }));
             objects.push(serde_json::json!({
@@ -321,6 +387,8 @@ mod tests {
         assert_eq!(c.arrays.iter().map(|b|b.detected_chip_positions_lps_mm.len()).sum::<usize>(),48);
         assert_eq!(c.rigid_origin_lps_mm,[10.,0.,20.]);
         assert_eq!(c.markers[0].offset_from_origin_mm,[5.,0.,18.]);
+        assert_eq!(c.markers[0].offset_in_rigid_frame_mm,[5.,0.,18.]);
+        assert_eq!(c.rigid_axes_to_lps,[[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]);
         assert!(c.summary().contains("HDMM reflective sticker: NOT independently"));
     }
     #[test]
@@ -346,6 +414,13 @@ mod tests {
         let mut parsed:serde_json::Value=serde_json::from_str(&sample()).unwrap();
         parsed["objects"][1]["chip_grid_lps_mm"]=serde_json::json!([[1.,2.,3.]]);
         assert!(CbctGeometry::from_detector_json(&parsed.to_string(),"x".into(),"y".into()).is_err());
+    }
+    #[test]
+    fn reject_collinear_magnets_without_initial_rotation() {
+        let mut val: serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        // Place superior on the left-right axis.
+        val["objects"][4]["center_lps_mm"]=serde_json::json!([10.,-10.,20.]);
+        assert!(CbctGeometry::from_detector_json(&val.to_string(),"x".into(),"y".into()).is_err());
     }
     #[test]
     fn refuse_unknown_object_as_hdmm_sticker() {
