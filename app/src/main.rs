@@ -221,6 +221,7 @@ struct Context {
     cbct_progress: Option<Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>>,
     cbct_started: Option<std::time::Instant>,
     cbct_show_log: bool,
+    cbct_last_log: String,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -799,6 +800,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     path.display()
                 );
                 context.cbct_geometry = None;
+                context.cbct_last_log.clear();
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
                 context.cbct_progress = Some(Arc::clone(&progress));
                 context.cbct_started = Some(std::time::Instant::now());
@@ -853,6 +855,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CbctImportCompleted(result) => {
+            if let Some(progress) = &context.cbct_progress {
+                if let Ok(state) = progress.lock() { context.cbct_last_log = state.log.join("\n"); }
+            }
             context.cbct_progress = None;
             context.cbct_started = None;
             context.cbct_importing = false;
@@ -1442,8 +1447,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             ].spacing(8),
             text(if context.cbct_show_log {
                 context.cbct_progress.as_ref()
-                    .and_then(|p| p.lock().ok().map(|state| state.log.join("\\n")))
-                    .unwrap_or_else(|| "No active detection log".into())
+                    .and_then(|p| p.lock().ok().map(|state| state.log.join("\n")))
+                    .unwrap_or_else(|| context.cbct_last_log.clone())
             } else { String::new() }),
             text(context.cbct_geometry.as_ref()
                 .map(|geometry| geometry.summary())
