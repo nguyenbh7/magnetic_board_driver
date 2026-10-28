@@ -414,6 +414,46 @@ execution; the previous 22-test suite passed. **The new
 expected count is 36 tests.** See the research repo README
 for the complete Windows PowerShell commands and safety rules.
 
+## Oct23 CT/JST index proposals consistent in both scans (2026-10-27)
+
+The user executed the research-repo `propose_ct_sensor_order.py`
+against Scan 1 and Scan 2, then the cross-scan
+`compare_geometric_sensor_orders.py`. **All 36 Windows
+bridge tests passed in 0.073 s.** Identical candidate
+16-chip firmware-to-detection mappings emerged in both
+CBCT scans:
+
+- Right: `[12,13,14,15,8,9,10,11,4,5,6,7,0,1,2,3]`
+- Left: `[3,2,1,0,7,6,5,4,11,10,9,8,15,14,13,12]`
+- Superior: `[12,13,14,15,8,9,10,11,4,5,6,7,0,1,2,3]`
+
+With three assumed-stationary board centers registered
+between scans (registration RMS **0.0075 mm**), chip
+RMS differences are **0.1789 mm Right**,
+**0.1518 mm Left**, and **0.0200 mm Superior**;
+max differences 0.3808/0.3821/0.0372 mm.
+These measurements reflect repeatability, **not absolute
+CT positioning accuracy or verified firmware indexing**.
+
+Original face-on CBCT QC images show the
+connector/cable end opposite the chip cluster on each
+board, supporting the board-centroid-to-chip-centroid
+direction used for the provisional index calculation.
+They do **not** show actual firmware sensor-zero
+or determine the signed raw Hall axes.
+
+Next: the research-repo `stage_index_candidates.py`
+can produce a **separate** `calibration.candidate.json`
+with these unverified chip permutations and provisional
+May15 physical board IDs (raw0 Superior, raw1 Left,
+raw2 Right). The original `calibration.review.json`
+is unchanged and all required approval flags remain
+false, so `RigidProfile` export must still fail.
+Verify the physical JST/PCB index convention, signed
+raw-to-LPS field transform, Hall-element offset,
+magnet polarity/strength, and background against
+a matched measurement before live fitting.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
