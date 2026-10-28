@@ -5,7 +5,26 @@
 //! RigidProfile. The detected BB is NOT automatically an HDMM sticker.
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Read};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::time::Duration;
+
+#[derive(Default, Debug)]
+pub struct ImportProgress {
+    pub latest: String,
+    pub log: Vec<String>,
+    pub cancel: AtomicBool,
+}
+
+fn record(progress: &Arc<Mutex<ImportProgress>>, line: String) {
+    if let Ok(mut state) = progress.lock() {
+        state.latest = line.clone();
+        state.log.push(line);
+        if state.log.len() > 300 { state.log.remove(0); }
+    }
+}
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -297,7 +316,7 @@ impl CbctGeometry {
 
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
-pub fn import_dicom(scan: &Path) -> Result<CbctGeometry, String> {
+pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
     if !scan.exists() {
         return Err(format!("DICOM series or ZIP not found: {}", scan.display()));
     }
@@ -327,16 +346,55 @@ pub fn import_dicom(scan: &Path) -> Result<CbctGeometry, String> {
     std::fs::create_dir(&result_dir).map_err(|e|format!("Cannot create unique CBCT output folder: {e}"))?;
     let python = std::env::var_os("CBCT_PYTHON")
         .unwrap_or_else(|| std::ffi::OsString::from("python"));
-    let result=Command::new(python)
-        .arg(&script).arg(scan).arg("--output").arg(&result_dir)
-        .output()
+    record(&progress, "Launching Python CBCT detector...".into());
+    let mut child = Command::new(python)
+        .arg("-u").arg(&script).arg(scan).arg("--output").arg(&result_dir)
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn()
         .map_err(|e|format!("Unable to launch Python CBCT detector: {e}. Configure CBCT_PYTHON to an environment with SimpleITK, scipy, numpy and matplotlib."))?;
-    if !result.status.success() {
-        let stderr=String::from_utf8_lossy(&result.stderr);
-        let stdout=String::from_utf8_lossy(&result.stdout);
+    let stdout = child.stdout.take().ok_or("Missing Python stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("Missing Python stderr pipe")?;
+    let updates = Arc::clone(&progress);
+    let output_reader = std::thread::spawn(move || {
+        let mut collected = String::new();
+        for item in BufReader::new(stdout).lines() {
+            let Ok(line) = item else { break };
+            if let Some(stage) = line.strip_prefix("CBCT_PROGRESS:") {
+                record(&updates, stage.to_owned());
+            } else if !line.trim().is_empty() {
+                collected.push_str(&line);
+                collected.push('\\n');
+                // Full terminal detail is retained in the optional UI log.
+                if let Ok(mut state) = updates.lock() {
+                    state.log.push(line);
+                    if state.log.len() > 300 { state.log.remove(0); }
+                }
+            }
+        }
+        collected
+    });
+    let error_reader = std::thread::spawn(move || {
+        let mut output = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut output);
+        output
+    });
+    let (status, cancelled) = loop {
+        if progress.lock().map(|p|p.cancel.load(Ordering::Relaxed)).unwrap_or(false) {
+            let _ = child.kill();
+            break (child.wait().map_err(|e|e.to_string())?, true);
+        }
+        if let Some(status) = child.try_wait().map_err(|e|e.to_string())? {
+            break (status, false);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stdout_text = output_reader.join().unwrap_or_default();
+    let stderr_text = error_reader.join().unwrap_or_default();
+    if cancelled { return Err("Detection cancelled by user. No geometry was imported.".into()); }
+    if !status.success() {
         return Err(format!("CBCT detector failed (exit {}): {} {}. Outputs (if any): {}",
-            result.status,stderr.chars().take(800).collect::<String>(),
-            stdout.chars().take(600).collect::<String>(),result_dir.display()));
+            status,stderr_text.chars().take(800).collect::<String>(),
+            stdout_text.chars().take(600).collect::<String>(),result_dir.display()));
     }
     let raw=std::fs::read_to_string(result_dir.join("detections.json"))
         .map_err(|e|format!("CBCT detector did not write detections.json: {e}"))?;
