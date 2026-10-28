@@ -88,20 +88,36 @@ KiCad top view** are +X **toward decreasing PCB Y**
 (toward JST), +Y **toward decreasing PCB X**,
 and +Z **out of the F.Cu face**.
 
-The firmware board-local coordinate convention
-has +X pointing picture-left in the JST-down
-chip-facing view (toward increasing native KiCad
-X), +Y pointing away from JST (increasing native
-KiCad Y), and +Z away from the chip face. Hence
-the **provisional proper chip-to-board transform** is
+**Correction from the populated board and current firmware:**
+`data_transfer/src/rpc.rs` explicitly diagrams
+`0 4 8 12` on the **bottom row with JST down**,
+i.e. firmware sensor 0 is **bottom-left**, not
+bottom-right. Firmware +X points picture-right
+(toward decreasing native KiCad X once viewed
+with JST down), +Y away from JST (toward
+increasing native KiCad Y), and +Z toward the
+chip-facing viewer. The previous CT candidate
+`gk_ct_sensor_order_proposal_v1` mistakenly
+used sensor 0 at bottom-right and must be
+replaced by the guarded `v2` mapping.
+
+The KiCad footprint and manufacturer QFN axis
+orientation then give the **provisional proper
+chip-to-board field transform**:
 
 ```text
 [B_grid_X, B_grid_Y, B_grid_Z] =
-    [-B_chip_Y, -B_chip_X, -B_chip_Z]
+    [B_chip_Y, -B_chip_X, B_chip_Z]
 
-M_chip_to_grid = [[0,-1,0],[-1,0,0],[0,0,-1]]
+M_chip_to_grid = [[0,1,0],[-1,0,0],[0,0,1]]
 det(M_chip_to_grid) = +1
 ```
+
+This agrees with the existing A1-style
+`[By, -Bx, Bz]` transform in the Rust analysis
+for this same chip/board convention. It remains
+**unverified for actual October mounted
+boards**, for the reasons below.
 
 This matrix is **not yet validated against the actual
 installed board, flashed firmware, or measured known
