@@ -1126,3 +1126,8 @@ The desktop UI now groups the same existing actions into **DICOM Geometry** (ZIP
 ## A1 demo option archived from Gamma Knife setup picker (2026-10-28)
 
 The production Live Tracking **Setup** dropdown now shows the May 15 linear-stage CT and rotation-stage geometry references only. The bundled A1 demo calibration, profile recognition, synthetic/regression tests, and A1-specific code remain in the repository for reproducibility; this is a UI archival change, not deletion or a change to fit math. Loading a complete reviewed profile remains the normal Gamma Knife workflow. The ordinary no-profile status no longer suggests A1. If an archived A1 profile is explicitly loaded, its existing specialized background workflow is retained. This UI adjustment still requires a local Windows compile/visual check.
+
+
+## Separate bordered import and tracking panels (2026-10-28)
+
+The rigid 6-DOF view now uses two `container::bordered_box` sections, consistent with the logging panel. **DICOM Geometry** contains ZIP/folder/detection JSON import, status, logs, inspection, and copy actions. **Tracking Configuration & Controls** contains the joint 6-DOF model label, **Load calibrated profile (.json)**, calibrated profile status, Set rigid zero/reference indicator, and fit summaries. The historical May-15/rotation-stage setup dropdown is no longer displayed in the normal GUI; its reference datasets and functions remain archived for research. DICOM imports remain unreviewed previews and do not create or activate a magnetic profile. Zero stays unavailable until there is an accepted fit. Local Windows compilation and layout validation remain outstanding.
