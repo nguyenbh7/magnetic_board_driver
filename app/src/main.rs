@@ -95,6 +95,9 @@ enum Message {
     CbctImportPicked(Option<PathBuf>),
     CbctJsonPicked(Option<PathBuf>),
     CbctImportCompleted(Result<cbct_geometry::CbctGeometry, String>),
+    CbctProgressTick,
+    CancelCbctImport,
+    ToggleCbctLog,
     CopyCbctCoordinates,
     CaptureRigidBackground,
     SelectTrackingMode(TrackingMode),
@@ -215,6 +218,9 @@ struct Context {
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
     cbct_importing: bool,
     cbct_status: String,
+    cbct_progress: Option<Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>>,
+    cbct_started: Option<std::time::Instant>,
+    cbct_show_log: bool,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -551,10 +557,10 @@ fn select_cbct_detections_json(
     async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
-async fn run_cbct_import_off_thread(path: PathBuf) -> Result<cbct_geometry::CbctGeometry, String> {
+async fn run_cbct_import_off_thread(path: PathBuf, progress: Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>) -> Result<cbct_geometry::CbctGeometry, String> {
     // Run SimpleITK/Python out of the UI event loop, independently of
     // live Hall streaming and six-DOF fit jobs.
-    async_std::task::spawn_blocking(move || cbct_geometry::import_dicom(&path)).await
+    async_std::task::spawn_blocking(move || cbct_geometry::import_dicom(&path, progress)).await
 }
 
 fn open_file(
@@ -793,7 +799,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     path.display()
                 );
                 context.cbct_geometry = None;
-                Task::perform(run_cbct_import_off_thread(path), Message::CbctImportCompleted)
+                let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
+                context.cbct_progress = Some(Arc::clone(&progress));
+                context.cbct_started = Some(std::time::Instant::now());
+                Task::perform(run_cbct_import_off_thread(path, progress), Message::CbctImportCompleted)
             } else {
                 Task::none()
             }
@@ -822,7 +831,30 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CbctProgressTick => {
+            if let Some(progress) = &context.cbct_progress {
+                if let Ok(state) = progress.lock() {
+                    if !state.latest.is_empty() { context.cbct_status = state.latest.clone(); }
+                }
+            }
+            Task::none()
+        }
+        Message::CancelCbctImport => {
+            if let Some(progress) = &context.cbct_progress {
+                if let Ok(state) = progress.lock() {
+                    state.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                context.cbct_status = "Cancelling detection...".into();
+            }
+            Task::none()
+        }
+        Message::ToggleCbctLog => {
+            context.cbct_show_log = !context.cbct_show_log;
+            Task::none()
+        }
         Message::CbctImportCompleted(result) => {
+            context.cbct_progress = None;
+            context.cbct_started = None;
             context.cbct_importing = false;
             match result {
                 Ok(geometry) => {
@@ -1399,6 +1431,20 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(if context.cbct_status.is_empty() {
                 "CBCT: no initial geometry imported"
             } else { context.cbct_status.as_str() }),
+            row![
+                text(context.cbct_started.map(|start| format!("Elapsed: {:.0}s", start.elapsed().as_secs_f64()))
+                    .unwrap_or_default()),
+                if context.cbct_importing {
+                    button("Cancel detection").on_press(Message::CancelCbctImport)
+                } else { button("Cancel detection") },
+                button(if context.cbct_show_log { "Hide detection log" } else { "Show detection log" })
+                    .on_press(Message::ToggleCbctLog),
+            ].spacing(8),
+            text(if context.cbct_show_log {
+                context.cbct_progress.as_ref()
+                    .and_then(|p| p.lock().ok().map(|state| state.log.join("\\n")))
+                    .unwrap_or_else(|| "No active detection log".into())
+            } else { String::new() }),
             text(context.cbct_geometry.as_ref()
                 .map(|geometry| geometry.summary())
                 .unwrap_or_else(|| "CT geometry preview is separate from the live magnetic calibration.                 Import a ZIP/DICOM folder or load previously detected CT results.".to_string())),
@@ -1781,6 +1827,11 @@ mod tracking_mode_ui_tests {
 #[tokio::main]
 pub async fn main() -> iced::Result {
     iced::application(Context::default, update, view)
+        .subscription(|context: &Context| {
+            if context.cbct_importing {
+                iced::time::every(std::time::Duration::from_millis(250)).map(|_| Message::CbctProgressTick)
+            } else { iced::Subscription::none() }
+        })
         .scale_factor(ui_scale_factor)
         .run()
 }
