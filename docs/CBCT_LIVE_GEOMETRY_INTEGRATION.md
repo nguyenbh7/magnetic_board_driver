@@ -63,6 +63,19 @@ GEOMETRY** (not magnetic calibration). New live-app code:
   axes/background/magnet strengths and remains
   deliberately separate from today's goal.
 
+**Initial orientation and BB lever arm:** The app also constructs a
+proper, right-handed **rigid-body coordinate frame** from
+the named CT magnet centers: +X points from the Left
+magnet to the Right magnet; +Y points toward Superior
+after Gram–Schmidt orthogonalization; +Z is +X × +Y.
+The origin is the mean of all three magnet centers.
+This yields a well-defined baseline orientation
+and each magnet/BB's offset in **both DICOM LPS
+and body-local coordinates**. A collinear
+or ambiguously named magnet constellation is
+rejected. BB-local offsets are *candidate lever
+arms*, **not a validated HDMM nose point**.
+
 ## Build / demo on the Windows development PC
 
 ```powershell
@@ -100,11 +113,11 @@ individual `.dcm` files are not accepted
 as stand-alone imports. The output is
 **not committed to either Git repository**.
 
-There are **six new Rust unit tests** for
+There are **seven new Rust unit tests** for
 CBCT import schema, 3/3/1 object counts,
-origin and marker offsets, all-48-chip
+origin/initial coordinate-frame and marker local offsets, all-48-chip
 clipboard export, missing DICOM frame,
-incomplete detection and invented HDMM
+incomplete detection, collinear magnets, and invented HDMM
 object rejection. **Build and GUI smoke
 testing on Windows are still pending.**
 Do not report this as compiled or
