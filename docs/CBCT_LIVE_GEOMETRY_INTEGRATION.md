@@ -498,6 +498,20 @@ does not set calibration approvals or load the Rust
 fitter. Field-axis parity and full three-magnet
 baseline validation remain necessary.
 
+## Windows CT local-frame regression verification: 43 passed
+
+The user confirmed the complete research-repository CBCT bridge
+suite passed on Windows: **43 tests in 0.066 seconds**,
+including the seven local firmware-versus-May15 frame-convention
+unit tests and fail-closed calibration checks. This is **software
+validation, not physical magnetic-field calibration**. The
+real-data `audit_ct_local_frames.py` report on October Scan 1
+has not yet been supplied, so its candidate rotation matrices
+and CT chip fitting residuals have not been reviewed.
+The Rust live profile must remain unapproved until the actual
+signed raw Hall axes, chip-active-element offsets, background,
+magnets, and recording/geometry correspondence are validated.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
