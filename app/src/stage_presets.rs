@@ -14,7 +14,10 @@ pub enum MagnetLocationPreset {
 }
 
 impl MagnetLocationPreset {
+    // Keep A1 in ALL for historical profile recognition and regression tests.
+    // The production Gamma Knife setup picker only exposes GK references.
     pub const ALL: [Self; 3] = [Self::A1Demo, Self::LinearStageCt, Self::RotationStage];
+    pub const GK_SETUP_OPTIONS: [Self; 2] = [Self::LinearStageCt, Self::RotationStage];
 
     pub fn title(self) -> &'static str {
         match self {
