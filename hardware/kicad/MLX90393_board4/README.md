@@ -72,26 +72,34 @@ trace the I²C addresses and design nets independently.
 
 ## Package axis orientation (provisional)
 
-Melexis' QFN-16 top-view convention shows its package +X upward,
-+Y leftward and +Z out of the top face when pin 1 is at
-the illustrated bottom-left. The KiCad footprint library has
-pad 1 in its lower-left quadrant before rotation; all
-sensor instances are rotated **180°** on F.Cu.
-Consequently in the **native KiCad top-side view** the
-candidate package directions are +X **toward increasing
-PCB Y** (away from JST), +Y **toward increasing PCB X**,
-and +Z **toward F.Cu/viewer**.
+Melexis' **Figure 26** QFN top view shows
+**pin 1 toward the upper-right**, with package **+X up,
++Y left, +Z outward**. Its separate **Figure 27**
+pinout illustrates **pin 1 at bottom-left**, a view
+rotated 180° in plane; do not transfer axis arrows
+without rotating the view. The KiCad footprint's
+**pad 1 is lower-left in the 0° footprint library**;
+all 16 mounted footprints are rotated **180° on
+F.Cu**, making pad 1 **upper-right in native KiCad
+top view**, matching Figure 26.
 
-With the currently documented board-local axes
-(+X left in JST-down chip-facing view, +Y away
-from JST, +Z away from chip face), the resulting
-**provisional** chip-to-board field transform is
+Therefore the provisional **package axes in native
+KiCad top view** are +X **toward decreasing PCB Y**
+(toward JST), +Y **toward decreasing PCB X**,
+and +Z **out of the F.Cu face**.
+
+The firmware board-local coordinate convention
+has +X pointing picture-left in the JST-down
+chip-facing view (toward increasing native KiCad
+X), +Y pointing away from JST (increasing native
+KiCad Y), and +Z away from the chip face. Hence
+the **provisional proper chip-to-board transform** is
 
 ```text
 [B_grid_X, B_grid_Y, B_grid_Z] =
-    [B_chip_Y, B_chip_X, -B_chip_Z]
+    [-B_chip_Y, -B_chip_X, -B_chip_Z]
 
-M_chip_to_grid = [[0,1,0],[1,0,0],[0,0,-1]]
+M_chip_to_grid = [[0,-1,0],[-1,0,0],[0,0,-1]]
 det(M_chip_to_grid) = +1
 ```
 
