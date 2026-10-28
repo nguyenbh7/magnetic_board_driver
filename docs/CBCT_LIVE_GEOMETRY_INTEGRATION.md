@@ -454,6 +454,50 @@ raw-to-LPS field transform, Hall-element offset,
 magnet polarity/strength, and background against
 a matched measurement before live fitting.
 
+## Unapproved Scan 1 candidate staged; distinguish current vs legacy 4×4 axes (2026-10-28)
+
+User confirmed successful creation of
+`CBCT_Results/scan1/calibration.candidate.json`
+with provisional physical IDs **Right raw2, Left
+raw1, Superior raw0**; all `firmware_mapping_verified`
+flags remain **false**. Original
+`calibration.review.json` is intact and the
+live Rust `RigidProfile` builder remains gated.
+
+A source audit uncovered a significant convention
+difference between **this repo's current**
+`data_transfer/src/rpc.rs:SENSOR_POSITIONS_MM`
+(sensor0 (-6.75,-6.75), sensor1 (-6.75,-2.25),
+sensor4 (-2.25,-6.75) mm; +Y by sensor,
++X by four sensors, column-first) and the
+historical May15 `INTENDED_OLD_4X4_POSITIONS_MM`
+(sensor0 (+6.75,-6.75), sensor1
+(+2.25,-6.75), sensor4 (+6.75,-2.25)
+mm; row-first).
+
+The two centered planar layouts differ by a **proper
+90° in-plane rotation**, so a geometric CT Kabsch
+fit alone cannot disambiguate them. The Oct23
+candidate geometry/indices were constructed from
+the firmware's **column-first** convention, but
+the October signed `raw_to_world` Hall-field
+matrix is **still unknown** and MUST NOT be copied
+from historical May15 profile transforms without
+addressing this frame convention. Raw chip vector
+axes can additionally differ from nominal board-local
+axes; verify against firmware/raw-field instrumentation.
+
+The research-repo
+`tools/cbct_bridge/audit_ct_local_frames.py`
+now computes both candidate local-to-LPS matrices,
+residuals, relative rotation and board-normal dot
+products as an explicitly unverified report.
+Seven new unit tests are committed; 43 tests total,
+with 36 previously passed on Windows. This utility
+does not set calibration approvals or load the Rust
+fitter. Field-axis parity and full three-magnet
+baseline validation remain necessary.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
