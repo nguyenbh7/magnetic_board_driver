@@ -1086,3 +1086,28 @@ No raw DICOM, scan outputs, calibration containing patient identifiers,
 or unapproved geometry was committed. Next test on the lab machine:
 `python -m unittest discover -s tests -v` from
 `tools/cbct_bridge`, followed by both CBCT scan CLI runs and image QC.
+
+
+## Live detector progress and cancellation (2026-10-28)
+
+The Windows Live Tracking DICOM import now runs the Python detector with unbuffered stdout
+(`python -u`). The detector emits `CBCT_PROGRESS:` stage messages for archive extraction,
+CT volume loading, magnet and sensor-array search, glass BB search, and QC/output writing.
+The Rust app reads those messages from the subprocess stdout on a separate thread and
+updates a one-line status approximately four times per second. The UI also shows elapsed
+time and an expandable log (including ordinary detector terminal output), retained after
+completion or failure. The detector stages are indeterminate: **no artificial percentage**
+is displayed, because heavy segmentation steps have no reliable work denominator.
+
+**Cancel detection** requests termination of the Python child process and prevents importing
+partial geometry. The app waits for the child to exit before enabling a subsequent import.
+A canceled scan may leave incomplete QC files under the import-specific local results
+folder; they are not loaded as live geometry. As before, even successful CT geometry
+remains an **unreviewed preview** and never enables magnetic calibration or a rigid profile.
+
+**Validation still required on Windows:** build the Rust app from
+`feature/live-rigid-body-fit`, run a real scan using the adjacent
+`hall-effect-motion-tracking` checkout on `a1-calibration`, verify stage updates
+and log visibility, then cancel a second scan during volume processing and verify
+that no geometry is imported. These changes have not yet been compile-tested or
+replayed with the real DICOM archive in this environment.
