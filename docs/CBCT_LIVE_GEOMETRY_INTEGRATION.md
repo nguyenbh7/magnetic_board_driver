@@ -185,6 +185,33 @@ October mounting. The existing JSON-profile loader is ready for
 reviewed data; the GUI DICOM import is still not implemented. See
 the research-repo bridge README for reproducibility and provenance.
 
+## October-23 stationary Hall mapping verification screen (2026-10-27)
+
+A prototype `screen_hall_board_mapping.py` is now in the research
+repository under `tools/cbct_bridge/`. It reads the October-23
+`MLXBF002` recording (~4.46 s, 461 board frames, 16 sensors/board),
+computes per-sensor median field magnitudes, and ranks all six
+raw-board-to-CBCT-array assignments and all eight D4 4×4 sensor
+permutations per board. It produces **diagnostic candidates only**:
+the `AMBIGUOUS_UNVERIFIED` status is deliberate.
+
+A first local exploratory comparison using the notebook's printed
+Scan 1 chip coordinates found that the best two complete
+assignments were essentially tied (sum of squared pattern
+correlations around 1.79 and 1.78). At least one board had a weak
+maximum match (~0.48). Thus **no October raw board mapping,
+grid permutation or magnetic-field transform is verified** by
+this recording alone. This is not evidence that the original May-15
+mapping is wrong, or that the October detector failed.
+A short stationary recording and an approximate dipole-field
+magnitude screen do not account for uncertain CBCT-to-Hall
+acquisition timing, backgrounds, gains, near-field cylinder
+effects or polarity. Test full-precision Scan 1 and Scan 2
+detections on the Windows machine; inspect candidates and
+compare physical cabling/JST orientation and controlled
+one-board-at-a-time perturbations. Only independently verified
+calibrations should be exported to the live Rust profile.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
