@@ -618,6 +618,72 @@ revision and sensor index/address correspondence
 still require confirmation. See research repo
 `tools/cbct_bridge/HALL_AXIS_PROVENANCE.md`.
 
+## Critical correction: KiCad confirms v1 firmware-index mirror (2026-10-28)
+
+The archived populated `MLX90393_board4.zip`
+and current driver `data_transfer/src/rpc.rs`
+conclusively expose a **software convention error**
+in the research-repo `propose_ct_sensor_order.py`
+v1: firmware sensor **0 is bottom-LEFT**
+(JST down, facing the chips) rather than
+bottom-right. The current firmware diagram is:
+
+```text
+ 3   7  11  15
+ 2   6  10  14
+ 1   5   9  13
+ 0   4   8  12
+```
+
+The older v1 CT candidate mappings
+looked repeatable between two CT scans
+but were **mirrored across the chip grid**.
+Their `-1` local +Z vs CT normal was a
+consequence of the mirrored indexing;
+in the corrected proper firmware frame,
+local +Z is expected to align **+1**
+with the CT chip-facing normal, largely
+by construction. The v1 indexed
+`calibration.candidate.json` and
+`local_frame_candidates.json` **must not be
+approved or fed to any magnetic model**.
+
+The research bridge now generates an
+explicit versioned **v2** proposal with
+firmware-verified bottom-left ordering.
+`stage_index_candidates.py`,
+`compare_geometric_sensor_orders.py`
+and `audit_ct_local_frames.py`
+reject the obsolete v1/missing metadata.
+The corrected total is **51 new/current
+regression tests**, pending a Windows run.
+
+The source KiCad project's 16 MLX90393 QFN
+footprints are all on F.Cu at 180°, with
+pad 1 in the pin-1 position shown in the
+Melexis Figure 26 top view. Matching
+signed axes to actual PCB orientation
+yields the **provisional** chip-to-board
+rotation `[By,-Bx,Bz]` (proper rotation,
+det +1), consistent with the A1 vector
+convention already used in this Rust code.
+The raw **Hall-to-DICOM** transform is
+still unapproved and must use fresh CT
+v2 grid-fitting matrices and independent
+magnetic validation.
+
+Editable project source has been packaged
+into 21 files, and this repository now
+contains `hardware/kicad/MLX90393_board4/README.md`
+and `.gitignore`. **Actual KiCad source**
+requires local extraction / Git push
+from the delivered source-only ZIP;
+GitHub connector source text write access
+cannot transmit the large PCB source.
+The source ZIP includes no autosave/backups
+or generated Gerbers. Do not mistake the
+README existing for successful asset upload.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
