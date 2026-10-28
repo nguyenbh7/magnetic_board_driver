@@ -156,6 +156,35 @@ space requires an independently verified CT-to-HDMM transform, and
 the two scans' separate DICOM reference UIDs require registration
 before direct position comparison.
 
+## October-23 real CBCT comparison (Windows validation, 2026-10-27)
+
+The Python prototype in `hall-effect-motion-tracking/tools/cbct_bridge`
+was run on both original October-23 scans. It detected 3 magnets,
+3 boards × 16 chip positions, and one inferior glass BB per scan.
+Annotated board and overview images passed a preliminary qualitative
+visual check. Both scans' detected grids had 4.5 × 4.5 mm pitch and
+in-plane grid RMS <= 0.222 mm.
+
+The full-precision `compare_cbct_scans.py` run using actual
+`detections.json` outputs gave **0.0075 mm stationary-board
+registration RMS**, **1.5962° magnet rigid rotation**,
+**0.0243 mm magnet rigid-fit RMS**, and **0.0150 mm held-out glass
+BB prediction residual** (BB displacement **1.209 mm**). Two scans
+had distinct DICOM Frame of Reference UIDs; three stationary-board
+centers were explicitly registered before magnet motion estimation.
+This is **internal geometric consistency, not CT/HDMM spatial
+accuracy**, and the BB is not yet verified as the HDMM sticker.
+
+**Next Rust integration gate:** do not auto-activate detected
+geometry until October-specific raw board IDs, image-chip-to-firmware
+index correspondence, signed field transforms, Hall element offsets,
+magnet polarity/remanence and field backgrounds have all been verified.
+The old May-15 assignment `raw1=Left, raw0=Top, raw2=Right` and
+right-board `flip_rot180` are *historical*, not established for this
+October mounting. The existing JSON-profile loader is ready for
+reviewed data; the GUI DICOM import is still not implemented. See
+the research-repo bridge README for reproducibility and provenance.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
