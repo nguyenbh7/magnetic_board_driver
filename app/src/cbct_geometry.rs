@@ -363,7 +363,7 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
                 record(&updates, stage.to_owned());
             } else if !line.trim().is_empty() {
                 collected.push_str(&line);
-                collected.push('\\n');
+                collected.push('\n');
                 // Full terminal detail is retained in the optional UI log.
                 if let Ok(mut state) = updates.lock() {
                     state.log.push(line);
