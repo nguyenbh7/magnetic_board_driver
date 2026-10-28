@@ -512,6 +512,44 @@ The Rust live profile must remain unapproved until the actual
 signed raw Hall axes, chip-active-element offsets, background,
 magnets, and recording/geometry correspondence are validated.
 
+## Scan 1 board-local frame candidates audited; magnetic axes remain unknown (2026-10-28)
+
+The user's real Scan 1 `audit_ct_local_frames.py` output
+returned a **90.000°** current-firmware-versus-legacy
+May15 local-grid rotation on all three boards.
+Both conventions have identical geometry RMS:
+**Right (raw2) 0.1791 mm; Left (raw1) 0.2397 mm;
+Superior (raw0) 0.1635 mm**. The provisional
+current-grid +Z directions have dot product
+**−1.000** with the CT-reported chip-facing normals.
+
+This negative sign is **expected by construction**:
+with JST down in the chip-facing view the current
+firmware's +X points picture-left, +Y up, and
+right-handed +Z away from the chips. The indexing
+proposal explicitly used the CT normal to define
+picture-right, so `−1` is NOT independent PCB
+orientation validation or an MLX90393 `B_z`
+sign verification.
+
+The first report printed its numerical matrices
+but raised `FileExistsError` when saving because
+`local_frame_candidates.json` already existed
+and the tool uses exclusive output creation.
+Source-tool error reporting was improved; no
+original file was overwritten. The research repo
+now contains three more local-normal sign tests:
+**46 expected**, with **43 previously passed**
+on Windows. The candidate rotation matrices
+are **geometric basis matrices**, not approved
+`raw_to_world` signed Hall-axis transforms.
+The current Rust fitter and its calibration
+gates must not accept them as verified.
+
+Next validate actual mounted PCB/chip-axis conventions,
+signal polarity, magnet strengths/background and
+pose-matched Hall frame predictions before live fit.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
