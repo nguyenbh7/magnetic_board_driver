@@ -21,6 +21,7 @@ use sensor_trace::SensorTraceState;
 use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
 mod rigid_fit;
+mod cbct_geometry;
 mod stage_presets;
 use stage_presets::MagnetLocationPreset;
 use rigid_fit::{RigidFitCompletion, RigidFitJob, RigidLiveFit, RigidProfile, RigidSummary};
@@ -88,6 +89,12 @@ enum Message {
     SelectMagnetLocations(MagnetLocationPreset),
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
+    ImportCbctZip,
+    ImportCbctFolder,
+    LoadCbctDetectionsJson,
+    CbctImportPicked(Option<PathBuf>),
+    CbctJsonPicked(Option<PathBuf>),
+    CbctImportCompleted(Result<cbct_geometry::CbctGeometry, String>),
     CaptureRigidBackground,
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
@@ -204,6 +211,9 @@ struct Context {
     board_presence: BoardPresence,
     live_fits: BoardLiveFits,
     rigid_fit: RigidLiveFit,
+    cbct_geometry: Option<cbct_geometry::CbctGeometry>,
+    cbct_importing: bool,
+    cbct_status: String,
     mlx_gain: String,
     mlx_resolution: String,
     mlx_hall_conf: String,
@@ -511,6 +521,41 @@ fn open_rigid_profile(
     async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
+fn select_cbct_zip(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Import CBCT/DICOM ZIP series (read-only geometry preview)")
+        .add_filter("ZIP DICOM series", &["zip"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
+}
+
+fn select_cbct_directory(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select directory containing a complete DICOM series")
+        .set_parent(&window);
+    async move { dialog.pick_folder().await.map(|handle| handle.path().to_path_buf()) }
+}
+
+fn select_cbct_detections_json(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Load existing reviewed CBCT detector output (detections.json)")
+        .add_filter("CBCT detector JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
+}
+
+async fn run_cbct_import_off_thread(path: PathBuf) -> Result<cbct_geometry::CbctGeometry, String> {
+    // Run SimpleITK/Python out of the UI event loop, independently of
+    // live Hall streaming and six-DOF fit jobs.
+    async_std::task::spawn_blocking(move || cbct_geometry::import_dicom(&path)).await
+}
+
 fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
@@ -713,6 +758,78 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     .and_then(|src| RigidProfile::from_json(&src)) {
                     Ok(profile) => context.rigid_fit.set_profile(profile),
                     Err(e) => context.rigid_fit.set_status(format!("Rigid profile load failed: {e}")),
+                }
+            }
+            Task::none()
+        }
+        Message::ImportCbctZip => {
+            if context.cbct_importing { return Task::none(); }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, select_cbct_zip))
+                .then(Task::future)
+                .map(Message::CbctImportPicked)
+        }
+        Message::ImportCbctFolder => {
+            if context.cbct_importing { return Task::none(); }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, select_cbct_directory))
+                .then(Task::future)
+                .map(Message::CbctImportPicked)
+        }
+        Message::LoadCbctDetectionsJson => {
+            if context.cbct_importing { return Task::none(); }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, select_cbct_detections_json))
+                .then(Task::future)
+                .map(Message::CbctJsonPicked)
+        }
+        Message::CbctImportPicked(path) => {
+            if let Some(path) = path {
+                if context.cbct_importing { return Task::none(); }
+                context.cbct_importing = true;
+                context.cbct_status = format!(
+                    "Detecting initial magnets, 48 chips, and glass BB from {} (background task)...",
+                    path.display()
+                );
+                context.cbct_geometry = None;
+                Task::perform(run_cbct_import_off_thread(path), Message::CbctImportCompleted)
+            } else {
+                Task::none()
+            }
+        }
+        Message::CbctJsonPicked(path) => {
+            if let Some(path) = path {
+                if context.cbct_importing { return Task::none(); }
+                let loaded = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Cannot open CBCT detector JSON: {e}"))
+                    .and_then(|source| {
+                        cbct_geometry::CbctGeometry::from_detector_json(
+                            &source,
+                            path.clone(),
+                            path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf(),
+                        )
+                    });
+                match loaded {
+                    Ok(geometry) => {
+                        context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
+                        context.cbct_geometry = Some(geometry);
+                    }
+                    Err(error) => {
+                        context.cbct_status = format!("CBCT import failed: {error}");
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::CbctImportCompleted(result) => {
+            context.cbct_importing = false;
+            match result {
+                Ok(geometry) => {
+                    context.cbct_status = "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into();
+                    context.cbct_geometry = Some(geometry);
+                }
+                Err(error) => {
+                    context.cbct_status = format!("DICOM import failed: {error}");
                 }
             }
             Task::none()
@@ -1262,6 +1379,17 @@ fn view(context: &Context) -> Element<'_, Message> {
                     rigid.location_preset, Message::SelectMagnetLocations),
                 button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
             ].spacing(8),
+            row![
+                button("Import DICOM ZIP").on_press(Message::ImportCbctZip),
+                button("Import DICOM folder").on_press(Message::ImportCbctFolder),
+                button("Open CT detections.json").on_press(Message::LoadCbctDetectionsJson),
+            ].spacing(8),
+            text(if context.cbct_status.is_empty() {
+                "CBCT: no initial geometry imported"
+            } else { context.cbct_status.as_str() }),
+            text(context.cbct_geometry.as_ref()
+                .map(|geometry| geometry.summary())
+                .unwrap_or_else(|| "CT geometry preview is separate from the live magnetic calibration.                 Import a ZIP/DICOM folder or load previously detected CT results.".to_string())),
             text(selected_setup),
             text(setup_help),
             row![
