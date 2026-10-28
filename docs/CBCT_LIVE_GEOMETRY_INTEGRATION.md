@@ -835,6 +835,75 @@ The editable KiCad PCB source still awaits
 confirmation of the user's separate local
 Git import/push.
 
+## High-gain output-range hazard discovered in Oct23 Hall recording (2026-10-28)
+
+The user's real fixed-CT-pose finite-cylinder screen has
+**poor magnetic agreement**, despite corrected v2
+PCB chip indexing and provisional `[By,-Bx,Bz]`
+axis rotation: held-out RMSE **3.2172 mT** for
+Scan1, **3.2269 mT** for Scan2, versus
+**3.2901 mT** board-background-only.
+The weak 1.9–2.2% RMSE improvement does
+not support changing historically known
+physical Right2/Left1/Superior0 board IDs,
+magnet polarity, or CT pose correspondence.
+
+**New high-priority warning from direct binary data:**
+All **22,128** XYZ component values in the original
+MLXBF002 file agree with **gain7, resolution0,
+four-phase HALLCONF0xC** conversion factors
+(95th-percentile nearest-count error 0.000968),
+even though the current firmware `main.rs`
+declares `mlx_sensitivity: {gain:0,
+resolution:0,hall_conf:0xC}` as a default.
+This suggests the runtime/app selection or
+acquisition firmware differed from current
+default and MUST be checked against register
+readback, not guessed.
+
+At gain7/res0/four-phase, signed digital output
+limits are just **±4.9152 mT (XY) and
+±7.929856 mT (Z)**. Adjacent chips on raw1
+and raw2 show abrupt ~8–14 mT component
+jumps consistent with a 16-bit wrap hypothesis.
+Raw1 has **0/7/9** suspicious adjacent X/Y/Z
+component edges, raw2 **7/6/4**, raw0 **0/0/0**.
+A periodic nearest-difference calculation
+reduces neighboring component RMS
+raw1 **5.573→2.399 mT**, raw2
+**4.296→2.393 mT**, without fitting any
+magnet field. This is **not proof of actual
+silicon wraparound** (clipping and analog
+range behavior must be checked), nor a
+unique physically valid unwrapping.
+The previous static field comparison could
+therefore be heavily distorted by **digital
+range/aliasing issues** rather than incorrect
+hardware geometry.
+
+**Required firmware/application change for future
+GK scans:** explicitly set a sufficiently
+wide MLX digital range, preferably start at
+`GAIN_SEL=0,RES_XYZ=0,HALLCONF=0xC`
+(nominal ±24.61mT XY / ±39.65mT Z),
+read back and save actual gain/RES/HALLCONF/
+TCMP_EN per board/chip in acquisition
+metadata, and reject or clearly flag
+components near digital limits. Preserve
+raw 16-bit measurements/settings when
+possible, alongside converted µT data.
+Any new static CT/Hall baseline must
+have confirmed pose correspondence.
+Do not silently unwrap the old recording
+or approve any `RigidProfile`.
+
+Research evidence:
+`tools/cbct_bridge/OCT23_HALL_OUTPUT_RANGE_DIAGNOSIS.md`.
+New `audit_mlx_output_range.py` flags this risk;
+eight synthetic tests bring the expected
+bridge count to **77**, not yet run.
+Melexis Datasheet Rev012, Table 17/21.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
