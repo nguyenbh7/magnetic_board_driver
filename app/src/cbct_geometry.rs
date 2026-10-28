@@ -173,6 +173,35 @@ impl CbctGeometry {
         })
     }
 
+    /// Full positions for inspection/export; the 0..15 chip indices here are
+    /// detector order, NOT the hardware firmware order. No signed Hall fields.
+    pub fn coordinates_csv(&self) -> String {
+        let mut lines = vec![
+            "kind,name,detector_index,L_mm,P_mm,S_mm,offset_L_mm,offset_P_mm,offset_S_mm,verified".to_string(),
+        ];
+        let format_row = |kind: &str, name: &str, index: String, point: [f64; 3],
+                          origin: [f64; 3]| {
+            let offset = offset(point, origin);
+            format!("{kind},{name},{index},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},false",
+                point[0],point[1],point[2],offset[0],offset[1],offset[2])
+        };
+        for magnet in &self.magnets {
+            lines.push(format_row("magnet",&magnet.name,String::new(),
+                magnet.center_lps_mm,self.rigid_origin_lps_mm));
+        }
+        for array in &self.arrays {
+            for (index,chip) in array.detected_chip_positions_lps_mm.iter().enumerate() {
+                lines.push(format_row("sensor_ct_detector_index",&array.name,index.to_string(),
+                    *chip,self.rigid_origin_lps_mm));
+            }
+        }
+        for marker in &self.markers {
+            lines.push(format_row("glass_BB_not_verified_HDMM",&marker.name,String::new(),
+                marker.center_lps_mm,self.rigid_origin_lps_mm));
+        }
+        lines.join("\n")
+    }
+
     pub fn summary(&self) -> String {
         let mut lines = vec![
             "CBCT INITIAL GEOMETRY — UNREVIEWED (not a magnetic fit profile)".to_string(),
@@ -293,6 +322,14 @@ mod tests {
         assert_eq!(c.rigid_origin_lps_mm,[10.,0.,20.]);
         assert_eq!(c.markers[0].offset_from_origin_mm,[5.,0.,18.]);
         assert!(c.summary().contains("HDMM reflective sticker: NOT independently"));
+    }
+    #[test]
+    fn exported_coordinates_contain_all_48_ct_detector_indices() {
+        let c=CbctGeometry::from_detector_json(&sample(),"scan.zip".into(),"qc".into()).unwrap();
+        let csv=c.coordinates_csv();
+        assert_eq!(csv.lines().count(),1+3+48+1);
+        assert!(csv.contains("sensor_ct_detector_index,array_0,0,"));
+        assert!(csv.contains("glass_BB_not_verified_HDMM"));
     }
     #[test]
     fn refuse_incomplete_scan_without_mutating_fit() {
