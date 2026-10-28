@@ -590,6 +590,34 @@ The October `calibration.candidate.json` remains
 unapproved and the Rust `RigidProfile` validator
 must remain fail-closed.
 
+## Existing KiCad library source recovered (2026-10-28)
+
+Earlier documentation incorrectly implied that the
+user had not shared the physical KiCad PCB design.
+ChatGPT Library actually contains user-uploaded
+`/Hall Effect Motion Tracking/MLX90393_board3-2025-06-02_225333.zip`
+(September 22) and `/MLX90393_board4.zip`
+(September 25). The **later** ZIP contains a complete
+`MLX90393_board3.kicad_pcb` with **16 placed
+MLX90393-011 QFN footprints** in a 4×4, 4.5-mm
+grid, all 180° on F.Cu, plus three JST and four
+mounting-hole footprints. It also contains schematics
+and production footprints. The inner project retained
+the `board3` name despite the outer archive being
+`board4.zip`. The earlier older ZIP lacked placed
+sensor footprints when inspected previously.
+
+These original board files are in **Library**, not
+committed to Git; Library uploads do not automatically
+synchronize to either repo. Do not publish electronics
+CAD/manufacturing files to public Git without
+the user's direction. This source now permits a
+KiCad pin-1/footprint-versus-datasheet MLX magnetic
+axis audit, but exact October manufactured board
+revision and sensor index/address correspondence
+still require confirmation. See research repo
+`tools/cbct_bridge/HALL_AXIS_PROVENANCE.md`.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
