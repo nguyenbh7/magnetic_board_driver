@@ -323,6 +323,43 @@ Source-machine logs/metadata and operator notes would be
 appropriate provenance; meanwhile verify physical firmware
 board identities/JST orientation independently.
 
+## Overwritten October Hall recording: return to validated May-15 hardware prior (2026-10-27)
+
+The user reports that the latest October-23 Hall recording was
+**overwritten** and that the physical board connections should be
+unchanged from May 15. The May-15 physically validated assignment is
+**raw0=Top/Superior, raw1=Left, raw2=Right**. Treat this as a
+*provisional prior* for October, NOT a reconfirmed mapping.
+The October one-magnet magnitude-screen ranking
+`raw0→Superior, raw1→Right, raw2→Left` is unapproved,
+depends on Hall file content with unresolved provenance, and
+must **not** override the original physically verified mapping.
+
+No Hall log is currently established as a contemporaneous,
+uncorrupted, correctly associated October scan baseline.
+The CBCT detector geometry and two-scan consistency remain valid,
+but background, magnet strength/polarity, board vector transforms
+and raw-to-CT sensor indices are **not approved for live fitting**.
+Preserve the generated calibration template with false verification
+flags. Verify the October physical cabling/JST and KiCad sensor
+index orientation independently, then calibrate with an
+appropriate matched Hall acquisition.
+
+**Recording-loss safety:** The `mlx-live-fit` and
+`feature/live-rigid-body-fit` branches now have an
+atomic create-new `MLXBF002` logger and explicit
+stop-drain/flush behavior (see `app/LOGGING_WORKFLOW.md`);
+testing on the actual Windows acquisition PC is still required.
+The separate lab-production `gk_measurement` branch still
+uses the older `File::create` raw/A-B logger and must not
+be represented as overwrite-protected. Port/test that
+branch's raw and companion file protection before
+future acquisition, or use the verified newer logger.
+For future paired CT-Hall datasets, record a unique
+run ID and actual acquisition time, retain the raw file
+and an independent backup, and do not reuse a selected
+filename.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
