@@ -704,6 +704,55 @@ local import, but the editable PCB source has
 not yet been confirmed committed/pushed to
 this repository.
 
+## Real corrected v2 Oct23 CT results; unverified signed-axis hypothesis (2026-10-28)
+
+User-supplied **real Oct23 v2** Scan1/Scan2
+CT sensor-order comparison confirms both scans
+assign the same candidate indices to all 48 chips:
+**Right raw2 identity, Left raw1 [15…0], Superior
+raw0 identity**. Stationary-board centroid
+registration RMS **0.00752885 mm**.
+Cross-scan chip RMS/max differences:
+**Right 0.17887/0.38077 mm**, **Left
+0.15180/0.38210 mm**, **Superior
+0.01999/0.03721 mm**.
+
+Scan1 corrected **grid +Z versus detector chip-normal**
+dots are **+0.999973 (Right), +0.999998 (Left),
++0.999683 (Superior)**, versus the old v1
+mirror's -1; this agreement is partly a
+construction result, not an independent
+verification of magnetic field-axis signs.
+Current nominal-grid CT RMS: Right
+**0.17914 mm**, Left **0.23974 mm**,
+Superior **0.16347 mm**; historical May15
+local layout fits equally but rotates 90°.
+
+Research repo now includes
+`tools/cbct_bridge/propose_hall_field_axes.py`,
+which combines the corrected v2 scan-specific
+proper grid-to-LPS rotation with the **provisional
+board4/Melexis chip-to-grid transform
+`[By,-Bx,Bz]`**, refusing v1 files,
+scan-UID mismatch, invalid/reflected rotations,
+wrong physical raw IDs, contradictory board
+normals and verified flags. It writes an
+**unverified standalone diagnostic JSON**, not
+a loadable Rust `RigidProfile`. Original
+geometry/calibration files stay unchanged,
+live export stays blocked. Nine new synthetic
+tests bring the expected test count to **60**
+(51 previously passed on Windows).
+
+Remaining blockers: KiCad source files still
+require the separate hardware-repo local
+Git push, the fabricated Oct23 board revision
+and firmware build must be checked, and the
+preserved Oct23 Hall data require a physically
+matched pose plus independently calibrated
+background/magnet polarity and strength for
+full three-cylinder vector-field validation.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
