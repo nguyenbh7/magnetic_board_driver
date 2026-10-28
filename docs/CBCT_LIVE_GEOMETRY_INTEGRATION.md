@@ -1,3 +1,22 @@
+## Windows CBCT full-field static screen tests: 69/69 pass (2026-10-28)
+
+The user confirmed **69/69 passing CBCT-bridge tests
+in 0.171 seconds** on Windows, including the nine
+new tests for static three-magnet finite-cylinder
+field evaluation, `MLXBF002` parsing, corrected v2
+geometry and field-axis transformation guards and
+spatially held-out board backgrounds.
+
+**No October real-field residual report has been supplied yet.**
+These tests cannot verify October magnetic polarity, axis
+signs, board identity, Hall-to-CT pose pairing or a live
+`RigidProfile`. Await the unapproved two-CBCT real-data
+`three_magnet_static_screen_v1.json` results for
+evaluation against the background-only reference and
+historical May15 raw-board assignment. Keep all
+calibration approval gates false.
+
+
 # CBCT-assisted geometry for the live six-DOF fitter — integration design
 
 **Status:** proposed architecture, 2026-10-27. No CBCT import, detector
