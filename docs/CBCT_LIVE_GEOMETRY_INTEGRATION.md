@@ -360,6 +360,49 @@ run ID and actual acquisition time, retain the raw file
 and an independent backup, and do not reuse a selected
 filename.
 
+## CT-only candidate firmware chip indexing / May-15 board prior (2026-10-27)
+
+The user clarified the surviving Hall measurements are from the
+**October 23 CBCT experimental session**; the intended latest
+recording was overwritten, however, so the surviving file's
+exact baseline pose and relationship to the two CT images
+are not established. User expects **physical cabling unchanged
+from May 15**: raw0=Superior, raw1=Left, raw2=Right.
+This remains an explicit provisional October hardware prior,
+not automatically verified physical wiring.
+
+The research repo now contains:
+`tools/cbct_bridge/propose_ct_sensor_order.py` to infer
+**unverified** 4×4 chip-index candidates geometrically from
+the CBCT chip-side normal and PCB center versus chip centroid,
+using the documented KiCad convention (connector toward
+viewer/front; sensor0 bottom-right; up a column then left).
+For existing October `detections.json`, the missing
+PCB center is read from the corresponding `objects.csv`.
+Future detector output includes `board_center_lps_mm`
+directly in the JSON.
+
+`tools/cbct_bridge/stage_index_candidates.py` optionally copies
+these geometrical permutations and the explicit May15 board
+IDs into a **new** `calibration.candidate.json` (outside Git);
+it never modifies the source calibration review, never overwrites
+an existing candidate file, and retains
+`reviewed_and_approved=false` and
+`firmware_mapping_verified=false`. Other magnetic
+calibrations (signed field-axis transform, offsets,
+remanence/polarity, effective background) are not fabricated.
+The Rust `RigidProfile` export must continue to fail closed.
+
+**Physical verification still required:** Determine that the
+specific October PCB orientation, chip-side normal and actual
+JST connector end match the geometry-based approximation,
+check firmware board 0/1/2 physical wiring, and assess
+the true field vectors using an appropriate matched
+three-magnet calibration. The old May15 sample permutation
+is not automatically transferred to a separate CT scan.
+Six synthetic ordering and five staging tests were added
+and require Windows execution; 22 tests previously passed.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
