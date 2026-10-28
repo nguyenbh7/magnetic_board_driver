@@ -309,6 +309,20 @@ after copy/restore. Details, exact acquisition times
 and follow-up actions are recorded in the research-repo
 `tools/cbct_bridge/README.md`.
 
+## Oct27 local Hall timestamp check cannot establish Oct23 pairing
+
+Windows `Get-Item` on the user’s downloaded copy of
+`mannequinn measurement 10_23_2026.bin` reported
+CreationTime and LastWriteTime both **2026-10-27 13:35:03**.
+These times postdate the two original Oct23 DICOM acquisitions
+and are consistent with copying or downloading; they are not
+valid measurement timestamps. The scanner-to-Hall pairing
+remains unestablished. Do not infer CBCT match from this
+file’s filesystem metadata or auto-approve a live profile.
+Source-machine logs/metadata and operator notes would be
+appropriate provenance; meanwhile verify physical firmware
+board identities/JST orientation independently.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
