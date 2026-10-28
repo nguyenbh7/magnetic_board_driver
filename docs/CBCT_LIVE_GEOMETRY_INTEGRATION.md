@@ -775,6 +775,47 @@ The editable KiCad PCB files were packaged for a local Git
 import; the actual assets are not confirmed pushed merely
 because their README and .gitignore exist.
 
+## Candidate raw-to-LPS matrices and next Oct23 three-magnet screen (2026-10-28)
+
+The real Scan 1 corrected-v2 KiCad-derived Hall-axis JSON
+has proper 3×3 matrices (determinants ≈+1,
+orthogonality residual <4e-15), with identities
+for Right raw2 and Superior raw0, reversed
+index order for Left raw1. Its chip-to-grid
+candidate is `[By,-Bx,Bz]`. **Every magnetic
+verification and review flag is false**;
+proper rotation tests alone do not imply
+physically correct signed axes.
+
+The surviving October `MLXBF002` file was
+independently decoded: raw0/raw1/raw2 contain
+**153/154/154 frames** with all 16 chips
+recorded. Median per-chip field magnitudes:
+**4.66 / 7.03 / 5.36 mT**. The overwrite
+means the binary is still not independently
+pose-paired with either CBCT scan.
+
+Research-repo
+`tools/cbct_bridge/screen_three_magnet_static.py`
+now evaluates the full signed vector field of
+three finite cylindrical magnets across all
+48 CT-localized chips, for each CBCT pose,
+raw-board ID hypothesis, unsigned CT magnet
+axis sign hypothesis and prespecified
+remanence sensitivity, using spatially held-out
+board-background nuisance estimates and a
+background-only reference. **No independent
+magnetic residual result exists yet.**
+Nine synthetic tests bring the pending suite
+to **69**; 60 previously passed on Windows.
+Full method: `tools/cbct_bridge/STATIC_THREE_MAGNET_SCREEN.md`.
+
+This screen remains *exploratory* and cannot
+create or approve a Rust `RigidProfile`.
+The editable KiCad PCB source still awaits
+confirmation of the user's separate local
+Git import/push.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
