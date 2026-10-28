@@ -280,6 +280,35 @@ The cross-scan index audit is reproducible in the
 research-repo bridge README; keep scan-derived reports
 outside public Git.
 
+## October 23 CT acquisition chronology / Hall pairing gate (2026-10-27)
+
+Source CT DICOM `(0008,0022)` and `(0008,0032)` tags,
+checked on multiple CT slices, report **Scan 1 at 15:07:10**
+and **Scan 2 at 15:15:20** on 2026-10-23, an
+**8-minute-10-second** interval. Timezone and any drift
+between the scanner and Hall-recording computer have not
+been verified. The `MLXBF002` Hall log contains only
+device-relative microsecond timestamps (duration
+~4.46 s), not an independently proven scanner-relative
+wall-clock acquisition time; a DICOM-to-Hall pairing is
+still **unresolved**. The scans' ~1.6° rigid magnet
+pose difference means that screening the same raw Hall
+frames against both geometries is a sensitivity check,
+not two calibrated field-validations.
+
+**Do not mark either scan as a matched Hall baseline or
+load an approved `RigidProfile` until the log's physical
+pose and capture time are corroborated**, firmware board
+identity/chip indexing is verified, and the three-magnet
+finite-cylinder vector-field forward model is validated
+against an appropriate baseline with signed Hall axes,
+magnet strengths and offset handling. File-system
+creation/modification times of the original Hall binary
+may be useful supporting evidence but are not reliable
+after copy/restore. Details, exact acquisition times
+and follow-up actions are recorded in the research-repo
+`tools/cbct_bridge/README.md`.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
