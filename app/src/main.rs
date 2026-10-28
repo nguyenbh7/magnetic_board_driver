@@ -1829,8 +1829,7 @@ mod tracking_mode_ui_tests {
     }
 }
 
-#[tokio::main]
-pub async fn main() -> iced::Result {
+pub fn main() -> iced::Result {
     iced::application(Context::default, update, view)
         .subscription(|context: &Context| {
             if context.cbct_importing {
