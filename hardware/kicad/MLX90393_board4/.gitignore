@@ -1,0 +1,25 @@
+# Generated KiCad/local session state; retain only editable source files
+*.kicad_prl
+*.kicad_wks~
+*.lck
+*.bak
+*_autosave*
+fp-info-cache
+*-backups/
+*backups/
+gerber/
+jlcpcb/gerber/
+jlcpcb/production_files/
+jlcpcb/project.db
+*.gbr
+*.gbrjob
+*.gbl
+*.gtl
+*.gto
+*.gbo
+*.gts
+*.gbs
+*.gtp
+*.gbp
+*.gm1
+*.drl
