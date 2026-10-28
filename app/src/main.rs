@@ -1399,7 +1399,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         } else if rigid.location_preset.is_some() {
             "Profile: calibration required (setup reference only)".to_string()
         } else {
-            "Active profile: none — load a calibrated profile or select A1 V1".to_string()
+            "Active profile: none — load a calibrated Gamma Knife profile".to_string()
         };
         let setup_help = if is_a1_demo {
             if rigid.a1_background_ready {
@@ -1482,7 +1482,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             text("Tracking Configuration"),
             row![
                 text("Setup:"),
-                pick_list(MagnetLocationPreset::ALL.to_vec(),
+                pick_list(MagnetLocationPreset::GK_SETUP_OPTIONS.to_vec(),
                     rigid.location_preset, Message::SelectMagnetLocations),
                 button("Load calibrated profile (.json)").on_press(Message::LoadRigidProfile),
             ].spacing(8),
