@@ -550,6 +550,46 @@ Next validate actual mounted PCB/chip-axis conventions,
 signal polarity, magnet strengths/background and
 pose-matched Hall frame predictions before live fit.
 
+## 46 passing CBCT tests; traced raw MLX field components (2026-10-28)
+
+All **46** research-repo CBCT bridge regression tests passed
+on Windows in **0.069 s**, including new board-local axis
+interpretation and protection tests.
+
+The raw `MLXBF002` logging data path was audited in
+the current Rust firmware:
+`firmware/microcontroller/src/mlx90393/sensor.rs`
+reads sensor X/Y/Z measurement bytes into distinct
+MLX field components;
+`data_transfer/src/conversions.rs` converts each
+component to µT with its corresponding `Axis::X/Y/Z`
+sensitivity, and
+`firmware/microcontroller/src/handlers.rs` stores those
+values directly in `BoardFrameSample.bx_ut/by_ut/bz_ut`.
+There is **no extra component permutation or 3×3
+rotation in the inspected logging path**. This finding
+depends on which firmware was actually flashed on
+the October 23 rig.
+
+The physically mounted MLX chip/package axes relative
+to the JST/PCB reference frame remain **unverified**;
+the local 4×4 grid-to-CT geometric rotation does not
+alone establish the sensor-reported magnetic field
+axes. The historical May15 nominal coordinate
+system differs by 90° in plane; never transfer
+historical `raw_to_world` rotations without
+reconciling coordinate frames and physically
+verifying signed Hall axes. Record independent
+PCB pin-1 / chip-axis evidence and check a known
+signed field direction before calibrating the
+full three-magnet finite-cylinder model.
+
+Research repository method and limitations:
+`hall-effect-motion-tracking/tools/cbct_bridge/HALL_AXIS_PROVENANCE.md`.
+The October `calibration.candidate.json` remains
+unapproved and the Rust `RigidProfile` validator
+must remain fail-closed.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
