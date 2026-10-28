@@ -1,3 +1,127 @@
+# Implemented desktop DICOM/CBCT geometry import (2026-10-28)
+
+**This section supersedes the original proposed-architecture status
+farther down this historical document.** The target scope is **INITIAL
+GEOMETRY** (not magnetic calibration). New live-app code:
+
+- `app/src/cbct_geometry.rs`: validates the established
+  `gk_cbct_detections_v1` Python output. Computes the **centroid
+  of all three detected magnets as the initial rigid-body origin**
+  in DICOM LPS millimeters, stores each magnet's relative
+  center and unsigned CT axis, stores **all 48 CT chip positions**
+  in detector order, and stores the detected glass BB
+  position/offset from the magnet centroid.
+- `app/src/main.rs`: adds three controls to the **Live
+  Tracking → Rigid 6-DOF** panel:
+  **Import DICOM ZIP**, **Import DICOM folder** and
+  **Open CT detections.json**.
+  A fourth **Copy all CT positions** button exports a
+  tabular clipboard listing of all 48 detector-indexed
+  chips, magnets, and glass BB in DICOM LPS mm, with
+  offsets relative to the three-magnet origin.
+- Importing a DICOM series/ZIP launches the maintained
+  `hall-effect-motion-tracking/tools/cbct_bridge/cbct_detect.py`
+  as a **separate Python subprocess in a blocking worker**,
+  never on the iced UI event loop or the real-time
+  fitting thread. The detector writes original QC
+  images/JSON into a **unique, local** directory
+  `%LOCALAPPDATA%\magnetic_board_driver\cbct_imports\import_*`
+  and its output is immediately parsed into the
+  initial-geometry preview.
+- **Open CT detections.json** avoids CT processing
+  entirely, and is the fastest way to see the
+  **already processed October 23 scans** inside the app.
+  Example: `%USERPROFILE%\Documents\CBCT_Results\scan1\detections.json`.
+  It loads positions, origin and BB without changing
+  the selected live magnetic profile. The second scan
+  can be opened separately (do not merge its
+  different DICOM Frame of Reference UID).
+- The detector expects **three magnets, three 16-chip
+  arrays, and exactly one glass BB**, reflecting the
+  established October phantom detector. It requires a
+  nonempty DICOM FrameOfReferenceUID, valid/finite
+  positions, normalizable magnet axes, and each board
+  grid fit RMS ≤1 mm, refusing incomplete scans.
+  Sensor indices 0…15 remain **CT DETECTOR order**,
+  not firmware-indexed; do not infer board wiring,
+  magnet polarity or field-axis calibration here.
+- **HDMM sticker caveat:** The existing detector
+  identifies a **glass BB**, NOT an independently
+  detected/reflected HDMM nose sticker. The app
+  explicitly labels the BB as unverified for HDMM
+  and shows its relative offset without automatically
+  assigning it to the HDMM target. A sticker-specific
+  detection/identification (or operator-confirmed
+  BB surrogate) is a *separate follow-up*.
+- This is **read-only CT geometry initialization**:
+  importing does NOT call
+  `RigidLiveFit::set_profile()`, does NOT generate
+  an approved `RigidProfile`, and does NOT
+  replace/reset the A1/other calibrated live profiles.
+  The rigid body's magnetic **6-DOF tracking**
+  requires independently verified signed field
+  axes/background/magnet strengths and remains
+  deliberately separate from today's goal.
+
+## Build / demo on the Windows development PC
+
+```powershell
+Set-Location 'F:\GitHub\magnetic_board_driver'
+git switch feature/live-rigid-body-fit
+git pull --ff-only
+cargo test -p app
+cargo run -p app --release
+```
+
+Select **Live Tracking → Rigid 6-DOF →
+Open CT detections.json**, then choose
+`C:\Users\Brandon Nguyen\Documents\CBCT_Results\scan1\detections.json`.
+The panel should show three detected magnets,
+their three-magnet center of mass (geometric
+centroid, not a mass-weighted center of mass),
+the three boards and 48 chip locations, the
+glass BB and BB-to-rigid-origin offset.
+Click **Copy all CT positions** to inspect
+all individual sensor positions externally.
+
+To use the ZIP/folder buttons, the two
+sibling repositories must be at
+`F:\GitHub\hall-effect-motion-tracking` and
+`F:\GitHub\magnetic_board_driver`.
+If not, set `CBCT_DETECT_SCRIPT` to the
+full path of `cbct_detect.py`. The Python
+environment must have the detector's
+dependencies from
+`hall-effect-motion-tracking/tools/cbct_bridge/requirements.txt`;
+if needed set `CBCT_PYTHON` to a specific
+virtual-environment `python.exe`. The DICOM
+folder should contain the complete series;
+individual `.dcm` files are not accepted
+as stand-alone imports. The output is
+**not committed to either Git repository**.
+
+There are **six new Rust unit tests** for
+CBCT import schema, 3/3/1 object counts,
+origin and marker offsets, all-48-chip
+clipboard export, missing DICOM frame,
+incomplete detection and invented HDMM
+object rejection. **Build and GUI smoke
+testing on Windows are still pending.**
+Do not report this as compiled or
+end-to-end tested until the user runs
+`cargo test -p app` and verifies an import.
+
+**Acceptance test for today's scoped goal:**
+the app imports the user's actual
+`scan1/detections.json`, displays finite
+three-magnet centroid plus three relative
+magnet centers, all 48 CT chip coordinates
+and one BB offset. It labels sticker
+identification unverified and leaves any
+active magnetic `RigidProfile` unchanged.
+The ZIP/folder buttons are an optional
+full-detector end-to-end test.
+
 ## Windows CBCT full-field static screen tests: 69/69 pass (2026-10-28)
 
 The user confirmed **69/69 passing CBCT-bridge tests
@@ -19,9 +143,7 @@ calibration approval gates false.
 
 # CBCT-assisted geometry for the live six-DOF fitter — integration design
 
-**Status:** proposed architecture, 2026-10-27. No CBCT import, detector
-subprocess, or automatic profile generation is implemented in the desktop
-app by this note.
+**Historical design note (2026-10-27):** The import UI and detector subprocess are now implemented as an uncompiled initial-geometry preview; magnetic profile generation remains separate and unavailable.
 
 ## Inputs and evidence
 
