@@ -1121,3 +1121,8 @@ The normal Live Tracking screen now shows a small DICOM section: import buttons,
 ## Live Tracking control grouping (2026-10-28)
 
 The desktop UI now groups the same existing actions into **DICOM Geometry** (ZIP/folder import and review), **Tracking Configuration** (setup preset, calibrated-profile JSON loader, profile status), and **Live Tracking** (rigid zero and measured motion). The former default `Custom calibrated geometry (or no setup selected)` and generic `Select A1 V1 ...` hint have been replaced by concise profile status. A1-specific background prompts remain. **Set rigid zero** is visually disabled until an accepted rigid fit is available; `reset_zero` already refuses an unset result. Preset references are not mislabeled as complete calibrated profiles, and the imported DICOM preview remains separate from the magnetic configuration. Windows build and visual validation are pending.
+
+
+## A1 demo option archived from Gamma Knife setup picker (2026-10-28)
+
+The production Live Tracking **Setup** dropdown now shows the May 15 linear-stage CT and rotation-stage geometry references only. The bundled A1 demo calibration, profile recognition, synthetic/regression tests, and A1-specific code remain in the repository for reproducibility; this is a UI archival change, not deletion or a change to fit math. Loading a complete reviewed profile remains the normal Gamma Knife workflow. The ordinary no-profile status no longer suggests A1. If an archived A1 profile is explicitly loaded, its existing specialized background workflow is retained. This UI adjustment still requires a local Windows compile/visual check.
