@@ -95,6 +95,7 @@ enum Message {
     CbctImportPicked(Option<PathBuf>),
     CbctJsonPicked(Option<PathBuf>),
     CbctImportCompleted(Result<cbct_geometry::CbctGeometry, String>),
+    CopyCbctCoordinates,
     CaptureRigidBackground,
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
@@ -834,6 +835,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CopyCbctCoordinates => {
+            match &context.cbct_geometry {
+                Some(geometry) => iced::clipboard::write(geometry.coordinates_csv()),
+                None => Task::none(),
+            }
+        }
         Message::ResetRigidZero => {
             context.rigid_fit.reset_zero();
             Task::none()
@@ -1383,6 +1390,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                 button("Import DICOM ZIP").on_press(Message::ImportCbctZip),
                 button("Import DICOM folder").on_press(Message::ImportCbctFolder),
                 button("Open CT detections.json").on_press(Message::LoadCbctDetectionsJson),
+                if context.cbct_geometry.is_some() {
+                    button("Copy all CT positions").on_press(Message::CopyCbctCoordinates)
+                } else {
+                    button("Copy all CT positions")
+                },
             ].spacing(8),
             text(if context.cbct_status.is_empty() {
                 "CBCT: no initial geometry imported"
