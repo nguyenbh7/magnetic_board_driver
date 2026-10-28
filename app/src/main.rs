@@ -1392,6 +1392,8 @@ fn view(context: &Context) -> Element<'_, Message> {
         let summaries = context.live_fits.board_summaries();
 
         let rigid = context.rigid_fit.summary();
+        // Retained only for archived A1-specific background handling.
+        let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
         let pose_label = rigid_fit_status_text(&rigid);
         let profile_status = if let Some(name) = &rigid.profile_name {
             format!("Active profile: {name}")
