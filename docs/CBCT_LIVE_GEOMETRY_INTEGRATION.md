@@ -400,8 +400,19 @@ check firmware board 0/1/2 physical wiring, and assess
 the true field vectors using an appropriate matched
 three-magnet calibration. The old May15 sample permutation
 is not automatically transferred to a separate CT scan.
-Six synthetic ordering and five staging tests were added
-and require Windows execution; 22 tests previously passed.
+The follow-up `compare_geometric_sensor_orders.py` independently
+registers the CT board centroids (Scan 1 to Scan 2) and checks that
+each proposed firmware sensor number resolves to the same physical
+3-D chip position, reporting per-board RMS/max positional differences.
+The candidate staging script never modifies the original calibration
+and uses exclusive file creation for the new review copy. These
+checks verify **cross-scan consistency**, not physical board ID.
+
+Six synthetic ordering, five staging, and three cross-scan
+candidate-comparison tests were added and require Windows
+execution; the previous 22-test suite passed. **The new
+expected count is 36 tests.** See the research repo README
+for the complete Windows PowerShell commands and safety rules.
 
 ## Staged implementation
 
