@@ -1394,18 +1394,21 @@ fn view(context: &Context) -> Element<'_, Message> {
         let rigid = context.rigid_fit.summary();
         let pose_label = rigid_fit_status_text(&rigid);
         let is_a1_demo = rigid.location_preset == Some(MagnetLocationPreset::A1Demo);
-        let selected_setup = rigid.location_preset.map(|preset| preset.summary())
-            .unwrap_or_else(|| "Custom calibrated geometry (or no setup selected)".into());
+        let profile_status = if let Some(name) = &rigid.profile_name {
+            format!("Active profile: {name}")
+        } else if rigid.location_preset.is_some() {
+            "Profile: calibration required (setup reference only)".to_string()
+        } else {
+            "Active profile: none — load a calibrated profile or select A1 V1".to_string()
+        };
         let setup_help = if is_a1_demo {
             if rigid.a1_background_ready {
-                "A1 background captured. Resume the motion program, then set rigid zero after an accepted fit."
+                "A1 background captured; set zero after an accepted fit."
             } else {
-                "Rigid fitting waits for the A1 baseline at the G-code background pause. You can view Sensor Traces or switch to Independent fits immediately."
+                "A1 fitting requires a background measurement at the G-code pause."
             }
-        } else if rigid.location_preset.is_some() {
-            "Gamma Knife stage references specify magnet centers only. Load matching complete CT/stage board geometry and magnetic calibration JSON to track."
         } else {
-            "Select A1 V1 for an immediate calibrated demo, or load your own complete rigid geometry JSON."
+            ""
         };
         let fit_quality = rigid.result.as_ref()
             .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
@@ -1423,14 +1426,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             .map(|angle| format!("Relative rotation: {:.2}°", angle))
             .unwrap_or_else(|| "Relative rotation: awaiting fit".into());
         let mut rigid_content = column![
-            text("Live Tracking — joint 6-DOF rigid body"),
-            row![
-                text("Setup:"),
-                pick_list(MagnetLocationPreset::ALL.to_vec(),
-                    rigid.location_preset, Message::SelectMagnetLocations),
-                button("Load geometry (.json)").on_press(Message::LoadRigidProfile),
-            ].spacing(8),
-            text("DICOM geometry — CT preview"),
+            text("DICOM Geometry — CT preview"),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
@@ -1483,11 +1479,23 @@ fn view(context: &Context) -> Element<'_, Message> {
                         "No detection log available.".into()
                     } else { context.cbct_last_log.clone() })
             } else { String::new() }),
-            text(selected_setup),
-            text(setup_help),
+            text("Tracking Configuration"),
             row![
-                button("Set rigid zero").on_press(Message::ResetRigidZero),
-                text(if rigid.zero_ready { "Zero: set" } else { "Zero: awaiting fit" }),
+                text("Setup:"),
+                pick_list(MagnetLocationPreset::ALL.to_vec(),
+                    rigid.location_preset, Message::SelectMagnetLocations),
+                button("Load calibrated profile (.json)").on_press(Message::LoadRigidProfile),
+            ].spacing(8),
+            text(profile_status),
+            text(setup_help),
+            text("Live Tracking — joint 6-DOF"),
+            row![
+                if rigid.result.is_some() {
+                    button("Set rigid zero").on_press(Message::ResetRigidZero)
+                } else {
+                    button("Set rigid zero")
+                },
+                text(if rigid.zero_ready { "Reference: set" } else { "Reference: not set" }),
             ].spacing(8),
             text(position_line),
             text(rotation_line),
