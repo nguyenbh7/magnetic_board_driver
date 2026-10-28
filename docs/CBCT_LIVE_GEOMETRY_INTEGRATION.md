@@ -1111,3 +1111,8 @@ remains an **unreviewed preview** and never enables magnetic calibration or a ri
 and log visibility, then cancel a second scan during volume processing and verify
 that no geometry is imported. These changes have not yet been compile-tested or
 replayed with the real DICOM archive in this environment.
+
+
+## Compact DICOM import UI (2026-10-28)
+
+The normal Live Tracking screen now shows a small DICOM section: import buttons, latest status, an animated **activity indicator** with elapsed time while working, one-line count/source summary on success, and a single review/calibration caveat. The activity indicator moves as time advances; **it is not percentage-complete**. Full geometry coordinates, LPS frame UID, axes, output location and BB warnings remain accessible under **Show details**. The full detector output is accessible separately under **Show log**. **Copy CT positions** remains available after a successful import. This only changes presentation; automatic activation of an unreviewed CT result remains prohibited. Build and visual validation on Windows are still pending.
