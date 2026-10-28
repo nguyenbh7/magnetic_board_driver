@@ -182,3 +182,8 @@ CBCT images and DICOM headers may contain patient identifiers.
 Keep raw scans, intermediate images and detector results outside
 public repositories unless properly approved/de-identified.
 Record only appropriate provenance and reproduceable algorithms in Git.
+
+
+## First bridge prototype (2026-10-27)
+
+The initial standalone Python bridge now exists as a downloadable source bundle in the ChatGPT conversation. It includes a 50-function notebook-derived detector library, a DICOM folder/ZIP CLI, JSON detections and calibration template generation, a fail-closed Rust RigidProfile adapter, and synthetic unit tests. Nine adapter unit tests passed. Full CBCT processing remains unverified here because SimpleITK/TorchIO were unavailable. **Do not mistake this bundle for an already-installed or production-ready part of the Rust app.** To bring it under source control, add the reviewed bundle files to the analysis repository and run them on the two October-23 CBCT datasets, then verify magnetic calibration before enabling live fits.
