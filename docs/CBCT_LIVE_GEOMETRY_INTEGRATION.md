@@ -246,6 +246,40 @@ are not independent confirmation. Physical board identification
 and calibration remain necessary before direct CBCT import
 can safely activate tracking.
 
+## Real cross-scan chip mapping audit: detector order stable (2026-10-27)
+
+The user ran the research-repo `audit_cbct_sensor_indexing.py`
+on both real CBCT geometries and the two candidate Hall-mapping
+reports; **22/22 bridge tests passed on Windows**.
+After registration of assumed stationary board centers (RMS
+**0.0075 mm**), best CT-chip index correspondence was
+identity on all three boards, with physical chip RMS
+**0.1789 mm Right**, **0.1518 mm Left**, **0.0200 mm Superior**.
+The nearest competing D4 mapping was approximately **10 mm**
+RMS for each board. The CT detector's chip numbering therefore
+does **not** explain raw2's discrepant candidate firmware mapping.
+
+Raw0→Superior and raw1→Right *candidate* per-sensor indices
+agree across the two magnetic screens, but raw1 magnetic
+correlation is weak (~0.45–0.48). Raw2→Left ranked index
+mappings disagree by **10.044 mm RMS**: `rot90_flip` in
+Scan 1 versus `rot270` in Scan 2. Importantly, `rot270`
+was Scan 1's second-ranked raw2/Left permutation (r≈0.777
+versus best r≈0.804), making it a *plausible* common
+candidate, not verified firmware indexing.
+
+**No Rust live profile is approved.** The same ~4.46 s
+stationary Hall log was compared against CBCT scans with
+slightly different magnet poses. Confirm which scan
+corresponds to the Hall acquisition before attempting
+a full vector-field calibration. Independently verify
+board IDs and firmware indexing against hardware
+connectors, then signed magnetic axes/polarity/background,
+finite-cylinder model and static/moving fit parity.
+The cross-scan index audit is reproducible in the
+research-repo bridge README; keep scan-derived reports
+outside public Git.
+
 ## Staged implementation
 
 1. **Python refactor:** isolate `load_scan`, magnet/board/BB detection
