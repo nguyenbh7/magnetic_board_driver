@@ -100,6 +100,10 @@ enum Message {
     ToggleCbctLog,
     ToggleCbctDetails,
     CopyCbctCoordinates,
+    CopyCbctStatus,
+    CopyCbctDetails,
+    CopyCbctLog,
+    CopyGkCalibrationStatus,
     CaptureRigidBackground,
     BeginGkBackground,
     BeginGkReference,
@@ -991,6 +995,37 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CopyCbctStatus => {
+            iced::clipboard::write(format!("DICOM import status: {}\nCT registration: {}",
+                context.cbct_status,
+                context.cbct_geometry.as_ref().map(|g|g.registration_preview_v2())
+                    .unwrap_or_else(|| "No geometry imported.".into())))
+        }
+        Message::CopyCbctDetails => {
+            match &context.cbct_geometry {
+                Some(g) => iced::clipboard::write(format!("{}\n\n{}",
+                    g.summary(),g.registration_preview_v2())),
+                None => iced::clipboard::write(format!("No CT geometry. Status: {}",context.cbct_status)),
+            }
+        }
+        Message::CopyCbctLog => {
+            let log=context.cbct_progress.as_ref()
+                .and_then(|p|p.lock().ok().map(|state|state.log.join("\n")))
+                .unwrap_or_else(||context.cbct_last_log.clone());
+            iced::clipboard::write(format!("DICOM status: {}\n\n{}",context.cbct_status,log))
+        }
+        Message::CopyGkCalibrationStatus => {
+            let mut result=format!("GK calibration status: {}\n",context.gk_calibration.status);
+            if let Some(g)=&context.cbct_geometry {
+                result.push_str(&format!("CT: {}\n{}\n",
+                    g.scan_path.display(),g.registration_preview_v2()));
+            }
+            if let Some((profile,rmse))=&context.gk_calibration.calibrated_candidate {
+                result.push_str(&format!("Experimental candidate strengths [mT]: {:?}; RMSE {:.5} mT\n",
+                    profile.magnets.iter().map(|m|m.remanence_mt).collect::<Vec<_>>(),rmse));
+            }
+            iced::clipboard::write(result)
+        }
         Message::CopyCbctCoordinates => {
             match &context.cbct_geometry {
                 Some(geometry) => iced::clipboard::write(geometry.coordinates_csv()),
@@ -1728,6 +1763,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                 } else {
                     button("Copy CT positions")
                 },
+                button("Copy status").on_press(Message::CopyCbctStatus),
+                if context.cbct_geometry.is_some() {
+                    button("Copy details").on_press(Message::CopyCbctDetails)
+                } else { button("Copy details") },
+                button("Copy log").on_press(Message::CopyCbctLog),
             ].spacing(8),
             text(context.cbct_geometry.as_ref().map(|geometry| {
                 format!("{} · {} magnets · {} sensor arrays ({} chips) · {} glass BB candidate\nUnreviewed CT geometry only — magnetic calibration and HDMM identity not verified.",
@@ -1787,6 +1827,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(if context.gk_calibration.status.is_empty() {
                 "Calibration: not started".to_string()
             } else { context.gk_calibration.status.clone() }),
+            button("Copy calibration diagnostics").on_press(Message::CopyGkCalibrationStatus),
             text("CT registration: v2 JST/PCB-centroid geometry candidate, using the established A1 Hall axis convention. Inspect the board orientation and magnet dimensions before enabling."),
             if context.gk_calibration.calibrated_candidate.is_some() {
                 button("Enable EXPERIMENTAL 6-DOF tracking (review first)").on_press(Message::EnableExperimentalGkTracking)
