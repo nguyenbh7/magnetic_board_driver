@@ -520,7 +520,7 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
     }
     let mut diagnostics=Vec::new();
     for (program, prefix) in candidates {
-        let label = format!("{} {}",PathBuf::from(&program).display(),
+        let label = format!("{} {}",program.to_string_lossy(),
             prefix.iter().map(|v|v.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" "));
         let result=Command::new(&program).args(&prefix).arg("-c")
             .arg("import numpy, scipy, SimpleITK, matplotlib, pandas, torchio; import sys; print(sys.executable)")
