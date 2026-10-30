@@ -891,9 +891,12 @@ mod tests {
         }
         let mut background = [[[0.0;3];16];3];
         let mut measured = background;
-        let src: Vec<_> = profile.magnets.iter().map(|m| {
-            vec![quadrature(m, m.center_mm, m.axis)]
-        }).collect();
+        // predict expects one quadrature-source Vec per magnet, not an
+        // extra Vec wrapper (the production strength fitter wraps each
+        // magnet separately because it calls predict once per magnet).
+        let src: Vec<_> = profile.magnets.iter()
+            .map(|m| quadrature(m, m.center_mm, m.axis))
+            .collect();
         for board in &mut profile.boards {
             board.background_mt = [0.0;3];
             board.sensor_gains = None;
