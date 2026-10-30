@@ -1017,7 +1017,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.cbct_importing = false;
             match result {
                 Ok(geometry) => {
-                    context.cbct_status = "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into();
+                    context.cbct_status = if geometry.markers.is_empty() {
+                        "DICOM import: 3 magnets and 48 chips detected; NO glass BB. Geometry ready for review; HDMM marker unavailable.".into()
+                    } else {
+                        "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into()
+                    };
                     context.cbct_geometry = Some(geometry);
                     context.gk_calibration.reference = None;
                 context.gk_calibration.calibrated_candidate = None;
@@ -1072,12 +1076,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::BeginGkReference => {
-            if context.cbct_geometry.is_some() {
-                context.rigid_fit.invalidate_for_gk_calibration();
-                context.gk_calibration.begin(true);
-            } else {
-                context.gk_calibration.status = "Import the matching CT first; no-magnet background is optional.".into();
-            }
+            // Capture all 48 raw Hall fields even if CT cannot be imported
+            // at the GK console. They can be paired with DICOM offline.
+            context.rigid_fit.invalidate_for_gk_calibration();
+            context.gk_calibration.begin(true);
             Task::none()
         }
         Message::CalibrateGkTracking => {
@@ -1142,8 +1144,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ExportGkCalibration => {
-            if context.cbct_geometry.is_none() || context.gk_calibration.reference.is_none() {
-                context.gk_calibration.status = "Save requires CT and stationary reference (background optional).".into();
+            if context.gk_calibration.reference.is_none() {
+                context.gk_calibration.status = "Capture stationary Hall reference before export; CT and background optional.".into();
                 return Task::none();
             }
             iced::window::oldest()
@@ -1224,7 +1226,30 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "calibration_model_activated": context.rigid_fit.enabled()
                         })
                     });
-                let result = data.ok_or_else(|| "CT or captured sensor fields no longer available".to_string())
+                let data = data.or_else(|| context.gk_calibration.reference.as_ref().map(|reference| {
+                    // A complete raw-field record survives even if today's
+                    // DICOM is missing or the detector finds too few objects.
+                    serde_json::json!({
+                        "format":"gk_experiment_calibration_inputs_v1",
+                        "status":"pending_ct_geometry_no_model_activated",
+                        "units":{"positions":"mm","fields":"mT"},
+                        "sensor_fields_order":"raw_firmware_index_0_to_15",
+                        "frame_of_reference_uid":null,
+                        "detector_replay":null,
+                        "registration_v2_candidates":null,
+                        "background_raw_mt":context.gk_calibration.background.as_ref(),
+                        "background_method":if context.gk_calibration.background.is_some() {
+                            "measured_per_sensor"
+                        } else {
+                            "not_measured"
+                        },
+                        "stationary_raw_mt":reference,
+                        "calibration_candidate":null,
+                        "calibration_model_activated":false,
+                        "warning":"No verified CT geometry in this export; pair with matching DICOM scan offline. Do not treat absent background as zero."
+                    })
+                }));
+                let result = data.ok_or_else(|| "Stationary Hall reference no longer available".to_string())
                     .and_then(|data| serde_json::to_vec_pretty(&data).map_err(|e|e.to_string()))
                     .and_then(|bytes| {
                         use std::io::Write as _;
@@ -1901,8 +1926,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 else { "Background: skipped / not captured (allowed)" }),
             text("2. Install magnets; import/review CT when available. Raw logging works without CT."),
             text(if context.cbct_geometry.is_some() { "CT: imported for review" } else { "CT: not imported" }),
-            text("3. Keep boards/magnets stationary; capture 3 s of Hall fields."),
-            if context.gk_calibration.capturing.is_none() && context.cbct_geometry.is_some() {
+            text("3. Capture 3 s of stationary Hall fields with or WITHOUT CT import; archive with corresponding raw logs."),
+            if context.gk_calibration.capturing.is_none() {
                 button("Capture stationary reference").on_press(Message::BeginGkReference)
             } else { button("Capture stationary reference") },
             text(if context.gk_calibration.reference.is_some() { "Reference fields: 48 sensors captured" }
@@ -1919,10 +1944,10 @@ fn view(context: &Context) -> Element<'_, Message> {
             if context.gk_calibration.calibrated_candidate.is_some() {
                 button("Enable EXPERIMENTAL 6-DOF tracking (review first)").on_press(Message::EnableExperimentalGkTracking)
             } else { button("Enable EXPERIMENTAL 6-DOF tracking (review first)") },
-            if context.gk_calibration.reference.is_some() && context.cbct_geometry.is_some() {
+            if context.gk_calibration.reference.is_some() {
                 button("Save calibration inputs (.json)").on_press(Message::ExportGkCalibration)
             } else { button("Save calibration inputs (.json)") },
-            text("Background is optional for recording and reference capture. No-background calibration estimates board-constant offsets; retain .bin logs and validate against independent/HDMM."),
+            text("CT and background are optional for raw logging/reference export. Calibration requires CT; without measured background it fits board-constant offsets only. Retain .bin and DICOM logs."),
             // Retain the legacy profile importer under an explicit archival label.
             button("Legacy: load manually calibrated JSON").on_press(Message::LoadRigidProfile),
             text(profile_status),
