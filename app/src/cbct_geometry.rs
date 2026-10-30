@@ -584,6 +584,68 @@ mod tests {
     }
 
     #[test]
+    fn v2_ct_registration_recovers_firmware_grid_for_rotated_boards() {
+        let mut json: serde_json::Value = serde_json::from_str(&sample()).unwrap();
+        let right_axes=[
+            [1.0,0.0,0.0], [0.0,0.0,1.0], [0.0,0.0,-1.0],
+        ];
+        let up=[0.0,1.0,0.0];
+        let labels=["array_superior","array_left","array_right"];
+        for (idx, name) in labels.iter().enumerate() {
+            let center=[idx as f64 * 40.0,0.0,0.0];
+            let right=right_axes[idx];
+            let normal=cross(right,up);
+            let mut chip_pts=Vec::new();
+            for col in 0..4 {
+                for row in 0..4 {
+                    let x=-6.75+4.5*col as f64;
+                    let y=-6.75+4.5*row as f64;
+                    chip_pts.push([
+                        center[0]+x*right[0]+y*up[0],
+                        center[1]+x*right[1]+y*up[1],
+                        center[2]+x*right[2]+y*up[2],
+                    ]);
+                }
+            }
+            chip_pts.reverse(); // CT detector order is deliberately different
+            let obj=&mut json["objects"][idx*2+1];
+            obj["name"]=(*name).into();
+            obj["center_lps_mm"]=serde_json::json!(center);
+            obj["chip_grid_lps_mm"]=serde_json::json!(chip_pts);
+            obj["board_normal_lps"]=serde_json::json!(normal);
+            obj["board_center_lps_mm"]=serde_json::json!([
+                center[0],center[1]-8.0,center[2]
+            ]);
+        }
+        let geometry=CbctGeometry::from_detector_json(
+            &json.to_string(),"synthetic_scan".into(),"qc".into()).unwrap();
+        let boards=geometry.register_ct_boards_v2().unwrap();
+        assert_eq!(boards.len(),3);
+        for (idx,b) in boards.iter().enumerate() {
+            assert_eq!(b.detection_name,labels[idx]);
+            assert_eq!(b.raw_board_id,idx as u16);
+            assert_eq!(b.firmware_to_detector[0],15);
+            assert_eq!(b.firmware_to_detector[15],0);
+            assert!(b.geometric_rms_mm<1e-9);
+            assert!((b.jst_proxy_offset_mm-8.0).abs()<1e-9);
+            // raw Bx = -up, raw By = right, raw Bz = chip-face normal
+            for k in 0..3 {
+                assert!((b.raw_to_lps[k][0]+up[k]).abs()<1e-10);
+                assert!((b.raw_to_lps[k][1]-right_axes[idx][k]).abs()<1e-10);
+            }
+        }
+        let profile=geometry.experimental_candidate_profile().unwrap();
+        assert_eq!(profile.boards.len(),3);
+        assert_eq!(profile.magnets.len(),3);
+        assert_eq!(profile.boards[0].sensors_mm[0],boards[0].sensors_lps_mm[0]);
+        let mut missing=json.clone();
+        missing["objects"][1].as_object_mut().unwrap().remove("board_normal_lps");
+        let broken=CbctGeometry::from_detector_json(
+            &missing.to_string(),"synthetic_scan".into(),"qc".into()).unwrap();
+        assert!(broken.register_ct_boards_v2().is_err());
+    }
+
+    #[test]
     fn parse_three_magnets_arrays_and_bb_with_rigid_origin() {
         let c=CbctGeometry::from_detector_json(&sample(),"scan.zip".into(),"qc".into()).unwrap();
         assert_eq!(c.magnets.len(),3);
