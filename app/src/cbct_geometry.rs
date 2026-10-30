@@ -107,6 +107,107 @@ struct DetectedObject {
     board_normal_lps: Option<[f64; 3]>,
 }
 
+/// Diagnose missing *board locations* without trusting detector array names:
+/// those labels can change when only one/two boards are found. With three
+/// identified magnet anchors, a 16-chip array should sit near its own magnet.
+/// Never claim which board is missing if the anchors are absent or ambiguous.
+fn ct_board_failure_diagnostics(raw: &str) -> String {
+    let Ok(report)=serde_json::from_str::<serde_json::Value>(raw) else {
+        return "Cannot identify failed board: detector JSON is invalid.".into();
+    };
+    let Some(objects)=report.get("objects").and_then(|v|v.as_array()) else {
+        return "Cannot identify failed board: detector JSON has no object list.".into();
+    };
+    let expected=[
+        ("magnet_left","PATIENT LEFT","raw board 1"),
+        ("magnet_right","PATIENT RIGHT","raw board 2"),
+        ("magnet_superior","TOP OF HEAD (superior)","raw board 0"),
+    ];
+    let parse_point=|object: &serde_json::Value| -> Option<[f64;3]> {
+        let pts=object.get("center_lps_mm")?.as_array()?;
+        if pts.len()!=3 {return None;}
+        let point=[
+            pts[0].as_f64()?,pts[1].as_f64()?,pts[2].as_f64()?
+        ];
+        if point.iter().all(|x|x.is_finite()){Some(point)}else{None}
+    };
+    let mut anchors=Vec::new();
+    for (name,location,raw_id) in expected {
+        let found=objects.iter().filter(|o|
+            o.get("kind").and_then(|v|v.as_str())==Some("magnet")
+            && o.get("name").and_then(|v|v.as_str())==Some(name));
+        let points=found.filter_map(&parse_point).collect::<Vec<_>>();
+        if points.len()!=1 {
+            return format!(
+                "CT board side UNRESOLVED: detected magnet anchor {name} is absent/ambiguous; cannot safely infer missing patient-left/right/top board from incomplete arrays. Inspect detector QC images and log."
+            );
+        }
+        anchors.push((name,location,raw_id,points[0]));
+    }
+
+    let arrays=objects.iter().filter(|o|
+        o.get("kind").and_then(|v|v.as_str())==Some("array")).collect::<Vec<_>>();
+    let mut assignment=vec![Vec::<(String,f64,usize)>::new();3];
+    let mut unmatched=Vec::new();
+    for (idx,array) in arrays.iter().enumerate() {
+        let name=array.get("name").and_then(|v|v.as_str()).unwrap_or("unnamed_array");
+        let Some(point)=parse_point(array) else {
+            unmatched.push(format!("{name}: invalid board center"));
+            continue;
+        };
+        let mut distances=anchors.iter().enumerate().map(|(i,(_,_,_,center))|
+            (i,magnitude(offset(point,*center)))).collect::<Vec<_>>();
+        distances.sort_by(|a,b|a.1.total_cmp(&b.1));
+        // On the reviewed GK scans the proper board-magnet spacings were
+        // about 14-24 mm; the other magnets were >100 mm away. Restrict
+        // assignment to strong nearest-neighbor evidence, not the array name.
+        if distances[0].1<=50.0 && distances[1].1-distances[0].1>=25.0 {
+            assignment[distances[0].0].push((name.to_owned(),distances[0].1,idx));
+        } else {
+            unmatched.push(format!("{name}: location ambiguous (nearest magnet {:.1} mm; next {:.1} mm)",
+                distances[0].1,distances[1].1));
+        }
+    }
+
+    let mut lines=vec![
+        "CT BOARD DIAGNOSTICS (PROVISIONAL proximity-to-magnet association; LPS patient sides):".to_owned()
+    ];
+    for (i,(magnet,location,raw_id,_)) in anchors.iter().enumerate() {
+        match assignment[i].as_slice() {
+            [(name,distance,_)] => {
+                lines.push(format!(
+                    "  {location} ({raw_id}): DETECTED {name}, {:.1} mm from {magnet}",
+                    distance));
+            }
+            [] if unmatched.is_empty() => {
+                lines.push(format!(
+                    "  {location} ({raw_id}): NOT DETECTED -- no 16-chip array matched to {magnet}"
+                ));
+            }
+            [] => {
+                lines.push(format!(
+                    "  {location} ({raw_id}): NO CONFIDENT MATCH -- possible missing array, but ambiguous candidates remain"
+                ));
+            }
+            duplicates => {
+                lines.push(format!(
+                    "  {location} ({raw_id}): AMBIGUOUS -- {} arrays match the same magnet",
+                    duplicates.len()));
+            }
+        }
+    }
+    if !unmatched.is_empty() {
+        lines.push(format!("  UNASSIGNED CT ARRAYS: {}",unmatched.join("; ")));
+    }
+    if arrays.len()<3 {
+        lines.push("Detection-stage failure: fewer than three complete 16-chip arrays were returned; the detector QC log contains any rejected grid/board candidates.".into());
+    } else {
+        lines.push("All three array objects were returned; if CT->firmware registration still fails, inspect the board-specific v2 registration error in Copy details.".into());
+    }
+    lines.push("Do not enable experimental rigid fitting unless all three physical board identities and sensor mappings have been verified.".into());
+    lines.join("\n")
+}
+
 fn valid_point(point: &[f64; 3]) -> bool {
     point.iter().all(|value| value.is_finite())
 }
@@ -641,19 +742,25 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
         // object counts/coordinates. Missing BB alone is nonfatal; missing
         // a magnet or chip/board is NEVER silently accepted.
         if let Ok(ref report)=raw {
-            if let Ok(geometry)=CbctGeometry::from_detector_json(
-                report,scan.to_path_buf(),result_dir.clone()) {
+            let validation=CbctGeometry::from_detector_json(
+                report,scan.to_path_buf(),result_dir.clone());
+            if let Ok(ref geometry)=validation {
                 if geometry.markers.is_empty() {
                     record(&progress,"WARNING: CT found 3 magnets and 48 chips but no glass BB; continuing without marker reconstruction.".into());
-                    return Ok(geometry);
+                    return Ok(geometry.clone());
                 }
             }
             let counts=serde_json::from_str::<serde_json::Value>(report).ok()
                 .and_then(|value|value.get("counts").cloned())
                 .map(|value|value.to_string())
                 .unwrap_or_else(||"unavailable".into());
+            let board_details=ct_board_failure_diagnostics(report);
+            // Preserve this prominent summary in the app's Copy log as
+            // well as the failure status visible after the import ends.
+            record(&progress,board_details.clone());
+            let why=validation.err().unwrap_or_else(||"Detector returned nonzero exit despite complete report".into());
             return Err(format!(
-                "INCOMPLETE CT DETECTION (exit {status}); counts={counts}. Need 3 magnets, 3 boards (48 chips). BB optional. Detector stderr: {}. Full QC/log: {}",
+                "INCOMPLETE CT DETECTION (exit {status}); counts={counts}. {why}.\n{board_details}\nDetector stderr: {}. Full QC/log: {}",
                 stderr_text.chars().take(1200).collect::<String>(),result_dir.display()));
         }
         return Err(format!(
@@ -664,6 +771,7 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
     }
     let raw=raw.map_err(|e|format!("CBCT detector did not write detections.json: {e}"))?;
     CbctGeometry::from_detector_json(&raw,scan.to_path_buf(),result_dir)
+        .map_err(|why|format!("{why}.\n{}",ct_board_failure_diagnostics(&raw)))
 }
 
 #[cfg(test)]
