@@ -481,6 +481,73 @@ impl CbctGeometry {
     }
 }
 
+/// Resolve an interpreter that can run the CT detector on Windows and Unix.
+/// Prefer the detector's venv or an active venv, then Windows py launchers.
+/// A successful Python launch alone is insufficient: probe the image libraries
+/// before selecting a candidate so the Windows Store python alias is rejected.
+fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::ffi::OsString>, String), String> {
+    use std::ffi::OsString;
+    let mut candidates: Vec<(OsString, Vec<OsString>)> = Vec::new();
+    let explicit = std::env::var_os("CBCT_PYTHON");
+    if let Some(path) = explicit.as_ref() {
+        candidates.push((path.clone(), vec![]));
+    } else {
+        let exe = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
+        if let Some(dir) = script.parent() {
+            for base in [Some(dir), dir.parent().and_then(Path::parent)] {
+                if let Some(base) = base {
+                    let venv = base.join(".venv").join(exe);
+                    if venv.is_file() { candidates.push((venv.into_os_string(),vec![])); }
+                }
+            }
+        }
+        for key in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
+            if let Some(folder) = std::env::var_os(key) {
+                let path = if cfg!(windows) {
+                    PathBuf::from(&folder).join("Scripts").join("python.exe")
+                } else { PathBuf::from(&folder).join("bin").join("python") };
+                if path.is_file() { candidates.push((path.into_os_string(),vec![])); }
+            }
+        }
+        if cfg!(windows) {
+            for version in ["-3.11","-3.12","-3.13","-3"] {
+                candidates.push((OsString::from("py"),vec![OsString::from(version)]));
+            }
+            candidates.push((OsString::from("py"),vec![]));
+        }
+        candidates.push((OsString::from("python"),vec![]));
+        candidates.push((OsString::from("python3"),vec![]));
+    }
+    let mut diagnostics=Vec::new();
+    for (program, prefix) in candidates {
+        let label = format!("{} {}",PathBuf::from(&program).display(),
+            prefix.iter().map(|v|v.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" "));
+        let result=Command::new(&program).args(&prefix).arg("-c")
+            .arg("import numpy, scipy, SimpleITK, matplotlib, pandas, torchio; import sys; print(sys.executable)")
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                let interpreter = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                return Ok((program,prefix,interpreter));
+            }
+            Ok(out) => {
+                let error = String::from_utf8_lossy(&out.stderr);
+                let reason = error.lines().rev().find(|line|!line.trim().is_empty())
+                    .unwrap_or("Python interpreter failed");
+                diagnostics.push(format!("{label}: {reason}"));
+            }
+            Err(err) => diagnostics.push(format!("{label}: {err}")),
+        }
+    }
+    Err(format!(
+        "No Python interpreter with the DICOM detector dependencies was found. \
+         Install requirements using: py -3.11 -m pip install -r \"<hall-effect-motion-tracking>\\tools\\cbct_bridge\\requirements.txt\". \
+         Or set CBCT_PYTHON to the complete path of that environment's python.exe. \
+         Checked: {}",
+        diagnostics.join(" | ")
+    ))
+}
+
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
@@ -511,14 +578,15 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
         .map_err(|e| e.to_string())?.as_nanos();
     let result_dir = root.join(format!("import_{}_{}",std::process::id(),stamp));
     std::fs::create_dir(&result_dir).map_err(|e|format!("Cannot create unique CBCT output folder: {e}"))?;
-    let python = std::env::var_os("CBCT_PYTHON")
-        .unwrap_or_else(|| std::ffi::OsString::from("python"));
+    record(&progress, "Finding Python environment with DICOM dependencies...".into());
+    let (python,prefix,python_location) = discover_cbct_python(&script)?;
+    record(&progress, format!("DICOM Python: {python_location}"));
     record(&progress, "Launching Python CBCT detector...".into());
-    let mut child = Command::new(python)
-        .arg("-u").arg(&script).arg(scan).arg("--output").arg(&result_dir)
+    let mut child = Command::new(&python)
+        .args(&prefix).arg("-u").arg(&script).arg(scan).arg("--output").arg(&result_dir)
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn()
-        .map_err(|e|format!("Unable to launch Python CBCT detector: {e}. Configure CBCT_PYTHON to an environment with SimpleITK, scipy, numpy and matplotlib."))?;
+        .map_err(|e|format!("Unable to launch selected Python DICOM environment {python_location}: {e}"))?;
     let stdout = child.stdout.take().ok_or("Missing Python stdout pipe")?;
     let stderr = child.stderr.take().ok_or("Missing Python stderr pipe")?;
     let updates = Arc::clone(&progress);
