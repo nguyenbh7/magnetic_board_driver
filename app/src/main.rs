@@ -104,6 +104,7 @@ enum Message {
     BeginGkBackground,
     BeginGkReference,
     CalibrateGkTracking,
+    EnableExperimentalGkTracking,
     ExportGkCalibration,
     GkCalibrationExportPicked(Option<PathBuf>),
     SelectTrackingMode(TrackingMode),
@@ -214,6 +215,7 @@ struct GkCalibration {
     background: Option<[[[f64; 3]; 16]; 3]>,
     reference: Option<[[[f64; 3]; 16]; 3]>,
     capturing: Option<GkCapture>,
+    calibrated_candidate: Option<(RigidProfile, f64)>,
     status: String,
 }
 struct GkCapture {
@@ -224,6 +226,7 @@ struct GkCapture {
 }
 impl GkCalibration {
     fn begin(&mut self, reference: bool) {
+        self.calibrated_candidate = None;
         self.capturing = Some(GkCapture {
             reference, started: std::time::Instant::now(),
             sum: [[[0.0; 3]; 16]; 3], counts: [[0; 16]; 3],
@@ -588,6 +591,26 @@ fn all_diagnostics_text(context: &Context) -> String {
     lines.join("\n")
 }
 
+// Keep the archived RigidProfile Deserialize-only schema unchanged while
+// exporting enough candidate information for offline review and replay.
+fn p_to_json(p: &RigidProfile) -> serde_json::Value {
+    serde_json::json!({
+        "name":p.name, "coordinate_frame":p.coordinate_frame, "origin_mm":p.origin_mm,
+        "boards":p.boards.iter().map(|b| serde_json::json!({
+            "raw_board_id":b.raw_board_id,"sensors_mm":b.sensors_mm,
+            "raw_to_world":b.raw_to_world,"background_mt":b.background_mt,
+            "sensor_gains":b.sensor_gains
+        })).collect::<Vec<_>>(),
+        "magnets":p.magnets.iter().map(|m| serde_json::json!({
+            "center_mm":m.center_mm,"axis":m.axis,
+            "diameter_mm":m.diameter_mm,"thickness_mm":m.thickness_mm,
+            "remanence_mt":m.remanence_mt
+        })).collect::<Vec<_>>(),
+        "initial_pose":p.initial_pose,"lower_bounds":p.lower_bounds,
+        "upper_bounds":p.upper_bounds,"max_rmse_mt":p.max_rmse_mt
+    })
+}
+
 fn save_gk_calibration_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Option<PathBuf>> + use<> {
@@ -883,6 +906,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 );
                 context.cbct_geometry = None;
                 context.gk_calibration.reference = None;
+                context.gk_calibration.calibrated_candidate = None;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
@@ -911,6 +935,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                         context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
                         context.cbct_geometry = Some(geometry);
                         context.gk_calibration.reference = None;
+                context.gk_calibration.calibrated_candidate = None;
                         context.rigid_fit.invalidate_for_gk_calibration();
                     }
                     Err(error) => {
@@ -957,6 +982,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.cbct_status = "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into();
                     context.cbct_geometry = Some(geometry);
                     context.gk_calibration.reference = None;
+                context.gk_calibration.calibrated_candidate = None;
                     context.rigid_fit.invalidate_for_gk_calibration();
                 }
                 Err(error) => {
@@ -986,15 +1012,55 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CalibrateGkTracking => {
-            // Never allow detector-order points to masquerade as firmware indices.
-            // A reproducible index/board-frame registration is required before
-            // forming the CT field design matrix for signed remanence fitting.
-            context.gk_calibration.status = if context.gk_calibration.background.is_none()
-                || context.gk_calibration.reference.is_none() || context.cbct_geometry.is_none() {
-                "Calibration prerequisites incomplete: background, CT and reference required".into()
+            context.gk_calibration.calibrated_candidate = None;
+            let outcome = (|| -> Result<(RigidProfile, [f64;3], f64), String> {
+                let geometry = context.cbct_geometry.as_ref().ok_or("Import the current CT first")?;
+                let background = context.gk_calibration.background.as_ref()
+                    .ok_or("Capture no-magnet background first")?;
+                let reference = context.gk_calibration.reference.as_ref()
+                    .ok_or("Capture the stationary magnet fields first")?;
+                let mut profile=geometry.experimental_candidate_profile()?;
+                let (strengths, rmse)=rigid_fit::fit_magnet_strengths(&profile,background,reference)?;
+                for (magnet, strength) in profile.magnets.iter_mut().zip(strengths) {
+                    magnet.remanence_mt=strength;
+                }
+                Ok((profile,strengths,rmse))
+            })();
+            match outcome {
+                Ok((profile,strengths,rmse)) => {
+                    // Screening limits, not proof of clinical/HDMM accuracy.
+                    let plausible = strengths.iter().all(|s|s.abs()>=300.0 && s.abs()<=2200.0);
+                    if rmse <= profile.max_rmse_mt && plausible {
+                        context.gk_calibration.calibrated_candidate=Some((profile,rmse));
+                        context.gk_calibration.status=format!(
+                            "EXPERIMENTAL calibration candidate: signed remanences [{:.1}, {:.1}, {:.1}] mT; field RMSE {:.4} mT. Review CT/JST orientation and magnet dimensions, then explicitly enable test tracking.",
+                            strengths[0],strengths[1],strengths[2],rmse);
+                    } else {
+                        context.gk_calibration.status=format!(
+                            "Calibration QC FAILED (not enabled): strengths [{:.1}, {:.1}, {:.1}] mT; field RMSE {:.4} mT (limit {:.2}); 300–2200 mT absolute strength required. Save data for offline analysis.",
+                            strengths[0],strengths[1],strengths[2],rmse,profile.max_rmse_mt);
+                    }
+                }
+                Err(error) => {
+                    context.gk_calibration.status=format!(
+                        "Calibration cannot proceed: {error}. Previous rigid profile remains disabled.");
+                }
+            }
+            Task::none()
+        }
+        Message::EnableExperimentalGkTracking => {
+            if let (Some((profile,rmse)),Some(background)) = (
+                context.gk_calibration.calibrated_candidate.take(),
+                context.gk_calibration.background
+            ) {
+                context.rigid_fit.set_experimental_gk_profile(profile,background);
+                context.tracking_mode=TrackingMode::Rigid6Dof;
+                context.live_fits.set_fit_enabled(false);
+                context.gk_calibration.status=format!(
+                    "EXPERIMENTAL 6-DOF model enabled (stationary field RMSE {rmse:.4} mT). Compare with HDMM and raw/independent tracking; not yet validated.");
             } else {
-                "Calibration blocked: CT chip-to-firmware correspondence and board-axis registration are not yet implemented. No tracking model activated.".into()
-            };
+                context.gk_calibration.status="No accepted experimental candidate or background; recalibrate.".into();
+            }
             Task::none()
         }
         Message::ExportGkCalibration => {
@@ -1019,7 +1085,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "status": "experimental_unregistered",
                             "units": {"positions": "mm", "fields": "mT"},
                             "sensor_fields_order": "raw_firmware_index_0_to_15",
-                            "geometry_sensor_order": "CT_detector_order_not_firmware",
+                            "geometry_sensor_order": "CT_detector_order_with_v2_JST_candidate",
                             "frame_of_reference_uid": geometry.frame_uid,
                             "scan_source": geometry.scan_path.to_string_lossy(),
                             "rigid_origin_lps_mm": geometry.rigid_origin_lps_mm,
@@ -1031,11 +1097,28 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "sensor_arrays": geometry.arrays.iter().map(|a| serde_json::json!({
                                 "name": a.name, "center_lps_mm": a.center_lps_mm,
                                 "detected_chip_positions_lps_mm": a.detected_chip_positions_lps_mm,
-                                "grid_rms_mm": a.grid_rms_mm
+                                "grid_rms_mm": a.grid_rms_mm,
+                                "pcb_center_lps_mm":a.pcb_center_lps_mm,
+                                "chip_face_normal_lps":a.chip_face_normal_lps
                             })).collect::<Vec<_>>(),
+                            "registration_v2_candidates": geometry.register_ct_boards_v2().ok().map(|boards| {
+                                boards.iter().map(|b|serde_json::json!({
+                                    "detected_board":b.detection_name,"raw_board_id":b.raw_board_id,
+                                    "firmware_to_detected_index":b.firmware_to_detector,
+                                    "raw_to_lps":b.raw_to_lps,
+                                    "geometric_rms_mm":b.geometric_rms_mm,
+                                    "jst_proxy_offset_mm":b.jst_proxy_offset_mm
+                                })).collect::<Vec<_>>()
+                            }),
                             "background_raw_mt": background,
                             "stationary_raw_mt": reference,
-                            "calibration_model_activated": false
+                            "calibration_candidate": context.gk_calibration.calibrated_candidate.as_ref()
+                                .map(|(p,rmse)|serde_json::json!({
+                                    "signed_strengths_mt": p.magnets.iter().map(|m|m.remanence_mt).collect::<Vec<_>>(),
+                                    "stationary_rmse_mt": rmse,
+                                    "candidate_profile": p_to_json(p)
+                                })),
+                            "calibration_model_activated": context.rigid_fit.enabled()
                         })
                     });
                 let result = data.ok_or_else(|| "CT or captured sensor fields no longer available".to_string())
@@ -1676,7 +1759,10 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(if context.gk_calibration.status.is_empty() {
                 "Calibration: not started".to_string()
             } else { context.gk_calibration.status.clone() }),
-            text("Automatic model activation remains disabled pending verified CT chip indexing/board-frame registration."),
+            text("CT registration: v2 JST/PCB-centroid geometry candidate, using the established A1 Hall axis convention. Inspect the board orientation and magnet dimensions before enabling."),
+            if context.gk_calibration.calibrated_candidate.is_some() {
+                button("Enable EXPERIMENTAL 6-DOF tracking (review first)").on_press(Message::EnableExperimentalGkTracking)
+            } else { button("Enable EXPERIMENTAL 6-DOF tracking (review first)") },
             if context.gk_calibration.background.is_some()
                 && context.gk_calibration.reference.is_some()
                 && context.cbct_geometry.is_some() {
