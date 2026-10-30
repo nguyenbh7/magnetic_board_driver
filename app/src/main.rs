@@ -943,7 +943,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     path.display()
                 );
                 context.cbct_geometry = None;
-                context.gk_calibration.reference = None;
                 context.gk_calibration.calibrated_candidate = None;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.cbct_last_log.clear();
@@ -972,8 +971,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     Ok(geometry) => {
                         context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
                         context.cbct_geometry = Some(geometry);
-                        context.gk_calibration.reference = None;
-                context.gk_calibration.calibrated_candidate = None;
+                    // Preserve previously captured raw reference/background
+                    // when DICOM is processed after acquisition. Review scan
+                    // correspondence before enabling experimental tracking.
+                    context.gk_calibration.calibrated_candidate = None;
                         context.rigid_fit.invalidate_for_gk_calibration();
                     }
                     Err(error) => {
@@ -1023,7 +1024,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                         "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into()
                     };
                     context.cbct_geometry = Some(geometry);
-                    context.gk_calibration.reference = None;
                 context.gk_calibration.calibrated_candidate = None;
                     context.rigid_fit.invalidate_for_gk_calibration();
                 }
