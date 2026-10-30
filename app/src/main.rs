@@ -1050,7 +1050,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::EnableExperimentalGkTracking => {
             if let (Some((profile,rmse)),Some(background)) = (
-                context.gk_calibration.calibrated_candidate.take(),
+                context.gk_calibration.calibrated_candidate.clone(),
                 context.gk_calibration.background
             ) {
                 context.rigid_fit.set_experimental_gk_profile(profile,background);
@@ -1082,11 +1082,33 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     .map(|((geometry, background), reference)| {
                         serde_json::json!({
                             "format": "gk_experiment_calibration_inputs_v1",
-                            "status": "experimental_unregistered",
+                            "status": "experimental_geometry_candidate_not_independently_validated",
                             "units": {"positions": "mm", "fields": "mT"},
                             "sensor_fields_order": "raw_firmware_index_0_to_15",
                             "geometry_sensor_order": "CT_detector_order_with_v2_JST_candidate",
                             "frame_of_reference_uid": geometry.frame_uid,
+                            "detector_replay": {
+                                "format": "gk_cbct_detections_v1",
+                                "coordinate_frame": "DICOM_LPS_mm",
+                                "frame_of_reference_uid": geometry.frame_uid,
+                                "status": "unreviewed",
+                                "requires_review": true,
+                                "objects": geometry.magnets.iter().map(|m|serde_json::json!({
+                                    "kind":"magnet","name":m.name,
+                                    "center_lps_mm":m.center_lps_mm,
+                                    "unsigned_axis_lps":m.unsigned_axis_lps
+                                })).chain(geometry.arrays.iter().map(|a|serde_json::json!({
+                                    "kind":"array","name":a.name,
+                                    "center_lps_mm":a.center_lps_mm,
+                                    "chip_grid_lps_mm":a.detected_chip_positions_lps_mm,
+                                    "grid_rms_mm":a.grid_rms_mm,
+                                    "board_center_lps_mm":a.pcb_center_lps_mm,
+                                    "board_normal_lps":a.chip_face_normal_lps
+                                }))).chain(geometry.markers.iter().map(|m|serde_json::json!({
+                                    "kind":"bb","name":m.name,
+                                    "center_lps_mm":m.center_lps_mm
+                                }))).collect::<Vec<_>>()
+                            },
                             "scan_source": geometry.scan_path.to_string_lossy(),
                             "rigid_origin_lps_mm": geometry.rigid_origin_lps_mm,
                             "rigid_axes_to_lps": geometry.rigid_axes_to_lps,
