@@ -348,6 +348,27 @@ impl CbctGeometry {
         Ok(registered)
     }
 
+    /// Human-readable offline verification before Hall hardware is connected.
+    pub fn registration_preview_v2(&self) -> String {
+        match self.register_ct_boards_v2() {
+            Ok(boards) => {
+                let mut lines=vec!["CT->firmware v2 indexing and Hall-axis candidate: GEOMETRY PASS (physical JST/normal review still required)".to_string()];
+                for b in boards {
+                    lines.push(format!(
+                        "  {} = raw board {}: chip-grid RMS {:.3} mm, JST proxy offset {:.2} mm",
+                        b.detection_name,b.raw_board_id,b.geometric_rms_mm,b.jst_proxy_offset_mm));
+                    lines.push(format!("    firmware sensor 0 -> CT detector chip {}; sensor 15 -> chip {}",
+                        b.firmware_to_detector[0],b.firmware_to_detector[15]));
+                    lines.push(format!("    firmware-index -> CT detector-index: {:?}",b.firmware_to_detector));
+                    lines.push(format!("    candidate raw Bx/By/Bz -> DICOM LPS matrix: {:?}",b.raw_to_lps));
+                }
+                lines.push("Board ID assignment assumes raw0=Superior, raw1=Left, raw2=Right. Match actual wiring and inspect JST/chip-face orientation.".into());
+                lines.join("\n")
+            }
+            Err(e) => format!("CT->firmware v2 registration NOT READY: {e}")
+        }
+    }
+
     /// Construct an experiment-specific *candidate* from the CT registration.
     /// Magnetic remanences here are placeholders; callers MUST fit them from
     /// current background-subtracted stationary measurements before activation.
