@@ -726,6 +726,71 @@ fn residual(profile: &RigidProfile, observations: &[Observation], pose: [f64;6])
     Some(out)
 }
 
+
+/// Fit three signed finite-cylinder strengths when CT chip registration is verified.
+/// Caller must supply firmware-ordered chip positions and known raw Hall axes.
+pub fn fit_magnet_strengths(
+    profile: &RigidProfile,
+    background: &[[[f64; 3]; 16]; 3],
+    stationary: &[[[f64; 3]; 16]; 3],
+) -> Result<([f64; 3], f64), String> {
+    profile.validate()?;
+    let sources: Vec<_> = profile.magnets.iter().map(|magnet| {
+        let mut m = magnet.clone();
+        m.remanence_mt = 1.0;
+        vec![quadrature(&m, m.center_mm, m.axis)]
+    }).collect();
+    let mut a = [[0.0_f64; 4]; 3];
+    let mut samples = Vec::new();
+    for board in &profile.boards {
+        let id = board.raw_board_id as usize;
+        for i in 0..16 {
+            let gain = board.sensor_gains.as_ref().map(|g| g[i]).unwrap_or(1.0);
+            let observed = sub(
+                scale(mat_vec(board.raw_to_world,
+                    sub(stationary[id][i], background[id][i])), 1.0/gain),
+                board.background_mt);
+            let fields = [
+                predict(board.sensors_mm[i], &sources[0]),
+                predict(board.sensors_mm[i], &sources[1]),
+                predict(board.sensors_mm[i], &sources[2]),
+            ];
+            for axis in 0..3 {
+                let row = [fields[0][axis], fields[1][axis], fields[2][axis]];
+                if !observed[axis].is_finite() || row.iter().any(|x| !x.is_finite()) {
+                    return Err("Nonfinite calibration data".into());
+                }
+                for j in 0..3 {
+                    for k in 0..3 { a[j][k] += row[j]*row[k]; }
+                    a[j][3] += row[j]*observed[axis];
+                }
+                samples.push((row, observed[axis]));
+            }
+        }
+    }
+    let max_diag = (0..3).map(|i|a[i][i]).fold(0.0_f64,f64::max);
+    for k in 0..3 {
+        let pivot = (k..3).max_by(|&i,&j| a[i][k].abs().total_cmp(&a[j][k].abs())).unwrap();
+        a.swap(k,pivot);
+        if a[k][k].abs() < max_diag*1e-8 {
+            return Err("Unobservable or ill-conditioned magnet strengths".into());
+        }
+        let scale = a[k][k];
+        for j in k..4 {a[k][j]/=scale;}
+        for i in 0..3 { if i!=k {
+            let factor=a[i][k];
+            for j in k..4 {a[i][j]-=factor*a[k][j];}
+        }}
+    }
+    let strengths=[a[0][3],a[1][3],a[2][3]];
+    let mse=samples.iter().map(|(row,y)| {
+        let e=row.iter().zip(strengths).map(|(x,m)|x*m).sum::<f64>()-y;
+        e*e
+    }).sum::<f64>()/samples.len() as f64;
+    if !mse.is_finite() {return Err("Nonfinite calibration residual".into());}
+    Ok((strengths,mse.sqrt()))
+}
+
 fn solve_6(mut a: [[f64;6];6], mut b: [f64;6]) -> Option<[f64;6]> {
     for pivot in 0..6 {
         let max = (pivot..6).max_by(|&i,&j|
