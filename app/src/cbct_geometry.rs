@@ -460,8 +460,14 @@ impl CbctGeometry {
             Ok(boards) => {
                 let mut lines=vec!["CT->firmware v2 indexing and Hall-axis candidate: GEOMETRY PASS (physical JST/normal review still required)".to_string()];
                 for b in boards {
+                    let location=match b.raw_board_id {
+                        0=>"TOP OF HEAD / SUPERIOR",
+                        1=>"PATIENT LEFT",
+                        2=>"PATIENT RIGHT",
+                        _=>"UNKNOWN",
+                    };
                     lines.push(format!(
-                        "  {} = raw board {}: chip-grid RMS {:.3} mm, JST proxy offset {:.2} mm",
+                        "  {location} ({} = raw board {}): chip-grid RMS {:.3} mm, JST proxy offset {:.2} mm",
                         b.detection_name,b.raw_board_id,b.geometric_rms_mm,b.jst_proxy_offset_mm));
                     lines.push(format!("    firmware sensor 0 -> CT detector chip {}; sensor 15 -> chip {}",
                         b.firmware_to_detector[0],b.firmware_to_detector[15]));
@@ -471,7 +477,18 @@ impl CbctGeometry {
                 lines.push("Board ID assignment assumes raw0=Superior, raw1=Left, raw2=Right. Match actual wiring and inspect JST/chip-face orientation.".into());
                 lines.join("\n")
             }
-            Err(e) => format!("CT->firmware v2 registration NOT READY: {e}")
+            Err(e) => {
+                let location=if e.contains("array_left") {
+                    "PATIENT LEFT (raw board 1)"
+                } else if e.contains("array_right") {
+                    "PATIENT RIGHT (raw board 2)"
+                } else if e.contains("array_superior") {
+                    "TOP OF HEAD / SUPERIOR (raw board 0)"
+                } else {
+                    "UNDETERMINED BOARD"
+                };
+                format!("CT->firmware v2 registration NOT READY: {location}: {e}")
+            }
         }
     }
 
