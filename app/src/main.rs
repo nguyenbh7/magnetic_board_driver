@@ -762,6 +762,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
             context.rigid_fit.clear_background_for_new_port();
+            context.rigid_fit.invalidate_for_gk_calibration();
             context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveTracking;
@@ -869,6 +870,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 );
                 context.cbct_geometry = None;
                 context.gk_calibration.reference = None;
+                context.rigid_fit.invalidate_for_gk_calibration();
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
@@ -895,8 +897,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     Ok(geometry) => {
                         context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
                         context.cbct_geometry = Some(geometry);
-                    context.gk_calibration.reference = None;
                         context.gk_calibration.reference = None;
+                        context.rigid_fit.invalidate_for_gk_calibration();
                     }
                     Err(error) => {
                         context.cbct_status = format!("CBCT import failed: {error}");
@@ -941,6 +943,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 Ok(geometry) => {
                     context.cbct_status = "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into();
                     context.cbct_geometry = Some(geometry);
+                    context.gk_calibration.reference = None;
+                    context.rigid_fit.invalidate_for_gk_calibration();
                 }
                 Err(error) => {
                     context.cbct_status = format!("DICOM import failed: {error}");
@@ -955,11 +959,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
         }
         Message::BeginGkBackground => {
+            context.rigid_fit.invalidate_for_gk_calibration();
             context.gk_calibration.begin(false);
             Task::none()
         }
         Message::BeginGkReference => {
             if context.gk_calibration.background.is_some() && context.cbct_geometry.is_some() {
+                context.rigid_fit.invalidate_for_gk_calibration();
                 context.gk_calibration.begin(true);
             } else {
                 context.gk_calibration.status = "Capture no-magnet background and import the matching CT first".into();
@@ -1066,6 +1072,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
         Message::StartFieldStream => {
             context.rigid_fit.reset_stream();
+            context.gk_calibration.capturing = None;
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
 
@@ -1126,6 +1133,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::StopFieldStream => {
+                context.gk_calibration.capturing = None;
                 context.stream_status = "stopping".to_string();
                 if let Some(sw) = &context.sensor_watcher {
                     let client = sw.get_client();
