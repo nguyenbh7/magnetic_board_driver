@@ -872,6 +872,41 @@ fn optimize_pose(profile: &RigidProfile, observations: &[Observation], initial: 
 mod tests {
     use super::*;
     #[test]
+    fn signed_strength_recovery_from_synthetic_stationary_fields() {
+        let mut profile = RigidProfile::a1_reference().unwrap();
+        let truth = [1250.0, -1370.0, 1410.0];
+        for (i, m) in profile.magnets.iter_mut().enumerate() {
+            m.remanence_mt = truth[i];
+        }
+        let mut background = [[[0.0;3];16];3];
+        let mut measured = background;
+        let src: Vec<_> = profile.magnets.iter().map(|m| {
+            vec![quadrature(m, m.center_mm, m.axis)]
+        }).collect();
+        for board in &mut profile.boards {
+            board.background_mt = [0.0;3];
+            board.sensor_gains = None;
+            for (i, point) in board.sensors_mm.iter().enumerate() {
+                let world = predict(*point, &src);
+                let rotation = board.raw_to_world;
+                let raw = [
+                    rotation[0][0]*world[0]+rotation[1][0]*world[1]+rotation[2][0]*world[2],
+                    rotation[0][1]*world[0]+rotation[1][1]*world[1]+rotation[2][1]*world[2],
+                    rotation[0][2]*world[0]+rotation[1][2]*world[1]+rotation[2][2]*world[2],
+                ];
+                measured[board.raw_board_id as usize][i] = raw;
+            }
+        }
+        let (estimated, rmse) = fit_magnet_strengths(&profile,&background,&measured).unwrap();
+        for j in 0..3 {
+            assert!((estimated[j]-truth[j]).abs()<1e-4);
+        }
+        assert!(rmse<1e-8, "calibration RMSE {rmse}");
+        background[0][0][0]=f64::NAN;
+        assert!(fit_magnet_strengths(&profile,&background,&measured).is_err());
+    }
+
+    #[test]
     fn profile_is_valid() { RigidProfile::a1_reference().unwrap(); }
 
     /// Small recorded-data fixture, NOT fields synthesized from the profile
