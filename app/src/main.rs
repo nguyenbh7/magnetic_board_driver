@@ -1736,9 +1736,15 @@ fn view(context: &Context) -> Element<'_, Message> {
                     geometry.arrays.iter().map(|a|a.detected_chip_positions_lps_mm.len()).sum::<usize>(),
                     geometry.markers.len())
             }).unwrap_or_default()),
+            text(context.cbct_geometry.as_ref().map(|geometry| {
+                match geometry.register_ct_boards_v2() {
+                    Ok(boards) => format!("CT sensor mapping v2: {} boards registered geometrically (provisional; review JST and chip-face orientation).",boards.len()),
+                    Err(error) => format!("CT sensor mapping v2: review needed — {error}")
+                }
+            }).unwrap_or_default()),
             text(if context.cbct_show_details {
                 context.cbct_geometry.as_ref()
-                    .map(|geometry| geometry.summary())
+                    .map(|geometry| format!("{}\n\n{}",geometry.summary(),geometry.registration_preview_v2()))
                     .unwrap_or_else(|| "No geometry results to display.".into())
             } else { String::new() }),
             text(if context.cbct_show_log {
