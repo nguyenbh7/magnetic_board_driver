@@ -135,6 +135,7 @@ enum Message {
     StopFieldStream,
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
+    StartLogging,
     StopLogging,
     ResumeLogging,
     WroteFile(Result<usize, String>),
@@ -314,6 +315,9 @@ struct Context {
     log_write_failed: bool,
     log_file_dialog_open: bool,
     log_file_path: Option<PathBuf>,
+    // True only after a successfully flushed/closed log. A newly selected
+    // filename is NOT a log until Start Logging atomically creates it.
+    log_resume_available: bool,
     log_notice: String,
     stream_status: String,
     received_stream_frames: u64,
@@ -562,13 +566,12 @@ fn log_status_text(context: &Context) -> String {
         );
     }
 
-    if context.logged_bytes > 0 {
-        format!(
-            "Log: stopped · {:.2} MB in last file · compact board-frame v2 format",
-            megabytes,
-        )
+    if context.log_resume_available {
+        format!("Log: closed / append available · {:.2} MB · compact board-frame v2 format",megabytes)
+    } else if context.log_file_path.is_some() {
+        "Log: filename SELECTED — NOT recording. Press Start Logging · compact board-frame v2 format".into()
     } else {
-        "Log: not recording · compact board-frame v2 format".to_string()
+        "Log: no filename selected — NOT recording · compact board-frame v2 format".into()
     }
 }
 
@@ -1437,51 +1440,87 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
 
         Message::SelectFile => {
-            if context.file_writer.is_some() || context.log_stop_requested {
-                context.log_notice = "Close the current log before selecting another file.".into();
+            if context.file_writer.is_some() || context.log_stop_requested
+                || context.log_write_in_progress || context.log_finalize_in_progress {
+                context.log_notice = "Finish stopping/closing the current log before selecting a new file.".into();
                 return Task::none();
             }
-            if context.log_file_dialog_open {
-                return Task::none();
-            }
-            context.log_file_dialog_open = true;
+            if context.log_file_dialog_open {return Task::none();}
+            context.log_file_dialog_open=true;
             iced::window::oldest()
                 .and_then(|id| iced::window::run(id, open_file))
                 .then(Task::future)
                 .map(Message::FileOpened)
         },
         Message::FileOpened(picked) => {
-            context.log_file_dialog_open = false;
-            if context.file_writer.is_some() || context.log_stop_requested {
-                context.log_notice = "File selection ignored: a log is active.".into();
+            context.log_file_dialog_open=false;
+            if context.file_writer.is_some() || context.log_stop_requested
+                || context.log_write_in_progress || context.log_finalize_in_progress {
+                context.log_notice="File selection ignored: existing log is still open or closing.".into();
                 return Task::none();
             }
-            if let Ok(handle) = picked {
-                let path = handle.path().to_path_buf();
-                match create_new_log(&path) {
-                    Ok(writer) => {
-                        context.file_writer = Some(Arc::new(Mutex::new(writer)));
-                        context.log_file_path = Some(path.clone());
-                        context.logged_bytes = 8;
-                        context.log_started_at = Some(std::time::Instant::now());
-                        context.log_queue.clear();
-                        context.log_write_in_progress = false;
-                        context.log_stop_requested = false;
-                        context.log_finalize_in_progress = false;
-                        context.log_write_failed = false;
-                        context.log_notice = format!(
-                            "New log created: {}. Start Field Stream to record.", path.display()
-                        );
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                        context.log_notice = format!(
-                            "EXISTING FILE PROTECTED: {}. Select a different filename.",
-                            path.display()
-                        );
-                    }
-                    Err(err) => {
-                        context.log_notice = format!("Cannot create log {}: {err}", path.display());
-                    }
+            if let Ok(handle)=picked {
+                let path=handle.path().to_path_buf();
+                if path.exists() {
+                    // Do not change a previously resumable log into a
+                    // pending-new file, and NEVER overwrite an old recording.
+                    context.log_notice=format!(
+                        "EXISTING FILE PROTECTED: {}. To append to your last log, use Resume previous log; otherwise choose a NEW unique filename.",
+                        path.display());
+                } else {
+                    // Selection ONLY stores the path; no file is opened or
+                    // created until the user explicitly clicks Start Logging.
+                    context.log_file_path=Some(path.clone());
+                    context.log_resume_available=false;
+                    context.logged_bytes=0;
+                    context.log_started_at=None;
+                    context.log_queue.clear();
+                    context.log_write_in_progress=false;
+                    context.log_stop_requested=false;
+                    context.log_finalize_in_progress=false;
+                    context.log_write_failed=false;
+                    context.log_notice=format!(
+                        "Filename selected (NOT recording): {}. Click Start Logging to create and record into it.",path.display());
+                }
+            }
+            Task::none()
+        },
+        Message::StartLogging => {
+            if context.file_writer.is_some() || context.log_stop_requested
+                || context.log_write_in_progress || context.log_finalize_in_progress
+                || context.log_file_dialog_open {
+                context.log_notice="Logging already active, selecting a file, or still closing.".into();
+                return Task::none();
+            }
+            if context.log_resume_available {
+                context.log_notice="This log already exists. Use Resume previous log (append) to preserve it, or Select File for a NEW recording.".into();
+                return Task::none();
+            }
+            let Some(path)=context.log_file_path.clone() else {
+                context.log_notice="Select a NEW filename before starting logging.".into();
+                return Task::none();
+            };
+            // Atomic create_new protects against another application creating
+            // the selected file between the file dialog and this click.
+            match create_new_log(&path) {
+                Ok(writer) => {
+                    context.file_writer=Some(Arc::new(Mutex::new(writer)));
+                    context.logged_bytes=8;
+                    context.log_started_at=Some(std::time::Instant::now());
+                    context.log_queue.clear();
+                    context.log_write_in_progress=false;
+                    context.log_stop_requested=false;
+                    context.log_finalize_in_progress=false;
+                    context.log_write_failed=false;
+                    context.log_notice=format!(
+                        "LOGGING STARTED: {}. Saving incoming board frames; start the field stream if needed.",path.display());
+                }
+                Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists => {
+                    context.log_notice=format!(
+                        "EXISTING FILE PROTECTED: {}. No data overwritten. Select a NEW filename.",path.display());
+                }
+                Err(error) => {
+                    context.log_notice=format!("Cannot start logging to {}: {error}",path.display());
                 }
             }
             Task::none()
@@ -1497,10 +1536,15 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.log_notice = "Previous write failed: resume refused. Preserve this file and select a NEW filename.".into();
                 return Task::none();
             }
+            if !context.log_resume_available {
+                context.log_notice = "No successfully closed log to resume; press Start Logging for a new selected filename.".into();
+                return Task::none();
+            }
             if let Some(path) = context.log_file_path.clone() {
                 match reopen_log_for_append(&path) {
                     Ok((writer,bytes)) => {
                         context.file_writer=Some(Arc::new(Mutex::new(writer)));
+                        context.log_resume_available=false;
                         context.logged_bytes=bytes;
                         context.log_started_at=Some(std::time::Instant::now());
                         context.log_queue.clear();
@@ -1550,6 +1594,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.log_started_at = None;
             context.log_stop_requested = false;
             context.log_finalize_in_progress = false;
+            context.log_resume_available = result.is_ok() && !context.log_write_failed;
             context.log_notice = match result {
                 Err(err) => format!(
                     "LOG FLUSH ERROR: {err}. Inspect file integrity before use."
@@ -1740,20 +1785,24 @@ fn view(context: &Context) -> Element<'_, Message> {
         text(format!("z: {:.2}", context.ping_field.as_ref().map(|f| f.field.z.map(|z| z.value()).unwrap_or(0.0)).unwrap_or(0.0))),
     ]);
 
-    let mut select_log_button = button("Select File");
-    if context.file_writer.is_none() && !context.log_file_dialog_open {
-        select_log_button = select_log_button.on_press(Message::SelectFile);
-    }
-    let mut resume_log_button = button("Resume previous log (append)");
-    if context.file_writer.is_none() && context.log_file_path.is_some()
+    let can_manage_log=context.file_writer.is_none()
         && !context.log_stop_requested && !context.log_finalize_in_progress
-        && !context.log_write_in_progress && !context.log_write_failed
-        && !context.log_file_dialog_open {
+        && !context.log_write_in_progress && !context.log_file_dialog_open;
+    let mut select_log_button=button("Select File");
+    if can_manage_log {
+        select_log_button=select_log_button.on_press(Message::SelectFile);
+    }
+    let mut start_log_button=button("Start Logging");
+    if can_manage_log && context.log_file_path.is_some() && !context.log_resume_available {
+        start_log_button=start_log_button.on_press(Message::StartLogging);
+    }
+    let mut resume_log_button=button("Resume Previous Log (append)");
+    if can_manage_log && context.log_resume_available && !context.log_write_failed {
         resume_log_button=resume_log_button.on_press(Message::ResumeLogging);
     }
-    let mut stop_log_button = button("Stop logging");
+    let mut stop_log_button=button("Stop Logging");
     if context.file_writer.is_some() && !context.log_stop_requested {
-        stop_log_button = stop_log_button.on_press(Message::StopLogging);
+        stop_log_button=stop_log_button.on_press(Message::StopLogging);
     }
     let log_path_label = context.log_file_path.as_ref()
         .map(|path| path.display().to_string())
@@ -1764,13 +1813,16 @@ fn view(context: &Context) -> Element<'_, Message> {
     let logging_panel = container(
         column![
             text("Measurement logging").size(18),
-            text("1. Select File: choose a new, unique .bin filename."),
-            text("2. Start Field Stream: begin acquiring and saving sensor measurements."),
-            text("3. Stop Field Stream pauses acquisition; Start Field Stream again continues the OPEN log."),
-            text("4. Stop logging flushes/closes. Resume previous log (append) reopens the same verified .bin without overwriting."),
+            text("1. Select File: choose a NEW .bin filename (nothing is created or recorded yet)."),
+            text("2. Start Field Stream to view sensor data. Start Logging separately to CREATE the selected file and save incoming frames."),
+            text("3. Stop Logging drains and closes the file. Resume Previous Log (append) continues that file; Start Logging never overwrites."),
+            text("4. Stop Field Stream pauses acquisition only; Restart Field Stream continues recording if logging is active."),
             row![
                 select_log_button,
+                start_log_button,
                 stop_log_button,
+            ].spacing(8),
+            row![
                 resume_log_button,
             ].spacing(8),
             row![
@@ -1787,7 +1839,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             } else {
                 context.log_notice.clone()
             }),
-            text("Resume verifies the MLXBF002 header and complete length-prefixed frames, then appends only. Stop logging does not stop the field stream; streaming without an open log does not save."),
+            text("LOGGING and STREAMING are independent. File selected alone is NOT recording. Resume checks MLXBF002 frame boundaries and appends only; Stop Logging does not stop streaming."),
         ]
         .spacing(6),
     )
