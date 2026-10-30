@@ -282,6 +282,17 @@ pub struct RigidLiveFit {
 }
 
 impl RigidLiveFit {
+    /// Begin a fresh Gamma Knife CT session. Previous profiles and fit results
+    /// must not remain active when the geometry or magnetic field changes.
+    pub fn invalidate_for_gk_calibration(&mut self) {
+        self.profile = None;
+        self.location_preset = None;
+        self.enabled = false;
+        self.background_raw = [None; 3];
+        self.reset_stream();
+        self.status = "GK calibration incomplete; tracking disabled".into();
+    }
+
     pub fn set_profile(&mut self, profile: RigidProfile) {
         // Switching to an actual calibrated profile also selects the matching
         // stage reference, if any; never allow stale location references to
