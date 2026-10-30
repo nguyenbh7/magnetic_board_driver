@@ -57,6 +57,20 @@ pub struct CbctArray {
     pub detected_chip_positions_lps_mm: Vec<[f64; 3]>,
     pub center_lps_mm: [f64; 3],
     pub grid_rms_mm: f64,
+    pub pcb_center_lps_mm: Option<[f64; 3]>,
+    pub chip_face_normal_lps: Option<[f64; 3]>,
+}
+/// Provisional v2 CT/JST chip correspondence, in firmware sensor order.
+/// The coordinate transformation uses the KiCad/A1 chip-axis hypothesis.
+#[derive(Debug, Clone)]
+pub struct CbctRegisteredBoard {
+    pub detection_name: String,
+    pub raw_board_id: u16,
+    pub firmware_to_detector: [usize; 16],
+    pub sensors_lps_mm: Vec<[f64; 3]>,
+    pub raw_to_lps: [[f64; 3]; 3],
+    pub geometric_rms_mm: f64,
+    pub jst_proxy_offset_mm: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +103,8 @@ struct DetectedObject {
     chip_grid_lps_mm: Option<Vec<[f64; 3]>>,
     grid_rms_mm: Option<f64>,
     unsigned_axis_lps: Option<[f64; 3]>,
+    board_center_lps_mm: Option<[f64; 3]>,
+    board_normal_lps: Option<[f64; 3]>,
 }
 
 fn valid_point(point: &[f64; 3]) -> bool {
@@ -168,6 +184,8 @@ impl CbctGeometry {
                         detected_chip_positions_lps_mm: pts,
                         center_lps_mm: object.center_lps_mm,
                         grid_rms_mm: rms,
+                        pcb_center_lps_mm: object.board_center_lps_mm,
+                        chip_face_normal_lps: object.board_normal_lps,
                     });
                 }
                 "bb" => markers.push(CbctMarker {
@@ -243,6 +261,91 @@ impl CbctGeometry {
             rigid_axes_to_lps: axes,
             magnets, arrays, markers,
         })
+    }
+
+
+    /// Propose the *current* v2 firmware-index correspondence. Uses the
+    /// PCB-center-to-chip-center displacement as a JST-side proxy; never
+    /// silently falls back to a symmetric grid-only orientation.
+    pub fn register_ct_boards_v2(&self) -> Result<Vec<CbctRegisteredBoard>, String> {
+        let mut registered = Vec::with_capacity(3);
+        for (name, raw_id) in [
+            ("array_superior", 0_u16), ("array_left", 1_u16), ("array_right", 2_u16)
+        ] {
+            let array = self.arrays.iter().find(|b| b.name == name)
+                .ok_or_else(|| format!("Missing {name} for v2 registration"))?;
+            let pcb = array.pcb_center_lps_mm
+                .ok_or_else(|| format!("{name}: missing CT PCB centroid/JST proxy"))?;
+            let normal = array.chip_face_normal_lps
+                .ok_or_else(|| format!("{name}: missing CT chip-face normal"))?;
+            if !valid_point(&pcb) || !valid_point(&normal) {
+                return Err(format!("{name}: nonfinite CT board geometry"));
+            }
+            let normal = unit(normal)?;
+            let points = &array.detected_chip_positions_lps_mm;
+            if points.len() != 16 {return Err(format!("{name}: expected 16 CT chip positions"));}
+            let mut centroid=[0.0;3];
+            for p in points {
+                for k in 0..3 {centroid[k]+=p[k]/16.0;}
+            }
+            let to_connector = offset(pcb,centroid);
+            let along_normal = dot(to_connector,normal);
+            let projected=[
+                to_connector[0]-along_normal*normal[0],
+                to_connector[1]-along_normal*normal[1],
+                to_connector[2]-along_normal*normal[2],
+            ];
+            let proxy_offset=magnitude(projected);
+            if proxy_offset < 1.0 || !proxy_offset.is_finite() {
+                return Err(format!("{name}: cannot determine JST end from PCB/chip centroids"));
+            }
+            // Local +Y is away from JST, +X is right as seen from chip face.
+            let up=unit([-projected[0],-projected[1],-projected[2]])?;
+            let right=unit(cross(up,normal))?;
+            let mut projected_pts=(0..16).map(|i|{
+                let d=offset(points[i],centroid);
+                (i,dot(d,right),dot(d,up),dot(d,normal))
+            }).collect::<Vec<_>>();
+            projected_pts.sort_by(|a,b|a.1.total_cmp(&b.1));
+            let mut permutation=[0_usize;16];
+            let mut squared=0.0;
+            let mut maxerr=0.0_f64;
+            for col in 0..4 {
+                let group=&mut projected_pts[col*4..(col+1)*4];
+                group.sort_by(|a,b|a.2.total_cmp(&b.2));
+                for row in 0..4 {
+                    let (detector,x,y,z)=group[row];
+                    permutation[col*4+row]=detector;
+                    let expected_x=-6.75+4.5*col as f64;
+                    let expected_y=-6.75+4.5*row as f64;
+                    let e=((x-expected_x).powi(2)+(y-expected_y).powi(2)+z*z).sqrt();
+                    squared+=e*e;
+                    maxerr=maxerr.max(e);
+                }
+            }
+            let rms=(squared/16.0).sqrt();
+            if rms>0.70 || maxerr>1.50 {
+                return Err(format!("{name}: CT-to-v2 firmware grid is inconsistent (RMS {rms:.3} mm, max {maxerr:.3} mm)"));
+            }
+            let mut sensors=Vec::with_capacity(16);
+            for index in permutation {sensors.push(points[index]);}
+            // A1/KiCad convention: [B_grid_x,B_grid_y,B_grid_z] =
+            // [B_raw_y,-B_raw_x,B_raw_z]. Thus the raw-to-LPS columns
+            // are [-up,+right,+normal] for the CT-oriented board frame.
+            let raw_to_lps=[
+                [-up[0],right[0],normal[0]],
+                [-up[1],right[1],normal[1]],
+                [-up[2],right[2],normal[2]],
+            ];
+            registered.push(CbctRegisteredBoard {
+                detection_name:name.into(),raw_board_id:raw_id,
+                firmware_to_detector:permutation,
+                sensors_lps_mm:sensors,
+                raw_to_lps, geometric_rms_mm:rms,
+                jst_proxy_offset_mm:proxy_offset,
+            });
+        }
+        Ok(registered)
     }
 
     /// Full positions for inspection/export; the 0..15 chip indices here are
