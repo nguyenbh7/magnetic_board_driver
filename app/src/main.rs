@@ -1758,11 +1758,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                     .on_press(Message::ToggleCbctLog),
                 button(if context.cbct_show_details { "Hide details" } else { "Show details" })
                     .on_press(Message::ToggleCbctDetails),
+            ].spacing(8),
+            row![
                 if context.cbct_geometry.is_some() {
                     button("Copy CT positions").on_press(Message::CopyCbctCoordinates)
-                } else {
-                    button("Copy CT positions")
-                },
+                } else { button("Copy CT positions") },
                 button("Copy status").on_press(Message::CopyCbctStatus),
                 if context.cbct_geometry.is_some() {
                     button("Copy details").on_press(Message::CopyCbctDetails)
