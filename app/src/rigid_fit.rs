@@ -304,6 +304,17 @@ impl RigidLiveFit {
         self.reset_stream();
     }
 
+    /// Activate an explicitly reviewed experimental GK profile using the
+    /// recorded per-sensor no-magnet background in raw Hall axes. No double
+    /// subtraction: the assembled CT profile has zero background_mt.
+    pub fn set_experimental_gk_profile(
+        &mut self, profile: RigidProfile, background_raw: [[[f64;3];16];3]
+    ) {
+        self.set_profile(profile);
+        self.background_raw = background_raw.map(Some);
+        self.status = "EXPERIMENTAL GK six-DOF tracking: validate against HDMM".into();
+    }
+
     /// The A1 selection loads the bundled complete calibration automatically.
     /// The CT/rotation-stage selections are reference centers only until the
     /// user imports matching calibrated sensor geometry and magnetic nuisance data.
