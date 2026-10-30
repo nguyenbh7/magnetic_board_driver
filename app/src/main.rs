@@ -2412,6 +2412,58 @@ mod logging_safety_tests {
     }
 
     #[test]
+    fn selection_alone_does_not_create_a_file_and_start_is_explicit() {
+        let path=fresh_test_path();
+        let mut context=Context::default();
+        // The Select File dialog only chooses this path; it must not create
+        // an open writer or write a header until Start Logging is requested.
+        context.log_file_path=Some(path.clone());
+        assert!(!path.exists());
+        assert!(context.file_writer.is_none());
+        assert!(log_status_text(&context).contains("NOT recording"));
+
+        let _=update(&mut context,Message::StartLogging);
+        assert!(context.file_writer.is_some());
+        assert_eq!(context.logged_bytes,8);
+        assert!(!context.log_resume_available);
+
+        // Clicking Start again must not replace or reset an open recording.
+        let _=update(&mut context,Message::StartLogging);
+        assert_eq!(context.logged_bytes,8);
+        context.file_writer=None;
+        assert_eq!(fs::read(&path).unwrap(),b"MLXBF002");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn append_only_resume_requires_a_completed_prior_log() {
+        let path=fresh_test_path();
+        let mut context=Context::default();
+        context.log_file_path=Some(path.clone());
+        // A selected-but-not-yet-created log cannot be resumed.
+        let _=update(&mut context,Message::ResumeLogging);
+        assert!(context.file_writer.is_none());
+        assert!(!path.exists());
+
+        let mut file=create_new_log(&path).unwrap();
+        use std::io::Write;
+        // Valid header followed by a complete length-prefixed frame.
+        file.write_all(&(4_u32).to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.flush().unwrap();
+        drop(file);
+        let before=fs::read(&path).unwrap();
+
+        context.log_resume_available=true;
+        let _=update(&mut context,Message::ResumeLogging);
+        assert!(context.file_writer.is_some());
+        assert_eq!(context.logged_bytes,before.len() as u64);
+        context.file_writer=None;
+        assert_eq!(fs::read(&path).unwrap(),before);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn existing_log_is_preserved_byte_for_byte() {
         let path = fresh_test_path();
         let original = b"MLXBF002 original experiment data";
