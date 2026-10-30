@@ -504,8 +504,8 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
         for key in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
             if let Some(folder) = std::env::var_os(key) {
                 let path = if cfg!(windows) {
-                    PathBuf::from(&folder).join("Scripts").join("python.exe")
-                } else { PathBuf::from(&folder).join("bin").join("python") };
+                    PathBuf::from(folder).join("Scripts").join("python.exe")
+                } else { PathBuf::from(folder).join("bin").join("python") };
                 if path.is_file() { candidates.push((path.into_os_string(),vec![])); }
             }
         }
