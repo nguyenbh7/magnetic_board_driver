@@ -308,11 +308,15 @@ impl RigidLiveFit {
     /// recorded per-sensor no-magnet background in raw Hall axes. No double
     /// subtraction: the assembled CT profile has zero background_mt.
     pub fn set_experimental_gk_profile(
-        &mut self, profile: RigidProfile, background_raw: [[[f64;3];16];3]
+        &mut self, profile: RigidProfile, background_raw: Option<[[[f64;3];16];3]>
     ) {
         self.set_profile(profile);
-        self.background_raw = background_raw.map(Some);
-        self.status = "EXPERIMENTAL GK six-DOF tracking: validate against HDMM".into();
+        self.background_raw = background_raw.map_or([None;3], |raw| raw.map(Some));
+        self.status = if self.background_raw.iter().all(Option::is_some) {
+            "EXPERIMENTAL GK six-DOF tracking with measured sensor background; validate against HDMM".into()
+        } else {
+            "EXPERIMENTAL GK six-DOF with fitted board-constant offsets only; per-sensor backgrounds UNMEASURED".into()
+        };
     }
 
     /// The A1 selection loads the bundled complete calibration automatically.
@@ -800,6 +804,100 @@ pub fn fit_magnet_strengths(
     }).sum::<f64>()/samples.len() as f64;
     if !mse.is_finite() {return Err("Nonfinite calibration residual".into());}
     Ok((strengths,mse.sqrt()))
+}
+
+/// Background-free experimental alternative. Estimate the three signed
+/// magnet strengths and one constant nuisance field vector per BOARD
+/// (9 more coefficients) from the spatial variations across 16 chips.
+/// This does NOT recover per-sensor backgrounds or calibrate Hall gains.
+pub fn fit_strengths_with_board_offsets(
+    profile: &RigidProfile,
+    stationary: &[[[f64;3];16];3],
+) -> Result<([f64;3], [[f64;3];3], f64), String> {
+    profile.validate()?;
+    let sources: Vec<_>=profile.magnets.iter().map(|m|{
+        let mut unit=m.clone();
+        unit.remanence_mt=1.0;
+        quadrature(&unit,unit.center_mm,unit.axis)
+    }).collect();
+    let mut design=Vec::<([f64;3],f64)>::with_capacity(144);
+    let mut model_board_means=[[[0.0;3];3];3]; // board, magnet, xyz
+    let mut observed_means=[[0.0;3];3]; // board, xyz
+    let mut board_values=Vec::with_capacity(3);
+    for board in &profile.boards {
+        let id=board.raw_board_id as usize;
+        let mut predictions=[[[0.0_f64;3];3];16];
+        let mut measured=[[0.0_f64;3];16];
+        for i in 0..16 {
+            let gain=board.sensor_gains.as_ref().map(|g|g[i]).unwrap_or(1.0);
+            measured[i]=scale(mat_vec(board.raw_to_world,stationary[id][i]),1.0/gain);
+            if measured[i].iter().any(|v|!v.is_finite()) {
+                return Err("Nonfinite stationary Hall fields".into());
+            }
+            for j in 0..3 {
+                predictions[i][j]=predict(board.sensors_mm[i],std::slice::from_ref(&sources[j]));
+            }
+            for axis in 0..3 {
+                observed_means[id][axis]+=measured[i][axis]/16.0;
+                for j in 0..3 {
+                    model_board_means[id][j][axis]+=predictions[i][j][axis]/16.0;
+                }
+            }
+        }
+        board_values.push((id,predictions,measured));
+    }
+    let mut matrix=[[0.0_f64;4];3];
+    for (id,predictions,measured) in &board_values {
+        for i in 0..16 {
+            for axis in 0..3 {
+                let row=std::array::from_fn::<_,3,_>(|j|
+                    predictions[i][j][axis]-model_board_means[*id][j][axis]);
+                let y=measured[i][axis]-observed_means[*id][axis];
+                for j in 0..3 {
+                    for k in 0..3 {matrix[j][k]+=row[j]*row[k];}
+                    matrix[j][3]+=row[j]*y;
+                }
+                design.push((row,y));
+            }
+        }
+    }
+    let max_diag=(0..3).map(|i|matrix[i][i]).fold(0.0_f64,f64::max);
+    if !max_diag.is_finite() || max_diag <= 0.0 {
+        return Err("No spatial sensitivity to magnet strengths".into());
+    }
+    for k in 0..3 {
+        let pivot=(k..3).max_by(|&i,&j|
+            matrix[i][k].abs().total_cmp(&matrix[j][k].abs())).unwrap();
+        matrix.swap(k,pivot);
+        if !matrix[k][k].is_finite() || matrix[k][k].abs()<max_diag*1e-8 {
+            return Err("Cannot distinguish three magnet strengths from spatial Hall gradients without background".into());
+        }
+        let scale=matrix[k][k];
+        for col in k..4 {matrix[k][col]/=scale;}
+        for row in 0..3 {
+            if row==k {continue;}
+            let factor=matrix[row][k];
+            for col in k..4 {matrix[row][col]-=factor*matrix[k][col];}
+        }
+    }
+    let strengths=[matrix[0][3],matrix[1][3],matrix[2][3]];
+    let mut biases=[[0.0_f64;3];3];
+    for board in &profile.boards {
+        let id=board.raw_board_id as usize;
+        for axis in 0..3 {
+            biases[id][axis]=observed_means[id][axis]-
+                (0..3).map(|j|model_board_means[id][j][axis]*strengths[j]).sum::<f64>();
+        }
+    }
+    let mse=design.iter().map(|(row,y)|{
+        let diff=row.iter().zip(strengths).map(|(a,s)|a*s).sum::<f64>()-y;
+        diff*diff
+    }).sum::<f64>()/design.len() as f64;
+    let rmse=mse.sqrt();
+    if !rmse.is_finite() || biases.iter().flatten().any(|v|!v.is_finite()) {
+        return Err("Background-free fit produced nonfinite offsets or residuals".into());
+    }
+    Ok((strengths,biases,rmse))
 }
 
 fn solve_6(mut a: [[f64;6];6], mut b: [f64;6]) -> Option<[f64;6]> {
