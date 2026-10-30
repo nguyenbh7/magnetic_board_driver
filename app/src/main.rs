@@ -104,6 +104,8 @@ enum Message {
     BeginGkBackground,
     BeginGkReference,
     CalibrateGkTracking,
+    ExportGkCalibration,
+    GkCalibrationExportPicked(Option<PathBuf>),
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
     CopyRigidStatus,
@@ -586,6 +588,17 @@ fn all_diagnostics_text(context: &Context) -> String {
     lines.join("\n")
 }
 
+fn save_gk_calibration_file(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Save NEW GK calibration inputs JSON (existing files are protected)")
+        .set_file_name("gk_calibration_inputs.json")
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.save_file().await.map(|handle| handle.path().to_path_buf()) }
+}
+
 fn open_rigid_profile(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Option<PathBuf>> + use<> {
@@ -982,6 +995,63 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             } else {
                 "Calibration blocked: CT chip-to-firmware correspondence and board-axis registration are not yet implemented. No tracking model activated.".into()
             };
+            Task::none()
+        }
+        Message::ExportGkCalibration => {
+            if context.cbct_geometry.is_none() || context.gk_calibration.background.is_none()
+                || context.gk_calibration.reference.is_none() {
+                context.gk_calibration.status = "Save requires CT, background and stationary reference.".into();
+                return Task::none();
+            }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, save_gk_calibration_file))
+                .then(Task::future)
+                .map(Message::GkCalibrationExportPicked)
+        }
+        Message::GkCalibrationExportPicked(path) => {
+            if let Some(path) = path {
+                let data = context.cbct_geometry.as_ref()
+                    .zip(context.gk_calibration.background.as_ref())
+                    .zip(context.gk_calibration.reference.as_ref())
+                    .map(|((geometry, background), reference)| {
+                        serde_json::json!({
+                            "format": "gk_experiment_calibration_inputs_v1",
+                            "status": "experimental_unregistered",
+                            "units": {"positions": "mm", "fields": "mT"},
+                            "sensor_fields_order": "raw_firmware_index_0_to_15",
+                            "geometry_sensor_order": "CT_detector_order_not_firmware",
+                            "frame_of_reference_uid": geometry.frame_uid,
+                            "scan_source": geometry.scan_path.to_string_lossy(),
+                            "rigid_origin_lps_mm": geometry.rigid_origin_lps_mm,
+                            "rigid_axes_to_lps": geometry.rigid_axes_to_lps,
+                            "magnets": geometry.magnets.iter().map(|m| serde_json::json!({
+                                "name": m.name, "center_lps_mm": m.center_lps_mm,
+                                "unsigned_axis_lps": m.unsigned_axis_lps
+                            })).collect::<Vec<_>>(),
+                            "sensor_arrays": geometry.arrays.iter().map(|a| serde_json::json!({
+                                "name": a.name, "center_lps_mm": a.center_lps_mm,
+                                "detected_chip_positions_lps_mm": a.detected_chip_positions_lps_mm,
+                                "grid_rms_mm": a.grid_rms_mm
+                            })).collect::<Vec<_>>(),
+                            "background_raw_mt": background,
+                            "stationary_raw_mt": reference,
+                            "calibration_model_activated": false
+                        })
+                    });
+                let result = data.ok_or_else(|| "CT or captured sensor fields no longer available".to_string())
+                    .and_then(|data| serde_json::to_vec_pretty(&data).map_err(|e|e.to_string()))
+                    .and_then(|bytes| {
+                        use std::io::Write as _;
+                        let mut file = std::fs::OpenOptions::new()
+                            .write(true).create_new(true).open(&path)
+                            .map_err(|e| format!("Cannot create NEW file: {e}"))?;
+                        file.write_all(&bytes).map_err(|e|e.to_string())
+                    });
+                context.gk_calibration.status = match result {
+                    Ok(()) => format!("GK calibration inputs saved: {}",path.display()),
+                    Err(e) => format!("GK calibration export failed: {e}"),
+                };
+            }
             Task::none()
         }
         Message::ResetRigidZero => {
@@ -1607,6 +1677,12 @@ fn view(context: &Context) -> Element<'_, Message> {
                 "Calibration: not started".to_string()
             } else { context.gk_calibration.status.clone() }),
             text("Automatic model activation remains disabled pending verified CT chip indexing/board-frame registration."),
+            if context.gk_calibration.background.is_some()
+                && context.gk_calibration.reference.is_some()
+                && context.cbct_geometry.is_some() {
+                button("Save calibration inputs (.json)").on_press(Message::ExportGkCalibration)
+            } else { button("Save calibration inputs (.json)") },
+            text("Save inputs for offline solver testing; retain the original raw .bin logs too."),
             // Retain the legacy profile importer under an explicit archival label.
             button("Legacy: load manually calibrated JSON").on_press(Message::LoadRigidProfile),
             text(profile_status),
