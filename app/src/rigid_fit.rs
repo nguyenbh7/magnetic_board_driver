@@ -917,6 +917,43 @@ mod tests {
         assert!(fit_magnet_strengths(&profile,&background,&measured).is_err());
     }
 
+    /// Reconstruct CT registration and fit strengths using ONLY the GK app's
+    /// own exported calibration-input JSON. No manually authored profile.
+    /// This remains an experimental screening measurement, not HDMM validation.
+    #[test]
+    fn experimental_gk_automatic_ct_replay_from_export() {
+        let Ok(path)=std::env::var("GK_CALIBRATION_INPUTS") else { return; };
+        let input:serde_json::Value=serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("Read exported GK calibration JSON"))
+            .expect("Parse calibration JSON");
+        assert_eq!(input["format"],"gk_experiment_calibration_inputs_v1");
+        let detector=input["detector_replay"].to_string();
+        let geometry=crate::cbct_geometry::CbctGeometry::from_detector_json(
+            &detector, "exported_gk_scan".into(), "exported_gk_qc".into())
+            .expect("Reconstruct CT geometry from exported candidate");
+        let registration=geometry.register_ct_boards_v2()
+            .expect("Corrected v2 CT firmware indices and Hall axes");
+        for board in &registration {
+            println!("{} raw{}: CT grid RMS {:.3} mm, JST proxy {:.3} mm",
+                board.detection_name, board.raw_board_id,
+                board.geometric_rms_mm, board.jst_proxy_offset_mm);
+        }
+        let profile=geometry.experimental_candidate_profile()
+            .expect("Build CT experiment-specific model");
+        let background:[[[f64;3];16];3]=serde_json::from_value(
+            input["background_raw_mt"].clone()).expect("48 background vectors");
+        let stationary:[[[f64;3];16];3]=serde_json::from_value(
+            input["stationary_raw_mt"].clone()).expect("48 stationary vectors");
+        let (strengths,rmse)=fit_magnet_strengths(&profile,&background,&stationary)
+            .expect("Signed magnet-strength calibration from CT and Hall fields");
+        println!("EXPERIMENTAL automatic GK CT calibration, not HDMM-validated:");
+        println!("  signed strengths [mT]: {strengths:?}; stationary RMSE [mT]: {rmse:.6}");
+        println!("  preliminary QC: {}, expected |M| 300..2200 mT and RMSE <= 0.50 mT",
+            if strengths.iter().all(|x|x.abs()>=300.0 && x.abs()<=2200.0) && rmse<=0.5
+                {"PASS (experimental only)"} else {"REVIEW REQUIRED"});
+        assert!(rmse.is_finite());
+    }
+
     /// Optional real-data diagnostic; never runs unless both paths are supplied.
     /// The geometry profile must have independently registered CT chip indices
     /// and raw Hall axes. These measurements are for analysis, NOT activation.
