@@ -348,6 +348,49 @@ impl CbctGeometry {
         Ok(registered)
     }
 
+    /// Construct an experiment-specific *candidate* from the CT registration.
+    /// Magnetic remanences here are placeholders; callers MUST fit them from
+    /// current background-subtracted stationary measurements before activation.
+    pub fn experimental_candidate_profile(&self) -> Result<crate::rigid_fit::RigidProfile, String> {
+        use crate::rigid_fit::{RigidBoard, RigidMagnet, RigidProfile};
+        let reg=self.register_ct_boards_v2()?;
+        let boards=reg.into_iter().map(|b|RigidBoard {
+            raw_board_id:b.raw_board_id,
+            sensors_mm:b.sensors_lps_mm,
+            raw_to_world:b.raw_to_lps,
+            background_mt:[0.0;3],
+            sensor_gains:None,
+        }).collect::<Vec<_>>();
+        // Current physical GK magnets: 5/16-inch diameter. The superior
+        // magnet is 1/4-inch thick; side magnets are 1/8-inch. These are
+        // hardware dimensions, not CT bounding-box guesses. Verify if the
+        // magnets are changed before the next experiment.
+        let mut magnets=Vec::with_capacity(3);
+        for (name, thickness) in [
+            ("magnet_left",3.175_f64),
+            ("magnet_right",3.175_f64),
+            ("magnet_superior",6.35_f64)
+        ] {
+            let m=self.magnets.iter().find(|m|m.name==name)
+                .ok_or_else(||format!("Missing magnet {name}"))?;
+            magnets.push(RigidMagnet {
+                center_mm:m.center_lps_mm, axis:m.unsigned_axis_lps,
+                diameter_mm:7.9375, thickness_mm:thickness,
+                remanence_mt:1.0,
+            });
+        }
+        Ok(RigidProfile {
+            name:"GK CT experimental signed-strength fit (review required)".into(),
+            coordinate_frame:Some("DICOM_LPS_mm".into()),
+            origin_mm:self.rigid_origin_lps_mm,
+            boards,magnets,
+            initial_pose:[0.0;6],
+            lower_bounds:[-20.0,-20.0,-20.0,-0.5235987756,-0.5235987756,-0.5235987756],
+            upper_bounds:[20.0,20.0,20.0,0.5235987756,0.5235987756,0.5235987756],
+            max_rmse_mt:0.50,
+        })
+    }
+
     /// Full positions for inspection/export; the 0..15 chip indices here are
     /// detector order, NOT the hardware firmware order. No signed Hall fields.
     pub fn coordinates_csv(&self) -> String {
