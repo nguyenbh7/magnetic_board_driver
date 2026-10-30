@@ -136,6 +136,7 @@ enum Message {
     SelectFile,
     FileOpened(Result<FileHandle, Error>),
     StopLogging,
+    ResumeLogging,
     WroteFile(Result<usize, String>),
     LogFlushed(Result<(), String>),
     UpdateMlxGain(String),
@@ -736,6 +737,39 @@ fn create_new_log(path: &std::path::Path) -> std::io::Result<BufWriter<File>> {
     writer.write_all(b"MLXBF002")?;
     writer.flush()?;
     Ok(writer)
+}
+
+// Append only to a completed, well-framed log. Never truncate/rewrite
+// the header or silently repair a file with an incomplete final frame.
+fn reopen_log_for_append(path: &std::path::Path) -> std::io::Result<(BufWriter<File>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::OpenOptions::new().read(true).append(true).open(path)?;
+    let size = file.metadata()?.len();
+    if size < 8 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Log too short for MLXBF002 header"));
+    }
+    let mut magic=[0_u8;8];
+    file.read_exact(&mut magic)?;
+    if &magic != b"MLXBF002" {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Not an MLXBF002 board-frame log"));
+    }
+    let mut offset=8_u64;
+    while offset<size {
+        if size-offset<4 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Truncated frame length at end of log"));
+        }
+        let mut bytes=[0_u8;4];
+        file.read_exact(&mut bytes)?;
+        let frame_len=u32::from_le_bytes(bytes) as u64;
+        if frame_len==0 || frame_len > BoardFrame::POSTCARD_MAX_SIZE as u64
+            || frame_len > size-offset-4 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                format!("Invalid or incomplete MLXBF002 record at byte {offset}")));
+        }
+        offset += 4+frame_len;
+        file.seek(SeekFrom::Start(offset))?;
+    }
+    Ok((BufWriter::new(file),size))
 }
 
 async fn write_frame_data(
@@ -1415,6 +1449,40 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         },
+        Message::ResumeLogging => {
+            if context.file_writer.is_some() || context.log_stop_requested
+                || context.log_write_in_progress || context.log_finalize_in_progress
+                || context.log_file_dialog_open {
+                context.log_notice = "Cannot resume until the prior log is fully flushed and closed.".into();
+                return Task::none();
+            }
+            if context.log_write_failed {
+                context.log_notice = "Previous write failed: resume refused. Preserve this file and select a NEW filename.".into();
+                return Task::none();
+            }
+            if let Some(path) = context.log_file_path.clone() {
+                match reopen_log_for_append(&path) {
+                    Ok((writer,bytes)) => {
+                        context.file_writer=Some(Arc::new(Mutex::new(writer)));
+                        context.logged_bytes=bytes;
+                        context.log_started_at=Some(std::time::Instant::now());
+                        context.log_queue.clear();
+                        context.log_stop_requested=false;
+                        context.log_finalize_in_progress=false;
+                        context.log_write_in_progress=false;
+                        context.log_notice=format!(
+                            "APPENDING to existing log: {}. Previous bytes preserved; Start Field Stream if stopped.",path.display());
+                    }
+                    Err(error) => {
+                        context.log_notice=format!(
+                            "Cannot safely resume {}: {error}. Existing file unchanged; select a NEW filename.",path.display());
+                    }
+                }
+            } else {
+                context.log_notice="No previous log to resume; select a NEW filename.".into();
+            }
+            Task::none()
+        }
         Message::StopLogging => {
             if context.file_writer.is_none() || context.log_stop_requested {
                 return Task::none();
@@ -1451,7 +1519,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 ),
                 Ok(()) if context.log_write_failed =>
                     "Log closed following a write error; inspect file integrity.".into(),
-                Ok(()) => "Log flushed and closed. Select a NEW filename next time.".into(),
+                Ok(()) => "Log flushed and closed. Use Resume previous log (append), or Select File for a new one.".into(),
             };
             Task::none()
         },
@@ -1639,6 +1707,13 @@ fn view(context: &Context) -> Element<'_, Message> {
     if context.file_writer.is_none() && !context.log_file_dialog_open {
         select_log_button = select_log_button.on_press(Message::SelectFile);
     }
+    let mut resume_log_button = button("Resume previous log (append)");
+    if context.file_writer.is_none() && context.log_file_path.is_some()
+        && !context.log_stop_requested && !context.log_finalize_in_progress
+        && !context.log_write_in_progress && !context.log_write_failed
+        && !context.log_file_dialog_open {
+        resume_log_button=resume_log_button.on_press(Message::ResumeLogging);
+    }
     let mut stop_log_button = button("Stop logging");
     if context.file_writer.is_some() && !context.log_stop_requested {
         stop_log_button = stop_log_button.on_press(Message::StopLogging);
@@ -1654,11 +1729,12 @@ fn view(context: &Context) -> Element<'_, Message> {
             text("Measurement logging").size(18),
             text("1. Select File: choose a new, unique .bin filename."),
             text("2. Start Field Stream: begin acquiring and saving sensor measurements."),
-            text("3. Stop Field Stream to pause; Start Field Stream again to append to the open log."),
-            text("4. Stop logging: finish queued writes, flush the file, and close it."),
+            text("3. Stop Field Stream pauses acquisition; Start Field Stream again continues the OPEN log."),
+            text("4. Stop logging flushes/closes. Resume previous log (append) reopens the same verified .bin without overwriting."),
             row![
                 select_log_button,
                 stop_log_button,
+                resume_log_button,
             ].spacing(8),
             row![
                 button("Start Field Stream").on_press(Message::StartFieldStream),
@@ -1674,7 +1750,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             } else {
                 context.log_notice.clone()
             }),
-            text("Existing files are protected. Stop logging does not stop the field stream; streaming without an open log displays live data without saving."),
+            text("Resume verifies the MLXBF002 header and complete length-prefixed frames, then appends only. Stop logging does not stop the field stream; streaming without an open log does not save."),
         ]
         .spacing(6),
     )
