@@ -1072,37 +1072,49 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::BeginGkReference => {
-            if context.gk_calibration.background.is_some() && context.cbct_geometry.is_some() {
+            if context.cbct_geometry.is_some() {
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.gk_calibration.begin(true);
             } else {
-                context.gk_calibration.status = "Capture no-magnet background and import the matching CT first".into();
+                context.gk_calibration.status = "Import the matching CT first; no-magnet background is optional.".into();
             }
             Task::none()
         }
         Message::CalibrateGkTracking => {
             context.gk_calibration.calibrated_candidate = None;
-            let outcome = (|| -> Result<(RigidProfile, [f64;3], f64), String> {
+            let outcome = (|| -> Result<(RigidProfile, [f64;3], f64, bool), String> {
                 let geometry = context.cbct_geometry.as_ref().ok_or("Import the current CT first")?;
-                let background = context.gk_calibration.background.as_ref()
-                    .ok_or("Capture no-magnet background first")?;
                 let reference = context.gk_calibration.reference.as_ref()
                     .ok_or("Capture the stationary magnet fields first")?;
                 let mut profile=geometry.experimental_candidate_profile()?;
-                let (strengths, rmse)=rigid_fit::fit_magnet_strengths(&profile,background,reference)?;
+                let background_used=context.gk_calibration.background.is_some();
+                let (strengths,rmse)=if let Some(background)=context.gk_calibration.background.as_ref() {
+                    rigid_fit::fit_magnet_strengths(&profile,background,reference)?
+                } else {
+                    // No background: estimate 3 signed strengths AND 3
+                    // board-constant nuisance field vectors from spatial
+                    // sensor-to-sensor field differences. Lower-confidence fit.
+                    let (strengths, offsets, rmse)=
+                        rigid_fit::fit_strengths_with_board_offsets(&profile,reference)?;
+                    for board in &mut profile.boards {
+                        board.background_mt=offsets[board.raw_board_id as usize];
+                    }
+                    (strengths,rmse)
+                };
                 for (magnet, strength) in profile.magnets.iter_mut().zip(strengths) {
                     magnet.remanence_mt=strength;
                 }
-                Ok((profile,strengths,rmse))
+                Ok((profile,strengths,rmse,background_used))
             })();
             match outcome {
-                Ok((profile,strengths,rmse)) => {
+                Ok((profile,strengths,rmse,background_used)) => {
                     // Screening limits, not proof of clinical/HDMM accuracy.
                     let plausible = strengths.iter().all(|s|s.abs()>=300.0 && s.abs()<=2200.0);
                     if rmse <= profile.max_rmse_mt && plausible {
                         context.gk_calibration.calibrated_candidate=Some((profile,rmse));
                         context.gk_calibration.status=format!(
-                            "EXPERIMENTAL calibration candidate: signed remanences [{:.1}, {:.1}, {:.1}] mT; field RMSE {:.4} mT. Review CT/JST orientation and magnet dimensions, then explicitly enable test tracking.",
+                            "EXPERIMENTAL {} calibration candidate: signed remanences [{:.1}, {:.1}, {:.1}] mT; field RMSE {:.4} mT. Review CT/JST and magnet dimensions before enabling.",
+                            if background_used { "measured-background" } else { "NO-BACKGROUND (fitted board offsets; lower confidence)" },
                             strengths[0],strengths[1],strengths[2],rmse);
                     } else {
                         context.gk_calibration.status=format!(
@@ -1118,24 +1130,20 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::EnableExperimentalGkTracking => {
-            if let (Some((profile,rmse)),Some(background)) = (
-                context.gk_calibration.calibrated_candidate.clone(),
-                context.gk_calibration.background
-            ) {
-                context.rigid_fit.set_experimental_gk_profile(profile,background);
+            if let Some((profile,rmse)) = context.gk_calibration.calibrated_candidate.clone() {
+                context.rigid_fit.set_experimental_gk_profile(profile,context.gk_calibration.background);
                 context.tracking_mode=TrackingMode::Rigid6Dof;
                 context.live_fits.set_fit_enabled(false);
                 context.gk_calibration.status=format!(
                     "EXPERIMENTAL 6-DOF model enabled (stationary field RMSE {rmse:.4} mT). Compare with HDMM and raw/independent tracking; not yet validated.");
             } else {
-                context.gk_calibration.status="No accepted experimental candidate or background; recalibrate.".into();
+                context.gk_calibration.status="No accepted experimental candidate; recalibrate.".into();
             }
             Task::none()
         }
         Message::ExportGkCalibration => {
-            if context.cbct_geometry.is_none() || context.gk_calibration.background.is_none()
-                || context.gk_calibration.reference.is_none() {
-                context.gk_calibration.status = "Save requires CT, background and stationary reference.".into();
+            if context.cbct_geometry.is_none() || context.gk_calibration.reference.is_none() {
+                context.gk_calibration.status = "Save requires CT and stationary reference (background optional).".into();
                 return Task::none();
             }
             iced::window::oldest()
@@ -1146,9 +1154,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::GkCalibrationExportPicked(path) => {
             if let Some(path) = path {
                 let data = context.cbct_geometry.as_ref()
-                    .zip(context.gk_calibration.background.as_ref())
                     .zip(context.gk_calibration.reference.as_ref())
-                    .map(|((geometry, background), reference)| {
+                    .map(|(geometry, reference)| {
                         serde_json::json!({
                             "format": "gk_experiment_calibration_inputs_v1",
                             "status": "experimental_geometry_candidate_not_independently_validated",
@@ -1201,7 +1208,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                                     "jst_proxy_offset_mm":b.jst_proxy_offset_mm
                                 })).collect::<Vec<_>>()
                             }),
-                            "background_raw_mt": background,
+                            "background_raw_mt": context.gk_calibration.background.as_ref(),
+                            "background_method": if context.gk_calibration.background.is_some() {
+                                "measured_per_sensor"
+                            } else {
+                                "not_measured_board_constant_nuisance_fit_if_calibrated"
+                            },
                             "stationary_raw_mt": reference,
                             "calibration_candidate": context.gk_calibration.calibrated_candidate.as_ref()
                                 .map(|(p,rmse)|serde_json::json!({
@@ -1881,17 +1893,16 @@ fn view(context: &Context) -> Element<'_, Message> {
         let tracking_panel = container(column![
             text("Tracking Configuration & Controls"),
             text("Model: Joint 6-DOF rigid body"),
-            text("1. With magnets removed and boards fixed, start the field stream; capture 3 s of background."),
+            text("1. OPTIONAL: with magnets removed and boards fixed, capture 3 s of background. No background = lower-confidence fitted board offsets."),
             if context.gk_calibration.capturing.is_none() {
                 button("Capture no-magnet background").on_press(Message::BeginGkBackground)
             } else { button("Capture no-magnet background") },
             text(if context.gk_calibration.background.is_some() { "Background: 48 sensors captured" }
-                else { "Background: not captured" }),
-            text("2. Install magnets, acquire CT, and import/review its geometry above."),
+                else { "Background: skipped / not captured (allowed)" }),
+            text("2. Install magnets; import/review CT when available. Raw logging works without CT."),
             text(if context.cbct_geometry.is_some() { "CT: imported for review" } else { "CT: not imported" }),
             text("3. Keep boards/magnets stationary; capture 3 s of Hall fields."),
-            if context.gk_calibration.capturing.is_none() && context.gk_calibration.background.is_some()
-                && context.cbct_geometry.is_some() {
+            if context.gk_calibration.capturing.is_none() && context.cbct_geometry.is_some() {
                 button("Capture stationary reference").on_press(Message::BeginGkReference)
             } else { button("Capture stationary reference") },
             text(if context.gk_calibration.reference.is_some() { "Reference fields: 48 sensors captured" }
@@ -1908,12 +1919,10 @@ fn view(context: &Context) -> Element<'_, Message> {
             if context.gk_calibration.calibrated_candidate.is_some() {
                 button("Enable EXPERIMENTAL 6-DOF tracking (review first)").on_press(Message::EnableExperimentalGkTracking)
             } else { button("Enable EXPERIMENTAL 6-DOF tracking (review first)") },
-            if context.gk_calibration.background.is_some()
-                && context.gk_calibration.reference.is_some()
-                && context.cbct_geometry.is_some() {
+            if context.gk_calibration.reference.is_some() && context.cbct_geometry.is_some() {
                 button("Save calibration inputs (.json)").on_press(Message::ExportGkCalibration)
             } else { button("Save calibration inputs (.json)") },
-            text("Save inputs for offline solver testing; retain the original raw .bin logs too."),
+            text("Background is optional for recording and reference capture. No-background calibration estimates board-constant offsets; retain .bin logs and validate against independent/HDMM."),
             // Retain the legacy profile importer under an explicit archival label.
             button("Legacy: load manually calibrated JSON").on_press(Message::LoadRigidProfile),
             text(profile_status),
