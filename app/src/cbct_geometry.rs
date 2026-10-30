@@ -141,8 +141,13 @@ impl CbctGeometry {
         if report.format != "gk_cbct_detections_v1" || report.coordinate_frame != "DICOM_LPS_mm" {
             return Err("Unsupported CT detector format or coordinate frame".into());
         }
-        if report.status != "unreviewed" || !report.requires_review {
-            return Err("The detector did not report complete, review-required geometry".into());
+        // The glass BB is optional for magnet/board calibration. All
+        // three magnets and all 48 sensors remain mandatory. Accept an
+        // incomplete detector report ONLY when validation below proves
+        // that its sole missing object is the BB.
+        if !matches!(report.status.as_str(), "unreviewed" | "incomplete_detection"
+                | "unreviewed_optional_bb_absent") || !report.requires_review {
+            return Err("The detector did not produce review-required CT geometry".into());
         }
         let uid = report.frame_of_reference_uid
             .filter(|text| !text.trim().is_empty())
@@ -198,9 +203,9 @@ impl CbctGeometry {
                 other => return Err(format!("Unrecognized CT detected object kind: {other}")),
             }
         }
-        if magnets.len() != 3 || arrays.len() != 3 || markers.len() != 1 {
+        if magnets.len() != 3 || arrays.len() != 3 || markers.len() > 1 {
             return Err(format!(
-                "Expected exactly 3 magnets, 3 arrays (48 chips), 1 glass BB; got {}/{}/{}",
+                "Need exactly 3 magnets, 3 arrays (48 chips), and 0 or 1 BB; got {} magnets/{} arrays/{} BB",
                 magnets.len(), arrays.len(), markers.len()
             ));
         }
@@ -474,7 +479,10 @@ impl CbctGeometry {
             self.rigid_axes_to_lps[0][0],self.rigid_axes_to_lps[1][0],self.rigid_axes_to_lps[2][0],
             self.rigid_axes_to_lps[0][1],self.rigid_axes_to_lps[1][1],self.rigid_axes_to_lps[2][1],
             self.rigid_axes_to_lps[0][2],self.rigid_axes_to_lps[1][2],self.rigid_axes_to_lps[2][2]));
-        lines.push("HDMM reflective sticker: NOT independently detected/identified; BB-to-HDMM correspondence requires manual confirmation.".into());
+        if self.markers.is_empty() {
+            lines.push("No glass BB candidate detected; BB/HDMM marker reconstruction unavailable. Magnet/board geometry remains usable.".into());
+        }
+        lines.push("HDMM reflective sticker: NOT independently detected/identified; BB-to-HDMM correspondence requires manual confirmation if a BB is present.".into());
         lines.push("Geometry import DOES NOT load or enable a RigidProfile. The magnetic field calibration is a separate step.".into());
         lines.push(format!("Detector review images/JSON: {}", self.qc_directory.display()));
         lines.join("\n")
@@ -626,13 +634,35 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
     let stdout_text = output_reader.join().unwrap_or_default();
     let stderr_text = error_reader.join().unwrap_or_default();
     if cancelled { return Err("Detection cancelled by user. No geometry was imported.".into()); }
+    let report_path=result_dir.join("detections.json");
+    let raw=std::fs::read_to_string(&report_path);
     if !status.success() {
-        return Err(format!("CBCT detector failed (exit {}): {} {}. Outputs (if any): {}",
-            status,stderr_text.chars().take(800).collect::<String>(),
-            stdout_text.chars().take(600).collect::<String>(),result_dir.display()));
+        // Python returns code 1 for incomplete detection but still writes
+        // object counts/coordinates. Missing BB alone is nonfatal; missing
+        // a magnet or chip/board is NEVER silently accepted.
+        if let Ok(ref report)=raw {
+            if let Ok(geometry)=CbctGeometry::from_detector_json(
+                report,scan.to_path_buf(),result_dir.clone()) {
+                if geometry.markers.is_empty() {
+                    record(&progress,"WARNING: CT found 3 magnets and 48 chips but no glass BB; continuing without marker reconstruction.".into());
+                    return Ok(geometry);
+                }
+            }
+            let counts=serde_json::from_str::<serde_json::Value>(report).ok()
+                .and_then(|value|value.get("counts").cloned())
+                .map(|value|value.to_string())
+                .unwrap_or_else(||"unavailable".into());
+            return Err(format!(
+                "INCOMPLETE CT DETECTION (exit {status}); counts={counts}. Need 3 magnets, 3 boards (48 chips). BB optional. Detector stderr: {}. Full QC/log: {}",
+                stderr_text.chars().take(1200).collect::<String>(),result_dir.display()));
+        }
+        return Err(format!(
+            "CT detector exited {status} BEFORE a detection report was produced. stderr: {}. stdout tail: {}. QC/log: {}",
+            stderr_text.chars().take(1200).collect::<String>(),
+            stdout_text.chars().rev().take(800).collect::<String>().chars().rev().collect::<String>(),
+            result_dir.display()));
     }
-    let raw=std::fs::read_to_string(result_dir.join("detections.json"))
-        .map_err(|e|format!("CBCT detector did not write detections.json: {e}"))?;
+    let raw=raw.map_err(|e|format!("CBCT detector did not write detections.json: {e}"))?;
     CbctGeometry::from_detector_json(&raw,scan.to_path_buf(),result_dir)
 }
 
