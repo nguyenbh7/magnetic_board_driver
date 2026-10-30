@@ -778,6 +778,75 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
 mod tests {
     use super::*;
 
+    fn partial_board_detection(missing: &str) -> String {
+        let mut objects=vec![
+            serde_json::json!({"kind":"magnet","name":"magnet_left","center_lps_mm":[175.0,-100.0,-80.0]}),
+            serde_json::json!({"kind":"magnet","name":"magnet_right","center_lps_mm":[25.0,-120.0,-80.0]}),
+            serde_json::json!({"kind":"magnet","name":"magnet_superior","center_lps_mm":[100.0,-75.0,5.0]}),
+        ];
+        for (slot,pos) in [
+            ("left",[188.0,-108.0,-82.0]),
+            ("right",[12.0,-113.0,-82.0]),
+            ("superior",[103.0,-72.0,28.0])
+        ] {
+            if slot!=missing {
+                // Deliberately use noncanonical names. The diagnosis must
+                // rely on LPS proximity to magnets, NOT the detector name.
+                objects.push(serde_json::json!({
+                    "kind":"array","name":format!("candidate_{slot}"),
+                    "center_lps_mm":pos,
+                    "chip_grid_lps_mm":vec![[0.,0.,0.];16]
+                }));
+            }
+        }
+        serde_json::json!({
+            "format":"gk_cbct_detections_v1",
+            "coordinate_frame":"DICOM_LPS_mm",
+            "status":"incomplete_detection",
+            "requires_review":true,
+            "objects":objects
+        }).to_string()
+    }
+
+    #[test]
+    fn identify_missing_board_from_magnet_anchors_not_array_names() {
+        for (missing,label,found) in [
+            ("left","PATIENT LEFT","PATIENT RIGHT"),
+            ("right","PATIENT RIGHT","TOP OF HEAD"),
+            ("superior","TOP OF HEAD","PATIENT LEFT"),
+        ] {
+            let diagnosis=ct_board_failure_diagnostics(&partial_board_detection(missing));
+            assert!(diagnosis.contains(&format!("{label}")), "{diagnosis}");
+            let line=diagnosis.lines().find(|line|line.contains(label)).unwrap();
+            assert!(line.contains("NOT DETECTED"), "{diagnosis}");
+            let good_line=diagnosis.lines().find(|line|line.contains(found)).unwrap();
+            assert!(good_line.contains("DETECTED"), "{diagnosis}");
+        }
+    }
+
+    #[test]
+    fn missing_magnet_anchor_does_not_guess_board_identity() {
+        let mut report:serde_json::Value=
+            serde_json::from_str(&partial_board_detection("left")).unwrap();
+        report["objects"].as_array_mut().unwrap()
+            .retain(|obj| obj["name"]!="magnet_left");
+        let diagnosis=ct_board_failure_diagnostics(&report.to_string());
+        assert!(diagnosis.contains("UNRESOLVED"));
+        assert!(!diagnosis.contains("NOT DETECTED"));
+    }
+
+    #[test]
+    fn ambiguous_array_matching_does_not_report_absent_board_as_fact() {
+        let mut report:serde_json::Value=
+            serde_json::from_str(&partial_board_detection("left")).unwrap();
+        report["objects"].as_array_mut().unwrap().push(serde_json::json!({
+            "kind":"array","name":"unlocalized_grid","center_lps_mm":[100.0,-90.0,-55.0]
+        }));
+        let diagnosis=ct_board_failure_diagnostics(&report.to_string());
+        assert!(diagnosis.contains("NO CONFIDENT MATCH"),"{diagnosis}");
+        assert!(diagnosis.contains("UNASSIGNED CT ARRAYS"),"{diagnosis}");
+    }
+
     fn sample() -> String {
         let mut objects=Vec::new();
         for i in 0..3 {
