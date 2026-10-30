@@ -101,6 +101,9 @@ enum Message {
     ToggleCbctDetails,
     CopyCbctCoordinates,
     CaptureRigidBackground,
+    BeginGkBackground,
+    BeginGkReference,
+    CalibrateGkTracking,
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
     CopyRigidStatus,
@@ -202,6 +205,67 @@ impl SensorGridCollection {
 }
 
 
+// Per-experiment acquisition. The raw firmware order and axes are never guessed
+// from CT detector ordering. A new CT or port invalidates these measurements.
+#[derive(Default)]
+struct GkCalibration {
+    background: Option<[[[f64; 3]; 16]; 3]>,
+    reference: Option<[[[f64; 3]; 16]; 3]>,
+    capturing: Option<GkCapture>,
+    status: String,
+}
+struct GkCapture {
+    reference: bool,
+    started: std::time::Instant,
+    sum: [[[f64; 3]; 16]; 3],
+    counts: [[u32; 16]; 3],
+}
+impl GkCalibration {
+    fn begin(&mut self, reference: bool) {
+        self.capturing = Some(GkCapture {
+            reference, started: std::time::Instant::now(),
+            sum: [[[0.0; 3]; 16]; 3], counts: [[0; 16]; 3],
+        });
+        if reference { self.reference = None; }
+        else { self.background = None; self.reference = None; }
+        self.status = if reference { "Capturing stationary magnet fields (3 seconds)..." }
+            else { "Capturing no-magnet background (3 seconds)..." }.into();
+    }
+    fn accept_frame(&mut self, frame: &BoardFrame) {
+        let Some(c) = &mut self.capturing else { return; };
+        let id = frame.board_id as usize;
+        if id >= 3 { return; }
+        for (i, sample) in frame.samples.iter().enumerate().take(16) {
+            if frame.sensor_mask & (1u16 << i) == 0 { continue; }
+            let v = [sample.bx_ut as f64 / 1000.0,
+                     sample.by_ut as f64 / 1000.0,
+                     sample.bz_ut as f64 / 1000.0];
+            if v.iter().any(|x| !x.is_finite()) { continue; }
+            for (k, component) in v.iter().enumerate() { c.sum[id][i][k] += component; }
+            c.counts[id][i] += 1;
+        }
+        if c.started.elapsed().as_secs_f64() < 3.0 { return; }
+        // Do not accept missing sensors or a snapshot from a single frame.
+        let min_count = c.counts.iter().flatten().copied().min().unwrap_or(0);
+        if min_count < 2 {
+            self.status = format!("Collecting all 48 sensors; minimum samples per sensor: {min_count}");
+            return;
+        }
+        let mut average = c.sum;
+        for (board, sensors) in average.iter_mut().enumerate() {
+            for (i, vector) in sensors.iter_mut().enumerate() {
+                for component in vector { *component /= c.counts[board][i] as f64; }
+            }
+        }
+        let is_reference = c.reference;
+        self.capturing = None;
+        if is_reference { self.reference = Some(average); }
+        else { self.background = Some(average); }
+        self.status = format!("{} captured: 48/48 sensors, at least {min_count} frames each",
+            if is_reference { "Stationary reference" } else { "No-magnet background" });
+    }
+}
+
 #[derive(Default)]
 struct Context {
     sensor_watcher: Option<SensorWatcher>,
@@ -217,6 +281,7 @@ struct Context {
     live_fits: BoardLiveFits,
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
+    gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
     cbct_progress: Option<Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>>,
@@ -697,6 +762,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
             context.rigid_fit.clear_background_for_new_port();
+            context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
             context.dashboard_tab = DashboardTab::LiveTracking;
             context.tracking_mode = TrackingMode::Rigid6Dof;
@@ -802,6 +868,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     path.display()
                 );
                 context.cbct_geometry = None;
+                context.gk_calibration.reference = None;
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
@@ -828,6 +895,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     Ok(geometry) => {
                         context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
                         context.cbct_geometry = Some(geometry);
+                    context.gk_calibration.reference = None;
+                        context.gk_calibration.reference = None;
                     }
                     Err(error) => {
                         context.cbct_status = format!("CBCT import failed: {error}");
@@ -885,6 +954,30 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 None => Task::none(),
             }
         }
+        Message::BeginGkBackground => {
+            context.gk_calibration.begin(false);
+            Task::none()
+        }
+        Message::BeginGkReference => {
+            if context.gk_calibration.background.is_some() && context.cbct_geometry.is_some() {
+                context.gk_calibration.begin(true);
+            } else {
+                context.gk_calibration.status = "Capture no-magnet background and import the matching CT first".into();
+            }
+            Task::none()
+        }
+        Message::CalibrateGkTracking => {
+            // Never allow detector-order points to masquerade as firmware indices.
+            // A reproducible index/board-frame registration is required before
+            // forming the CT field design matrix for signed remanence fitting.
+            context.gk_calibration.status = if context.gk_calibration.background.is_none()
+                || context.gk_calibration.reference.is_none() || context.cbct_geometry.is_none() {
+                "Calibration prerequisites incomplete: background, CT and reference required".into()
+            } else {
+                "Calibration blocked: CT chip-to-firmware correspondence and board-axis registration are not yet implemented. No tracking model activated.".into()
+            };
+            Task::none()
+        }
         Message::ResetRigidZero => {
             context.rigid_fit.reset_zero();
             Task::none()
@@ -937,6 +1030,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.ping_field = Some(sensor_field);
             }
 
+            context.gk_calibration.accept_frame(&frame);
             let mut tasks = Vec::new();
 
             if let Some(job) = context.rigid_fit.receive_frame(
@@ -1482,7 +1576,31 @@ fn view(context: &Context) -> Element<'_, Message> {
         let tracking_panel = container(column![
             text("Tracking Configuration & Controls"),
             text("Model: Joint 6-DOF rigid body"),
-            button("Load calibrated profile (.json)").on_press(Message::LoadRigidProfile),
+            text("1. With magnets removed and boards fixed, start the field stream; capture 3 s of background."),
+            if context.gk_calibration.capturing.is_none() {
+                button("Capture no-magnet background").on_press(Message::BeginGkBackground)
+            } else { button("Capture no-magnet background") },
+            text(if context.gk_calibration.background.is_some() { "Background: 48 sensors captured" }
+                else { "Background: not captured" }),
+            text("2. Install magnets, acquire CT, and import/review its geometry above."),
+            text(if context.cbct_geometry.is_some() { "CT: imported for review" } else { "CT: not imported" }),
+            text("3. Keep boards/magnets stationary; capture 3 s of Hall fields."),
+            if context.gk_calibration.capturing.is_none() && context.gk_calibration.background.is_some()
+                && context.cbct_geometry.is_some() {
+                button("Capture stationary reference").on_press(Message::BeginGkReference)
+            } else { button("Capture stationary reference") },
+            text(if context.gk_calibration.reference.is_some() { "Reference fields: 48 sensors captured" }
+                else { "Reference fields: not captured" }),
+            text("4. Calibrate signed magnet strengths and validate the field residuals before tracking."),
+            if context.gk_calibration.reference.is_some() {
+                button("Calibrate tracking model").on_press(Message::CalibrateGkTracking)
+            } else { button("Calibrate tracking model") },
+            text(if context.gk_calibration.status.is_empty() {
+                "Calibration: not started".to_string()
+            } else { context.gk_calibration.status.clone() }),
+            text("Automatic model activation remains disabled pending verified CT chip indexing/board-frame registration."),
+            // Retain the legacy profile importer under an explicit archival label.
+            button("Legacy: load manually calibrated JSON").on_press(Message::LoadRigidProfile),
             text(profile_status),
             row![
                 if rigid.result.is_some() {
