@@ -906,6 +906,33 @@ mod tests {
         assert!(fit_magnet_strengths(&profile,&background,&measured).is_err());
     }
 
+    /// Optional real-data diagnostic; never runs unless both paths are supplied.
+    /// The geometry profile must have independently registered CT chip indices
+    /// and raw Hall axes. These measurements are for analysis, NOT activation.
+    #[test]
+    fn experimental_gk_stationary_calibration_from_export() {
+        let Ok(inputs_path) = std::env::var("GK_CALIBRATION_INPUTS") else { return; };
+        let profile_path = std::env::var("GK_REGISTERED_GEOMETRY")
+            .expect("Set GK_REGISTERED_GEOMETRY to a reviewed, firmware-indexed RigidProfile JSON");
+        let inputs: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&inputs_path).expect("Read GK inputs"))
+            .expect("Parse GK inputs");
+        assert_eq!(inputs["format"], "gk_experiment_calibration_inputs_v1");
+        assert_eq!(inputs["sensor_fields_order"], "raw_firmware_index_0_to_15");
+        let background: [[[f64; 3]; 16]; 3] = serde_json::from_value(
+            inputs["background_raw_mt"].clone()).expect("48 background vectors");
+        let reference: [[[f64; 3]; 16]; 3] = serde_json::from_value(
+            inputs["stationary_raw_mt"].clone()).expect("48 reference vectors");
+        let profile = RigidProfile::from_json(
+            &std::fs::read_to_string(&profile_path).expect("Read registered CT geometry"))
+            .expect("Validated registered CT geometry");
+        let (strengths, rmse) = fit_magnet_strengths(&profile, &background, &reference)
+            .expect("Experimental signed-strength fit");
+        println!("EXPERIMENTAL GK STATIONARY CALIBRATION (NOT A VALIDATED TRACKING PROFILE)");
+        println!("signed strengths [mT]: {strengths:?}; field RMSE [mT]: {rmse:.6}");
+        assert!(strengths.iter().all(|x|x.is_finite()) && rmse.is_finite());
+    }
+
     #[test]
     fn profile_is_valid() { RigidProfile::a1_reference().unwrap(); }
 
