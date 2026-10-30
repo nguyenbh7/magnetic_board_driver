@@ -1147,3 +1147,19 @@ The Rust rigid fitter now exposes `fit_magnet_strengths(profile, background, sta
 
 ### Before the next GK measurement
 The automatic calibration pathway cannot be considered ready for real six-DOF tracking until board orientation/correspondence registration is established and tested. With no physical boards available during this work, the next GK session should prioritize saving raw no-magnet field logs, stationary-with-magnets field logs, CT data and simultaneous HDMM motion measurements. Use distinct filenames and keep the board configuration unchanged after CT. Do not rely on the new calibration button to generate or activate a model; it deliberately remains blocked. Background/reference capture averages currently live in app memory and are not persisted. Save raw logging files for reproducibility.
+
+
+## Experimental calibration on new GK measurements (2026-10-30)
+The app can **export all experimental inputs** via **Save calibration inputs (.json)** after a no-magnet background capture, import of the matching CT geometry, and stationary-with-magnets capture. This write uses create-new semantics to avoid overwriting previous runs. The JSON includes scan path/frame UID, three CT magnet centers and unsigned axes, three CT arrays and detector-order chip coordinates, plus 3x16x3 raw background and stationary mT vectors in **firmware order**. The format is `gk_experiment_calibration_inputs_v1`. Export does not activate tracking.
+
+For an *optional* Rust real-data calibration test, first construct an **independently reviewed, firmware-ordered** `RigidProfile` JSON whose board `raw_board_id`, `sensors_mm`, and `raw_to_world` match the CT scan. Use existing profile-builder tools as needed, but **do not** substitute arbitrary detector order or an old experiment's geometry. Then from PowerShell:
+
+```powershell
+$env:GK_CALIBRATION_INPUTS = "F:\\GKData\\gk_calibration_inputs.json"
+$env:GK_REGISTERED_GEOMETRY = "F:\\GKData\\reviewed_ct_geometry_profile.json"
+cargo test -p app --release experimental_gk_stationary_calibration_from_export -- --nocapture
+Remove-Item Env:GK_CALIBRATION_INPUTS,Env:GK_REGISTERED_GEOMETRY
+```
+
+The test runs the **same Rust `fit_magnet_strengths` solver** against actual measured Hall vectors and prints signed remanences and stationary RMSE. It does not optimize sensor mapping, decide calibration acceptance, create a trusted live profile, or validate six-DOF tracking. Until deterministic CT sensor/board registration is implemented, it is *not* a one-click calibration workflow; the app's **Calibrate tracking model** button still refuses activation. This is intentional. Preserve **separate raw Hall .bin logs** for background, stationary reference, and motions, plus the original DICOM ZIP and independent-fit motion outputs. The export and test require a fresh Windows build check; they have not yet been run on real hardware.
+
