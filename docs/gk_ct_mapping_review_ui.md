@@ -22,6 +22,7 @@ Verify raw board cabling (0 superior, 1 left, 2 right), chip faces, superior JST
 
 - The *CT sensor mapping* panel shows a compact three-board summary. **Show details** opens a larger scrollable review with one section per board. Index mappings are broken into four-sensor lines, and candidate Hall-to-LPS matrices into labeled L/P/S rows.
 - The detailed textual report rounds matrix values for visual review. Exported calibration JSON retains full numeric precision in `registration_v2_candidates`.
+- The scrollable mapping details, its text, and their parent column all use `Length::Fill`. `WordOrGlyph` wrapping keeps long lines inside the panel when the window is resized; this is a layout-only change (the copied mapping is unchanged).
 - **Copy calibration report** is a concise status/summary, distinguishing the strict CT-only warning from the separately reviewed CAD-assisted candidate. **Copy mapping** copies the complete human-readable board mapping for scientific review.
 - The approval button remains a separate explicit action after preview. Approving neither captures Hall fields nor enables tracking.
 - User-facing button labels favor short natural language (Preview mapping, Show details, Copy mapping, Approve for calibration) instead of hyphen-heavy technical nomenclature. Hyphens in coordinate terminology and code identifiers remain meaningful.
