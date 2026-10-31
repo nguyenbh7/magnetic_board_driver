@@ -621,7 +621,7 @@ impl CbctGeometry {
             };
             let source=self.arrays.iter().find(|a|a.name==board.detection_name)
                 .and_then(|a|a.pcb_center_lps_mm)
-                .map_or("KiCad board estimate","CT board geometry");
+                .map_or("KiCad board estimate", |_| "CT board geometry");
             lines.push(format!(
                 "{position}  •  {source}  •  {:.3} mm RMS",
                 board.geometric_rms_mm));
