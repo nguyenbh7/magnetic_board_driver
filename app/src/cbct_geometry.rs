@@ -368,6 +368,23 @@ impl CbctGeometry {
                 magnets.len(), arrays.len(), markers.len()
             ));
         }
+        // The detector reports "unreviewed" only when the BB was found.
+        // "incomplete_detection" is acceptable for a geometry preview only
+        // if all three magnets and 48 chips were recovered and the BB alone
+        // is absent. Reject inconsistent statuses rather than silently
+        // treating other incomplete detections as successful imports.
+        let status_matches_bb = match report.status.as_str() {
+            "unreviewed" => markers.len() == 1,
+            "incomplete_detection" | "unreviewed_optional_bb_absent" =>
+                markers.is_empty(),
+            _ => false,
+        };
+        if !status_matches_bb {
+            return Err(format!(
+                "CT detector status '{}' inconsistent with {} detected BB(s); inspect detector QC",
+                report.status, markers.len()
+            ));
+        }
         let unique = |names: Vec<&str>| {
             let count = names.len();
             let set = names.into_iter().collect::<std::collections::HashSet<_>>();
@@ -1421,8 +1438,40 @@ mod tests {
     }
     #[test]
     fn refuse_incomplete_scan_without_mutating_fit() {
-        let broken=sample().replace("\"status\":\"unreviewed\"","\"status\":\"incomplete_detection\"");
-        assert!(CbctGeometry::from_detector_json(&broken,"x".into(),"y".into()).is_err());
+        let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        // An incomplete status with ALL expected detections is inconsistent.
+        report["status"]=serde_json::json!("incomplete_detection");
+        assert!(CbctGeometry::from_detector_json(
+            &report.to_string(),"x".into(),"y".into()).is_err());
+
+        // A genuinely missing board or magnet must remain a hard failure.
+        for missing_index in [0,1] {
+            let mut missing=report.clone();
+            missing["objects"].as_array_mut().unwrap().remove(missing_index);
+            assert!(CbctGeometry::from_detector_json(
+                &missing.to_string(),"x".into(),"y".into()).is_err());
+        }
+    }
+    #[test]
+    fn accept_incomplete_scan_only_when_optional_bb_is_missing() {
+        let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        report["status"]=serde_json::json!("incomplete_detection");
+        report["objects"].as_array_mut().unwrap()
+            .retain(|object|object["kind"]!="bb");
+        let geometry=CbctGeometry::from_detector_json(
+            &report.to_string(),"x".into(),"y".into()).unwrap();
+        assert_eq!(geometry.magnets.len(),3);
+        assert_eq!(geometry.arrays.len(),3);
+        assert_eq!(geometry.arrays.iter()
+            .map(|a|a.detected_chip_positions_lps_mm.len()).sum::<usize>(),48);
+        assert!(geometry.markers.is_empty());
+
+        report["status"]=serde_json::json!("unreviewed_optional_bb_absent");
+        assert!(CbctGeometry::from_detector_json(
+            &report.to_string(),"x".into(),"y".into()).is_ok());
+        report["status"]=serde_json::json!("unreviewed");
+        assert!(CbctGeometry::from_detector_json(
+            &report.to_string(),"x".into(),"y".into()).is_err());
     }
     #[test]
     fn fail_closed_when_frame_uid_missing() {
