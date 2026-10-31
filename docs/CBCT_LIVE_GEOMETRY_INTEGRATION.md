@@ -1,3 +1,34 @@
+## 2026-10-31 — IMPLEMENTED: explicit reviewed KiCad/JST CT-to-firmware mapping in GK app (Windows testing pending)
+
+**Why:** The current Oct30 chip-first detector recovers all 16 CT chip positions for `array_superior` but not a CT-measured complete PCB centroid; the default `register_ct_boards_v2()` deliberately fails, although the previous CAD enrichment provides nominal `pcb_center_cad_estimate_lps_mm` and three J1/J2/J3 footprint positions from known KiCad hardware (14.875 mm towards JST from grid midpoint). User explicitly requested a reviewed CAD-assisted mapping path rather than a fabricated CT-measured center.
+
+**Implementation (same `feature/live-rigid-body-fit` branch):**
+- `app/src/cbct_geometry.rs`: added separate `register_ct_boards_v2_with_reviewed_cad()` and `registration_review_cad_preview()`; **default** `register_ct_boards_v2()` retains measured-PCB-only gate. A CAD-backed board must have recovered-chip provenance `chip_first_generic_board_fallback`, expected KiCad board source, nominal 43.4×60.45-mm outline, 14.875-mm nominal midpoint, 3 J1–J3 predicted footprints, connectors/PCB marked **NOT CT OBSERVED**, correct signed chip face for patient side and correct physical JST direction, center located in chip plane with expected 14.875-mm offset, connector row ~42.3 mm toward JST, three 9-mm-spaced physically handed J1→J2→J3 footprints, no mirrored connector ordering. Then the original 16-chip firmware-grid RMS ≤0.70 mm and per-chip max ≤1.50 mm checks still run. Failure is explicit, not silently substituted.
+- Only after this separate registration succeeds and **two distinct GUI actions** does calibration gain access: **Preview CAD-assisted CT-to-firmware mapping** displays all three per-board firmware orderings, geometric residuals and source (CT PCB vs KiCad only); **Approve reviewed CAD/JST mapping for experimental calibration** explicitly agrees to known raw0=superior/raw1=left/raw2=right, chip-side and JST orientation, and hardware PCB revision. Approval is ephemeral and resets on new CT import/port change; **Revoke** invalidates calibration and stops experimental tracking. Calibration still requires stationary raw Hall capture, signed magnet-strength fitting and provisional field RMSE/strength gates; live 6DOF still needs a distinct **Enable EXPERIMENTAL 6DOF** click.
+- Added `experimental_candidate_profile_with_reviewed_cad()` private reuse with only an explicitly approved context. No claim that CAD connectors were segmented from CT, or that signed Hall axes/model/polarities are clinically or HDMM validated. The original geometry-only import and all previous modes remain functional.
+- `Save calibration inputs` now records CAD source and J1–J3 estimated positions, review text and approved state and exports that session's proposed registration. Optional `experimental_gk_automatic_ct_replay_from_export` replay in `app/src/rigid_fit.rs` conditionally uses the reviewed CAD route only if export explicitly records a reviewed-and-approved mapping.
+- Rust unit tests `reviewed_cad_ct_registration_passes_without_fabricating_measured_pcb_center` and `reviewed_cad_rejects_missing_provenance_wrong_mounting_and_tampered_jst` construct exact synthetic three-board 4×4 CT geometry and reject unsupported KiCad source, missing connector, flipped chip face, mirrored J1/J3 order, wrongly shifted CAD midpoint and unsupported chip detection provenance. The prior `import_cad_derived_pcb_and_jst_predictions_as_preview_only` still establishes that the **strict default** refuses CAD-only registration.
+
+**Offline numeric cross-check using Oct30 uploaded direct-detection data (not compiled Rust):** Original oct30_01 and oct30_02 superior 4×4 CT chip first order, 14.875 mm CAD prior and explicit JST right: firmware→detector index **[0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15]**; each grid-to-4.5-mm model RMS **0.6209 mm**, max **0.8331 mm**. Side board mapping on oct30_01 with measured PCB proxies: LEFT 15→0 reversed (RMS **0.1336 mm**), RIGHT 0→15 identity (RMS **0.2034 mm**). These all lie within the existing RMS ≤0.70 and max ≤1.50 limits; superior residual is larger than the ~0.054-mm planar lattice **regularity** residual because geometric registration explicitly constrains the mounting JST direction, not solely the grid's best fit. Do not confuse these different residual definitions.
+
+**USER ACTION/BUILD VALIDATION STILL REQUIRED**: Rust source edits were committed through GitHub connector; no Windows toolchain is available here so `cargo test`/app compilation have NOT been executed in this environment. On Windows:
+
+```powershell
+cd F:\\GitHub\\magnetic_board_driver
+git switch feature/live-rigid-body-fit
+git pull --ff-only
+cargo test -p app
+cargo run -p app --release
+```
+
+In **Live Tracking → Rigid 6-DOF**, choose **Open CT detections.json** then select the previously created:
+`$HOME\\Downloads\\GK_CBCT_Results\\validation\\seven_scan_20261031T032537Z\\oct30_01\\detections_with_cad_estimates.json`.
+In the `Tracking Configuration & Controls` panel click **1. Preview CAD-assisted CT-to-firmware mapping**. Inspect 3 named receivers/16 indices, per-board RMS, chip face/JST/wiring checklist. Only after physical confirmation click **2. Approve reviewed CAD/JST mapping for experimental calibration**. No actual magnetic capture/calibration needed for this geometry-only acceptance test. `Copy calibration diagnostics` exposes the full proposed mapping and state to share. The **Enable EXPERIMENTAL 6-DOF tracking** button must remain disabled until an actual successful stationary calibration.
+
+**Future:** Optional independent CT intensity/shape search for J1–J3 physical pins/housings in larger, predicted connector-end ROIs can provide additional evidence and catch changed mounting; flexible wires are not rigid fiducials. A successful reviewed CAD prior is still only **one hardware setup's** assumption, not a general CT-only proof of connector orientation.
+
+
+
 ## 2026-10-31 — User confirmed CAD-backed landmarks display in Windows desktop app
 
 After updating the Python repository and creating `detections_with_cad_estimates.json` from the previously validated `oct30_01/detections.json`, the user opened it in the Rust desktop application. The actual app **displayed** three CT magnets, three 16-chip CT sensor boards, the glass BB, and the new labeled CAD-estimated `array_superior` PCB center **[88.7145, -72.8473, 28.0051] mm LPS**, with **three JST footprint predictions available**. This confirms the new optional CAD JSON fields and Rust initial geometry preview work on a real scan, beyond the prior synthetic tests.
