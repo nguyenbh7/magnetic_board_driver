@@ -2037,7 +2037,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
-                button("Load CT results").on_press(Message::LoadCbctDetectionsJson),
+                button("Load JSON").on_press(Message::LoadCbctDetectionsJson),
             ].spacing(8),
             text(if context.cbct_status.is_empty() {
                 "No DICOM geometry imported".to_string()
