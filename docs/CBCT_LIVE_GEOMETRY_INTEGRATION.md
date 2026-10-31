@@ -1,3 +1,27 @@
+## 2026-10-31 — Chip-only CT board imports now include nominal KiCad PCB/JST landmarks (CAD only)
+
+The 5/5 real Oct30 chip-first rescues did not measure a complete PCB outline; they therefore correctly set `array_superior.board_center_lps_mm=null`. However, a symmetric 16-chip grid **does fix the board's plane/rotation up to JST-side symmetry**, and the actual lab PCB KiCad `Edge.Cuts`/J1–J3 footprints, plus the user's confirmed Oct30 physical orientation (superior chips inferior, JST patient right), predict the missing *projected* geometric PCB center and JST footprint locations: PCB 43.400×60.450 mm, grid center to nominal PCB midpoint **14.875 mm toward JST**, to connector footprints ~**42.3 mm toward JST**. See `hall-effect-motion-tracking/tools/cbct_bridge/pcb_cad_geometry.py` and that repository's README for full exact KiCad sources.
+
+**New JSON output is explicitly PROVENANCE SEPARATED**: actual 16 CT chips remain in `chip_grid_lps_mm`; original unavailable **measured** PCB center remains `board_center_lps_mm=null`; new `pcb_center_cad_estimate_lps_mm` and `pcb_cad_geometry` give projected KiCad midpoint, 4 outline corners, J1–J3 footprint predictions, `connectors_found_in_ct=false`, `pcb_outline_found_in_ct=false`, and source/review caveats. No wires were localized; flexible wires must not be used as rigid fiducials. Existing original PCB-outline detections need no change.
+
+The Rust `CbctGeometry::from_detector_json` now accepts/checks these **optional** CAD prediction fields and includes nominal midpoint and individual JST predictions in initial CT geometry summary / Copy all CT positions (clearly labeled NOT CT-observed). The separate `register_ct_boards_v2` still uses only **measured** `pcb_center_lps_mm`, intentionally refusing the CAD-only prior to activate experimental real-time magnetic fitting; `experimental_candidate_profile` remains gated. New synthetic Rust test `import_cad_derived_pcb_and_jst_predictions_as_preview_only` asserts that preview succeeds and magnetic profile creation still refuses a nominal-only midpoint. Rust build/tests require user's Windows run.
+
+**Fast check without DICOM processing:** update both repos, then in `hall-effect-motion-tracking/tools/cbct_bridge` run:
+
+```powershell
+.\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v
+$base="$HOME\\Downloads\\GK_CBCT_Results\\validation\\seven_scan_20261031T032537Z\\oct30_01"
+.\\.venv\\Scripts\\python.exe .\\pcb_cad_geometry.py `
+  --detections "$base\\detections.json" `
+  --output "$base\\detections_with_cad_estimates.json"
+```
+
+Then in `magnetic_board_driver` `feature/live-rigid-body-fit` run `cargo test -p app`, `cargo run -p app --release`, select **Open CT detections.json**, choose the `detections_with_cad_estimates.json` file; inspect predicted center/JST geometry and Copy positions. The original imported real chip geometry and DICOM detector success remain unchanged.
+
+Future optional, independently verified image-feature stage: a larger connector-end oriented CT crop and high-confidence localization of J1/J2/J3 physical housings/pins/cable termination; record observed-vs-predicted errors rather than treating KiCad alone as CT measurement. Also consider an explicit **manual-reviewed CAD prior** approval step for firmware registration. Neither independent connector detection nor this approval was silently added.
+
+
+
 ## 2026-10-31 — User confirmed BOTH CT JSON and direct DICOM app import work
 
 User report after `hall-effect-motion-tracking` generic chip-first fallback passed 7/7 real CT scans: **both** (i) **Live Tracking → Rigid 6-DOF → Open CT detections.json** for previously incomplete October30 detection and (ii) **Import DICOM** through the desktop app **worked**. This confirms the requested DICOM **detection + initial geometry import UI workflow end-to-end** on at least one of the previously failing Oct30 acquisitions; it does not establish calibration or live tracking accuracy.
