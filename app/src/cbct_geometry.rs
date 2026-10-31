@@ -647,33 +647,60 @@ impl CbctGeometry {
         Ok(lines.join("\n"))
     }
 
-    /// Preview checked board mapping WITHOUT approval or activating tracking.
-    /// The caller must separately obtain explicit human approval before
-    /// asking for magnetic calibration from a CAD-backed mapping.
+    /// A scannable review report; does not approve mapping or activate tracking.
+    /// Full-precision candidate matrices remain in calibration JSON exports.
+    /// The caller must obtain separate human approval before calibration.
     pub fn registration_review_cad_preview(&self) -> Result<String,String> {
         let boards=self.register_ct_boards_v2_with_reviewed_cad()?;
         let mut lines=vec![
-            "CAD-ASSISTED CT->FIRMWARE MAPPING CANDIDATE — HUMAN REVIEW REQUIRED".to_string(),
-            "KiCad MLX90393_board4: 43.4 x 60.45 mm; 14.875-mm PCB midpoint and three predicted JST positions; connectors NOT CT-measured.".into(),
-            "Check physical raw board cable IDs raw0=SUPERIOR, raw1=LEFT, raw2=RIGHT, chip faces and superior JST toward PATIENT RIGHT; side JST toward INFERIOR.".into(),
-            "Sensor chips are CT-measured. CAD PCB/JST estimates provide an explicit mounting prior, NOT independent CT evidence or a validated Hall axis transform.".into(),
+            "CAD-assisted CT to firmware mapping — HUMAN REVIEW REQUIRED".to_string(),
+            "CT measures sensor chips, not the superior PCB or its JST connector.".into(),
+            "Superior orientation uses the documented KiCad mounting estimate; this is NOT an independent CT observation or validated Hall axis calibration.".into(),
+            String::new(),
+            "Confirm before approval:".into(),
+            "  Board cables: 0 = superior, 1 = patient left, 2 = patient right.".into(),
+            "  Chip faces point toward the patient; PCB revision matches KiCad MLX90393_board4.".into(),
+            "  Superior JST points toward patient right; both side JSTs point inferior.".into(),
+            String::new(),
+            "Board mapping results".into(),
         ];
         for b in boards {
             let array=self.arrays.iter().find(|a|a.name==b.detection_name)
                 .ok_or("Registration returned unknown array")?;
+            let (name,location)=match b.raw_board_id {
+                0=>("Superior","Top of head"),
+                1=>("Left","Patient left"),
+                2=>("Right","Patient right"),
+                _=>return Err("Unexpected GK raw board ID".into()),
+            };
             let source=if array.pcb_center_lps_mm.is_some() {
                 "CT-detected PCB/JST proxy"
             } else {
                 "KiCad projected PCB/JST MOUNTING PRIOR (not CT observed)"
             };
-            lines.push(format!(
-                "{} raw{}: {}; 4x4 firmware grid RMS {:.3} mm; JST direction offset {:.2} mm; firmware sensor0->CT chip{}, sensor15->CT chip{}; index order {:?}",
-                b.detection_name,b.raw_board_id,source,b.geometric_rms_mm,
-                b.jst_proxy_offset_mm,b.firmware_to_detector[0],
-                b.firmware_to_detector[15],b.firmware_to_detector));
-            lines.push(format!("  provisional raw Hall-to-LPS matrix: {:?}",b.raw_to_lps));
+            lines.push(String::new());
+            lines.push(format!("{name} ({location}) — {} raw{}",b.detection_name,b.raw_board_id));
+            lines.push(format!("  Orientation source: {source}"));
+            lines.push(format!("  CT grid RMS: {:.3} mm; JST offset: {:.2} mm",
+                b.geometric_rms_mm,b.jst_proxy_offset_mm));
+            lines.push(format!("  Firmware sensor 0 -> CT chip {}; sensor 15 -> CT chip {}",
+                b.firmware_to_detector[0],b.firmware_to_detector[15]));
+            lines.push("  Firmware sensor -> CT detector chip (four sensors per line):".into());
+            for (row,indices) in b.firmware_to_detector.chunks(4).enumerate() {
+                let first=row*4;
+                lines.push(format!(
+                    "    {:02}->{:02}   {:02}->{:02}   {:02}->{:02}   {:02}->{:02}",
+                    first,indices[0],first+1,indices[1],first+2,indices[2],first+3,indices[3]));
+            }
+            lines.push("  Candidate raw Hall-to-LPS matrix (rows L, P, S; columns Bx, By, Bz):".into());
+            for (axis,row) in ["L","P","S"].iter().zip(b.raw_to_lps.iter()) {
+                lines.push(format!("    {axis}: [{:+.10}, {:+.10}, {:+.10}]",
+                    row[0],row[1],row[2]));
+            }
         }
-        lines.push("Review does NOT enable tracking. Use the separate APPROVE button only after physical board/wiring and image geometry inspection; then capture Hall reference and calibrate.".into());
+        lines.push(String::new());
+        lines.push("REVIEW ONLY. Approval permits experimental stationary-field calibration; it does not enable or validate live tracking.".into());
+        lines.push("The numeric matrices are rounded for display. Saved calibration JSON retains full precision.".into());
         Ok(lines.join("\n"))
     }
 
@@ -1345,6 +1372,13 @@ mod tests {
         assert!(preview.contains("HUMAN REVIEW REQUIRED"));
         assert!(preview.contains("array_superior raw0"));
         assert!(preview.contains("KiCad projected PCB/JST MOUNTING PRIOR"));
+        assert!(preview.contains("Confirm before approval:"));
+        assert!(preview.contains("Firmware sensor -> CT detector chip"));
+        assert!(preview.contains("00->15"));
+        assert!(preview.contains("15->00"));
+        assert!(preview.contains("L: ["));
+        assert!(!preview.contains("index order ["));
+        assert!(!preview.contains("matrix: [["));
         let boards=geometry.register_ct_boards_v2_with_reviewed_cad().unwrap();
         assert_eq!(boards.len(),3);
         assert_eq!(boards.iter().map(|b|b.sensors_lps_mm.len()).sum::<usize>(),48);
