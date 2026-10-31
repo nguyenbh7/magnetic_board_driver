@@ -518,7 +518,19 @@ impl CbctGeometry {
                 } else {
                     "UNDETERMINED BOARD"
                 };
-                format!("CT->firmware v2 registration NOT READY: {location}: {e}")
+                let cad=self.arrays.iter()
+                    .filter_map(|board|board.pcb_center_cad_estimate_lps_mm
+                        .map(|c|format!(
+                            "{}: nominal KiCad PCB center [{:.2}, {:.2}, {:.2}] LPS mm (NOT measured in CT; {} JST footprint predictions)",
+                            board.name,c[0],c[1],c[2],
+                            board.jst_connector_cad_estimates_lps_mm.len())))
+                    .collect::<Vec<_>>();
+                if cad.is_empty() {
+                    format!("CT->firmware v2 registration NOT READY: {location}: {e}")
+                } else {
+                    format!("CT->firmware v2 registration NOT READY: {location}: {e}\nCAD-only board/connector landmarks available for manual review (NOT accepted as CT-measured JST direction):\\n{}",
+                        cad.join("\n"))
+                }
             }
         }
     }
