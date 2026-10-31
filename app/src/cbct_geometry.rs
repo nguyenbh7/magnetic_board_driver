@@ -605,6 +605,28 @@ impl CbctGeometry {
     }
 
     /// Human-readable offline verification before Hall hardware is connected.
+    /// Concise main-screen geometry review; full permutations and Hall
+    /// transforms remain in registration_review_cad_preview() and exports.
+    pub fn registration_review_cad_summary(&self) -> Result<String,String> {
+        let boards=self.register_ct_boards_v2_with_reviewed_cad()?;
+        let mut lines=vec![
+            "PASS: 3 boards, 48 CT sensor positions".to_string(),
+        ];
+        for board in boards {
+            let (position,source)=match board.raw_board_id {
+                0=>("Top (board 0)","CAD board estimate"),
+                1=>("Left (board 1)","CT board geometry"),
+                2=>("Right (board 2)","CT board geometry"),
+                _=>return Err("Unexpected GK raw board ID".into()),
+            };
+            lines.push(format!(
+                "{position}  •  {source}  •  {:.3} mm RMS",
+                board.geometric_rms_mm));
+        }
+        lines.push("Mapping is provisional. Confirm the physical board IDs, chip faces and connector directions before approval.".into());
+        Ok(lines.join("\n"))
+    }
+
     /// Preview checked board mapping WITHOUT approval or activating tracking.
     /// The caller must separately obtain explicit human approval before
     /// asking for magnetic calibration from a CAD-backed mapping.
@@ -1294,6 +1316,12 @@ mod tests {
         assert!(geometry.register_ct_boards_v2().is_err());
         assert!(geometry.experimental_candidate_profile().is_err());
         let preview=geometry.registration_review_cad_preview().unwrap();
+        let summary=geometry.registration_review_cad_summary().unwrap();
+        assert!(summary.contains("PASS: 3 boards, 48 CT sensor positions"));
+        assert!(summary.contains("Top (board 0)"));
+        assert!(summary.contains("Left (board 1)"));
+        assert!(summary.contains("Right (board 2)"));
+        assert!(!summary.contains("raw Hall-to-LPS matrix"));
         assert!(preview.contains("HUMAN REVIEW REQUIRED"));
         assert!(preview.contains("array_superior raw0"));
         assert!(preview.contains("KiCad projected PCB/JST MOUNTING PRIOR"));
