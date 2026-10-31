@@ -1032,15 +1032,24 @@ mod tests {
         let geometry=crate::cbct_geometry::CbctGeometry::from_detector_json(
             &detector, "exported_gk_scan".into(), "exported_gk_qc".into())
             .expect("Reconstruct CT geometry from exported candidate");
-        let registration=geometry.register_ct_boards_v2()
-            .expect("Corrected v2 CT firmware indices and Hall axes");
+        let approved_cad=input["cad_mapping_approved_in_session"].as_bool()==Some(true)
+            && input["cad_mapping_review_preview"].as_str()
+                .is_some_and(|s|s.contains("HUMAN REVIEW REQUIRED"));
+        let registration=if approved_cad {
+            geometry.register_ct_boards_v2_with_reviewed_cad()
+        } else {
+            geometry.register_ct_boards_v2()
+        }.expect("Reviewed CT-to-v2 firmware indices/JST geometry");
         for board in &registration {
             println!("{} raw{}: CT grid RMS {:.3} mm, JST proxy {:.3} mm",
                 board.detection_name, board.raw_board_id,
                 board.geometric_rms_mm, board.jst_proxy_offset_mm);
         }
-        let profile=geometry.experimental_candidate_profile()
-            .expect("Build CT experiment-specific model");
+        let profile=if approved_cad {
+            geometry.experimental_candidate_profile_with_reviewed_cad()
+        } else {
+            geometry.experimental_candidate_profile()
+        }.expect("Build geometry candidate from explicitly reviewed CT registration");
         let background:[[[f64;3];16];3]=serde_json::from_value(
             input["background_raw_mt"].clone()).expect("48 background vectors");
         let stationary:[[[f64;3];16];3]=serde_json::from_value(
@@ -1048,6 +1057,9 @@ mod tests {
         let (strengths,rmse)=fit_magnet_strengths(&profile,&background,&stationary)
             .expect("Signed magnet-strength calibration from CT and Hall fields");
         println!("EXPERIMENTAL automatic GK CT calibration, not HDMM-validated:");
+        println!("  CT mapping source: {}",
+            if approved_cad {"EXPLICITLY REVIEWED KiCad/JST PRIOR (NOT CT-detected connectors)"}
+            else {"CT-detected PCB centroid/JST proxy"});
         println!("  signed strengths [mT]: {strengths:?}; stationary RMSE [mT]: {rmse:.6}");
         println!("  preliminary QC: {}, expected |M| 300..2200 mT and RMSE <= 0.50 mT",
             if strengths.iter().all(|x|x.abs()>=300.0 && x.abs()<=2200.0) && rmse<=0.5
