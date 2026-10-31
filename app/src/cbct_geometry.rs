@@ -1316,7 +1316,7 @@ mod tests {
     fn reviewed_cad_rejects_missing_provenance_wrong_mounting_and_tampered_jst() {
         let source=synthetic_reviewed_cad_report();
         for mode in ["unknown_revision","wrong_center","flipped_face",
-                     "wrong_jst","missing_connector","unverified_firmware"] {
+                     "wrong_jst","mirrored_connectors","missing_connector","unverified_firmware"] {
             let mut json=source.clone();
             let a=&mut json["objects"][1];
             match mode {
@@ -1328,6 +1328,13 @@ mod tests {
                     serde_json::json!([0.0,0.0,1.0]),
                 "wrong_jst"=>a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]["J1"]=
                     serde_json::json!([140.0,-30.0,0.0]),
+                "mirrored_connectors"=>{
+                    let jst=&mut a["pcb_cad_geometry"]
+                        ["jst_connector_footprint_centers_lps_mm"];
+                    let left=jst["J1"].clone();
+                    jst["J1"]=jst["J3"].clone();
+                    jst["J3"]=left;
+                },
                 "missing_connector"=>{
                     a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]
                         .as_object_mut().unwrap().remove("J3").unwrap();
