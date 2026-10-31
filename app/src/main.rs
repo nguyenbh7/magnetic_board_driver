@@ -1081,12 +1081,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::CopyGkCalibrationStatus => {
             let mut result=format!("GK calibration status: {}\n",context.gk_calibration.status);
             if let Some(g)=&context.cbct_geometry {
-                result.push_str(&format!("CT: {}\n{}\n",
+                result.push_str(&format!("CT source: {}\nCT-only registration (no CAD):\n{}\n",
                     g.scan_path.display(),g.registration_preview_v2()));
             }
             result.push_str(&format!(
-                "CAD registration preview:\n{}\nExplicit approval for this CT: {}\n",
-                context.gk_calibration.cad_review_preview.as_deref()
+                "CAD-assisted mapping summary:\n{}\nApproved for experimental calibration only: {}\nFull sensor mapping and matrices: use Copy mapping.\n",
+                context.gk_calibration.cad_review_summary.as_deref()
                     .unwrap_or("not reviewed"),
                 context.gk_calibration.cad_mapping_approved));
             if let Some((profile,rmse))=&context.gk_calibration.calibrated_candidate {
@@ -2081,8 +2081,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             }).unwrap_or_default()),
             text(context.cbct_geometry.as_ref().map(|geometry| {
                 match geometry.register_ct_boards_v2() {
-                    Ok(boards) => format!("CT sensor mapping v2: {} boards registered geometrically (provisional; review JST and chip-face orientation).",boards.len()),
-                    Err(error) => format!("CT sensor mapping v2: review needed — {error}")
+                    Ok(boards) => format!("CT-only mapping: {} boards registered geometrically (provisional; confirm JST and chip faces).",boards.len()),
+                    Err(error) => format!("CT-only mapping unavailable: {error}. The separate CAD-assisted review may still be valid.")
                 }
             }).unwrap_or_default()),
             text(if context.cbct_show_details {
@@ -2107,7 +2107,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         // three raw Hall-to-LPS matrices.
         let cad_mapping_panel = container(column![
             text("CT sensor mapping").size(20),
-            text("Sensor positions come from CT. The top board's connector direction uses the reviewed KiCad mounting estimate."),
+            text("CT measures the sensor chips. The top board's connector direction comes from a KiCad mounting estimate, not a CT measurement."),
             row![
                 if context.cbct_geometry.is_some() {
                     button("Preview mapping").on_press(Message::ReviewCadGkRegistration)
@@ -2125,12 +2125,13 @@ fn view(context: &Context) -> Element<'_, Message> {
                 .unwrap_or("No mapping preview yet. Import CT results and select Preview mapping."))
                 .size(16),
             if context.gk_calibration.cad_review_details_expanded {
-                container(
+                container(column![
+                    text("Detailed sensor mapping (scroll for all three boards)").size(17),
                     scrollable(
                         text(context.gk_calibration.cad_review_preview.as_deref()
-                            .unwrap_or("No mapping details available.")).size(14)
-                    ).height(Length::Fixed(230.0))
-                ).padding(8).width(Length::Fill)
+                            .unwrap_or("No mapping details available.")).size(16)
+                    ).height(Length::Fixed(420.0)),
+                ].spacing(8)).padding(12).width(Length::Fill)
                     .style(iced::widget::container::bordered_box)
             } else {
                 container(text(""))
