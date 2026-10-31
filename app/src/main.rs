@@ -1264,7 +1264,24 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                                     "chip_grid_lps_mm":a.detected_chip_positions_lps_mm,
                                     "grid_rms_mm":a.grid_rms_mm,
                                     "board_center_lps_mm":a.pcb_center_lps_mm,
-                                    "board_normal_lps":a.chip_face_normal_lps
+                                    "board_normal_lps":a.chip_face_normal_lps,
+                                    "detection_method":a.detection_method,
+                                    "pcb_center_cad_estimate_lps_mm":a.pcb_center_cad_estimate_lps_mm,
+                                    "pcb_cad_geometry": if a.cad_nominal_prior_valid {
+                                        Some(serde_json::json!({
+                                            "status":"CAD_PREDICTION_NOT_CT_MEASUREMENT",
+                                            "source":"MLX90393_board4/MLX90393_board3.kicad_pcb Edge.Cuts + J1-J3; known GK JST/chip-face mounting",
+                                            "nominal_pcb_dimensions_mm":[43.4,60.45],
+                                            "board_center_offset_toward_jst_mm":14.875,
+                                            "jst_toward_from_documented_mounting_lps":match a.name.as_str() {
+                                                "array_superior"=>[-1.,0.,0.],
+                                                _=>[0.,0.,-1.]
+                                            },
+                                            "jst_connector_footprint_centers_lps_mm":a.jst_connector_cad_estimates_lps_mm,
+                                            "connectors_found_in_ct":false,
+                                            "pcb_outline_found_in_ct":false
+                                        }))
+                                    } else {None}
                                 }))).chain(geometry.markers.iter().map(|m|serde_json::json!({
                                     "kind":"bb","name":m.name,
                                     "center_lps_mm":m.center_lps_mm
@@ -1282,9 +1299,19 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                                 "detected_chip_positions_lps_mm": a.detected_chip_positions_lps_mm,
                                 "grid_rms_mm": a.grid_rms_mm,
                                 "pcb_center_lps_mm":a.pcb_center_lps_mm,
-                                "chip_face_normal_lps":a.chip_face_normal_lps
+                                "chip_face_normal_lps":a.chip_face_normal_lps,
+                                "pcb_center_cad_estimate_lps_mm":a.pcb_center_cad_estimate_lps_mm,
+                                "jst_cad_landmarks_lps_mm":a.jst_connector_cad_estimates_lps_mm,
+                                "cad_prior_validated_by_geometry":a.cad_nominal_prior_valid
                             })).collect::<Vec<_>>(),
-                            "registration_v2_candidates": geometry.register_ct_boards_v2().ok().map(|boards| {
+                            "cad_mapping_review_preview":context.gk_calibration.cad_review_preview,
+                            "cad_mapping_approved_in_session":context.gk_calibration.cad_mapping_approved,
+                            "cad_mapping_approved_scope":"experimental_calibration_only_not_CT_JST_measurement",
+                            "registration_v2_candidates": (
+                                if context.gk_calibration.cad_mapping_approved {
+                                    geometry.register_ct_boards_v2_with_reviewed_cad()
+                                } else {geometry.register_ct_boards_v2()}
+                            ).ok().map(|boards| {
                                 boards.iter().map(|b|serde_json::json!({
                                     "detected_board":b.detection_name,"raw_board_id":b.raw_board_id,
                                     "firmware_to_detected_index":b.firmware_to_detector,
