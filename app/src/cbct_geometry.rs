@@ -62,6 +62,9 @@ pub struct CbctArray {
     /// Nominal KiCad midpoint in chip plane, NOT independently CT observed.
     pub pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
     pub jst_connector_cad_estimates_lps_mm: std::collections::BTreeMap<String,[f64;3]>,
+    /// CAD reconstruction's confidence, not independent CT connector visibility.
+    pub cad_nominal_prior_valid: bool,
+    pub detection_method: Option<String>,
 }
 /// Provisional v2 CT/JST chip correspondence, in firmware sensor order.
 /// The coordinate transformation uses the KiCad/A1 chip-axis hypothesis.
@@ -110,6 +113,7 @@ struct DetectedObject {
     board_normal_lps: Option<[f64; 3]>,
     pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
     pcb_cad_geometry: Option<PcbCadGeometry>,
+    detection_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +122,12 @@ struct PcbCadGeometry {
     #[serde(default)]
     jst_connector_footprint_centers_lps_mm:
         std::collections::BTreeMap<String,[f64;3]>,
+    source: Option<String>,
+    nominal_pcb_dimensions_mm: Option<[f64;2]>,
+    board_center_offset_toward_jst_mm: Option<f64>,
+    jst_toward_from_documented_mounting_lps: Option<[f64;3]>,
+    connectors_found_in_ct: Option<bool>,
+    pcb_outline_found_in_ct: Option<bool>,
 }
 
 /// Diagnose missing *board locations* without trusting detector array names:
@@ -303,12 +313,27 @@ impl CbctGeometry {
                             return Err(format!("{} invalid projected CAD PCB center",object.name));
                         }
                     }
+                    let mut cad_nominal_prior_valid=false;
                     let jst=if let Some(cad)=object.pcb_cad_geometry {
                         if cad.status=="CAD_PREDICTION_NOT_CT_MEASUREMENT" {
                             if cad.jst_connector_footprint_centers_lps_mm.len()!=3 ||
                                cad.jst_connector_footprint_centers_lps_mm.values().any(|p|!valid_point(p)) {
                                 return Err(format!("{} has incomplete CAD JST predictions",object.name));
                             }
+                            cad_nominal_prior_valid=(
+                                cad.source.as_deref().map(|value|value.contains(
+                                    "MLX90393_board4/MLX90393_board3.kicad_pcb"))
+                                    .unwrap_or(false)
+                                && cad.nominal_pcb_dimensions_mm==Some([43.4,60.45])
+                                && cad.board_center_offset_toward_jst_mm
+                                    .is_some_and(|v|(v-14.875).abs()<0.001)
+                                && cad.jst_toward_from_documented_mounting_lps
+                                    .is_some_and(|v|valid_point(&v))
+                                && cad.connectors_found_in_ct==Some(false)
+                                && cad.pcb_outline_found_in_ct==Some(false)
+                                && object.detection_method.as_deref()==
+                                    Some("chip_first_generic_board_fallback")
+                            );
                             cad.jst_connector_footprint_centers_lps_mm
                         } else {
                             std::collections::BTreeMap::new()
@@ -323,6 +348,8 @@ impl CbctGeometry {
                         chip_face_normal_lps: object.board_normal_lps,
                         pcb_center_cad_estimate_lps_mm:object.pcb_center_cad_estimate_lps_mm,
                         jst_connector_cad_estimates_lps_mm:jst,
+                        cad_nominal_prior_valid,
+                        detection_method:object.detection_method,
                     });
                 }
                 "bb" => markers.push(CbctMarker {
@@ -405,14 +432,99 @@ impl CbctGeometry {
     /// PCB-center-to-chip-center displacement as a JST-side proxy; never
     /// silently falls back to a symmetric grid-only orientation.
     pub fn register_ct_boards_v2(&self) -> Result<Vec<CbctRegisteredBoard>, String> {
+        self.register_ct_boards_v2_internal(false)
+    }
+
+    /// Explicit candidate for HUMAN REVIEW of known KiCad board + JST
+    /// mounting. Never used by the default strict CT-only path.
+    pub fn register_ct_boards_v2_with_reviewed_cad(&self)
+        -> Result<Vec<CbctRegisteredBoard>, String> {
+        self.register_ct_boards_v2_internal(true)
+    }
+
+    /// A nominal KiCad center is NOT substituted for a CT-measured center.
+    /// It may only determine JST direction after an explicit UI review step,
+    /// and it must pass independent geometry/firmware grid checks.
+    fn reviewed_cad_center(&self, array: &CbctArray) -> Result<[f64;3], String> {
+        let name=&array.name;
+        if !array.cad_nominal_prior_valid {
+            return Err(format!("{name}: missing supported KiCad/JST provenance for CAD review"));
+        }
+        let pcb=array.pcb_center_cad_estimate_lps_mm
+            .ok_or_else(||format!("{name}: no CAD-projected PCB center"))?;
+        let normal=unit(array.chip_face_normal_lps
+            .ok_or_else(||format!("{name}: chip-face direction missing"))?)?;
+        let (axis,sign, jst_prior)=match name.as_str() {
+            "array_superior"=>(2,-1.0,[-1.0,0.0,0.0]),
+            "array_left"=>(0,-1.0,[0.0,0.0,-1.0]),
+            "array_right"=>(0,1.0,[0.0,0.0,-1.0]),
+            _=>return Err(format!("{name}: unknown GK board mounting")),
+        };
+        if normal[axis]*sign < 0.5 {
+            return Err(format!("{name}: CT normal disagrees with known chip-facing GK mounting"));
+        }
+        let chips=&array.detected_chip_positions_lps_mm;
+        let mut center=[0.0;3];
+        for p in chips { for k in 0..3 {center[k]+=p[k]/16.0;} }
+        let d=offset(pcb,center);
+        let plane=dot(d,normal);
+        if plane.abs()>0.3 {
+            return Err(format!("{name}: CAD PCB center is off the measured chip plane"));
+        }
+        let displacement=[d[0]-plane*normal[0],
+                          d[1]-plane*normal[1],d[2]-plane*normal[2]];
+        let sep=magnitude(displacement);
+        if (sep-14.875).abs()>0.35 {
+            return Err(format!("{name}: CAD center-to-chip offset {sep:.3} mm != KiCad 14.875 mm"));
+        }
+        let projected_jst={
+            let along=dot(jst_prior,normal);
+            unit([jst_prior[0]-along*normal[0],
+                  jst_prior[1]-along*normal[1],
+                  jst_prior[2]-along*normal[2]])?
+        };
+        if dot(displacement,projected_jst)/sep<0.995 {
+            return Err(format!("{name}: CAD connector side disagrees with confirmed mounting"));
+        }
+        let mut jst_projections=Vec::new();
+        for label in ["J1","J2","J3"] {
+            let point=array.jst_connector_cad_estimates_lps_mm.get(label)
+                .ok_or_else(||format!("{name}: missing {label} predicted KiCad footprint"))?;
+            let dv=offset(*point,center);
+            let perpendicular=dot(dv,normal);
+            let y=dot(dv,projected_jst);
+            if perpendicular.abs()>0.3 || (y-42.29).abs()>0.65 {
+                return Err(format!("{name}: {label} inconsistent with known KiCad connector row"));
+            }
+            jst_projections.push(dv);
+        }
+        // Three footprint centers must be ~9 mm apart, collinear in
+        // the BOARD plane, and span the transverse direction.
+        for i in 0..2 {
+            let delta=offset(jst_projections[i+1],jst_projections[i]);
+            let length=magnitude(delta);
+            if !(8.5..=9.6).contains(&length)
+                || dot(delta,projected_jst).abs()>0.7 {
+                return Err(format!("{name}: J1-J3 CAD positions disagree with PCB layout"));
+            }
+        }
+        Ok(pcb)
+    }
+
+    fn register_ct_boards_v2_internal(&self, allow_reviewed_cad: bool)
+        -> Result<Vec<CbctRegisteredBoard>, String> {
         let mut registered = Vec::with_capacity(3);
         for (name, raw_id) in [
             ("array_superior", 0_u16), ("array_left", 1_u16), ("array_right", 2_u16)
         ] {
             let array = self.arrays.iter().find(|b| b.name == name)
                 .ok_or_else(|| format!("Missing {name} for v2 registration"))?;
-            let pcb = array.pcb_center_lps_mm
-                .ok_or_else(|| format!("{name}: missing CT PCB centroid/JST proxy"))?;
+            let pcb=match array.pcb_center_lps_mm {
+                Some(measured)=>measured,
+                None if allow_reviewed_cad=>self.reviewed_cad_center(array)?,
+                None=>return Err(format!(
+                    "{name}: missing CT PCB centroid/JST proxy")),
+            };
             let normal = array.chip_face_normal_lps
                 .ok_or_else(|| format!("{name}: missing CT chip-face normal"))?;
             if !valid_point(&pcb) || !valid_point(&normal) {
@@ -486,6 +598,36 @@ impl CbctGeometry {
     }
 
     /// Human-readable offline verification before Hall hardware is connected.
+    /// Preview checked board mapping WITHOUT approval or activating tracking.
+    /// The caller must separately obtain explicit human approval before
+    /// asking for magnetic calibration from a CAD-backed mapping.
+    pub fn registration_review_cad_preview(&self) -> Result<String,String> {
+        let boards=self.register_ct_boards_v2_with_reviewed_cad()?;
+        let mut lines=vec![
+            "CAD-ASSISTED CT->FIRMWARE MAPPING CANDIDATE — HUMAN REVIEW REQUIRED".to_string(),
+            "KiCad MLX90393_board4: 43.4 x 60.45 mm; 14.875-mm PCB midpoint and three predicted JST positions; connectors NOT CT-measured.".into(),
+            "Check physical raw board cable IDs raw0=SUPERIOR, raw1=LEFT, raw2=RIGHT, chip faces and superior JST toward PATIENT RIGHT; side JST toward INFERIOR.".into(),
+            "Sensor chips are CT-measured. CAD PCB/JST estimates provide an explicit mounting prior, NOT independent CT evidence or a validated Hall axis transform.".into(),
+        ];
+        for b in boards {
+            let array=self.arrays.iter().find(|a|a.name==b.detection_name)
+                .ok_or("Registration returned unknown array")?;
+            let source=if array.pcb_center_lps_mm.is_some() {
+                "CT-detected PCB/JST proxy"
+            } else {
+                "KiCad projected PCB/JST MOUNTING PRIOR (not CT observed)"
+            };
+            lines.push(format!(
+                "{} raw{}: {}; 4x4 firmware grid RMS {:.3} mm; JST direction offset {:.2} mm; firmware sensor0->CT chip{}, sensor15->CT chip{}; index order {:?}",
+                b.detection_name,b.raw_board_id,source,b.geometric_rms_mm,
+                b.jst_proxy_offset_mm,b.firmware_to_detector[0],
+                b.firmware_to_detector[15],b.firmware_to_detector));
+            lines.push(format!("  provisional raw Hall-to-LPS matrix: {:?}",b.raw_to_lps));
+        }
+        lines.push("Review does NOT enable tracking. Use the separate APPROVE button only after physical board/wiring and image geometry inspection; then capture Hall reference and calibrate.".into());
+        Ok(lines.join("\n"))
+    }
+
     pub fn registration_preview_v2(&self) -> String {
         match self.register_ct_boards_v2() {
             Ok(boards) => {
@@ -539,8 +681,19 @@ impl CbctGeometry {
     /// Magnetic remanences here are placeholders; callers MUST fit them from
     /// current background-subtracted stationary measurements before activation.
     pub fn experimental_candidate_profile(&self) -> Result<crate::rigid_fit::RigidProfile, String> {
+        self.experimental_candidate_profile_internal(false)
+    }
+
+    /// Must ONLY be invoked after the app's explicit CAD-mapping approval.
+    pub fn experimental_candidate_profile_with_reviewed_cad(&self)
+        -> Result<crate::rigid_fit::RigidProfile,String> {
+        self.experimental_candidate_profile_internal(true)
+    }
+
+    fn experimental_candidate_profile_internal(&self, allow_reviewed_cad: bool)
+        -> Result<crate::rigid_fit::RigidProfile,String> {
         use crate::rigid_fit::{RigidBoard, RigidMagnet, RigidProfile};
-        let reg=self.register_ct_boards_v2()?;
+        let reg=self.register_ct_boards_v2_internal(allow_reviewed_cad)?;
         let boards=reg.into_iter().map(|b|RigidBoard {
             raw_board_id:b.raw_board_id,
             sensors_mm:b.sensors_lps_mm,
