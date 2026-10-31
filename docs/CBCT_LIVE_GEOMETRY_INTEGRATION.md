@@ -1,3 +1,16 @@
+## 2026-10-31 — Windows CAD-assisted registration preview passed on oct30_01
+
+**User-performed Windows check (real CT):** The user pulled and ran the desktop Rust application, opened the previously CAD-enriched `oct30_01/detections_with_cad_estimates.json`, and clicked **Preview CAD-assisted CT-to-firmware mapping**. The app reported `CAD/JST mounting-based registration geometry PASSED` and the full mapping with **explicit approval for this CT: false**. The original **strict CT-only** `register_ct_boards_v2` continued reporting `array_superior: missing CT PCB centroid/JST proxy`, as expected; the revised **CAD-based** path passed. This is confirmation of the real GUI preview, **not** physical wire-ID verification, user approval, Hall calibration, or live tracking.
+
+- `array_superior` **raw0**, CAD/JST mounting prior (not CT observed): firmware→CT `[0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15]`; firmware grid RMS **0.465 mm**, JST proxy offset **14.87 mm**; nominal superior PCB center **[88.71, -72.85, 28.01] mm** DICOM LPS, not directly CT-measured.
+- `array_left` **raw1**, original CT-detected PCB/JST proxy: firmware→CT `[15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0]`; RMS **0.134 mm**, offset **15.71 mm**.
+- `array_right` **raw2**, original CT-detected proxy: firmware→CT identity `[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]`; RMS **0.203 mm**, offset **15.91 mm**.
+- All reported RMS are under the app's 0.70-mm geometric registration gate. Actual app top RMS **0.465 mm** supersedes a rougher previously documented offline estimate **0.621 mm** for this scan; do not treat their difference as a separate CT correction or accuracy improvement without reproducing exact calculation methods.
+
+**Next check:** Confirm that the **actual Oct30 raw firmware board IDs** are raw0 superior, raw1 patient left, raw2 patient right (prior wiring only, not independently established from this CT), that each chip face/JST orientation agrees with the mounting reference (top JST patient right, sides inferior) and that physical PCB matches the KiCad version. Then the user may explicitly click **Approve reviewed CAD/JST mapping for experimental calibration**. Approval must remain a separate manual action; the real-time 6DOF button should remain disabled until the stationary Hall reference and signed-strength field-fit screening pass. Do not represent these Hall transforms as magnetically verified or use this geometry as clinical Gamma Knife tracking.
+
+
+
 ## 2026-10-31 — IMPLEMENTED: explicit reviewed KiCad/JST CT-to-firmware mapping in GK app (Windows testing pending)
 
 **Why:** The current Oct30 chip-first detector recovers all 16 CT chip positions for `array_superior` but not a CT-measured complete PCB centroid; the default `register_ct_boards_v2()` deliberately fails, although the previous CAD enrichment provides nominal `pcb_center_cad_estimate_lps_mm` and three J1/J2/J3 footprint positions from known KiCad hardware (14.875 mm towards JST from grid midpoint). User explicitly requested a reviewed CAD-assisted mapping path rather than a fabricated CT-measured center.
