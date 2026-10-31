@@ -1,6 +1,6 @@
 # Gamma Knife CT mapping review: UI and calibration boundary
 
-Updated 2026-10-30 (branch \`feature/live-rigid-body-fit\`).
+Updated 2026-10-30 (branch `feature/live-rigid-body-fit`).
 
 ## Decision and current result
 
@@ -21,7 +21,7 @@ Verify raw board cabling (0 superior, 1 left, 2 right), chip faces, superior JST
 ## UI/report decisions
 
 - The *CT sensor mapping* panel shows a compact three-board summary. **Show details** opens a larger scrollable review with one section per board. Index mappings are broken into four-sensor lines, and candidate Hall-to-LPS matrices into labeled L/P/S rows.
-- The detailed textual report rounds matrix values for visual review. Exported calibration JSON retains full numeric precision in \`registration_v2_candidates\`.
+- The detailed textual report rounds matrix values for visual review. Exported calibration JSON retains full numeric precision in `registration_v2_candidates`.
 - **Copy calibration report** is a concise status/summary, distinguishing the strict CT-only warning from the separately reviewed CAD-assisted candidate. **Copy mapping** copies the complete human-readable board mapping for scientific review.
 - The approval button remains a separate explicit action after preview. Approving neither captures Hall fields nor enables tracking.
 - User-facing button labels favor short natural language (Preview mapping, Show details, Copy mapping, Approve for calibration) instead of hyphen-heavy technical nomenclature. Hyphens in coordinate terminology and code identifiers remain meaningful.
@@ -37,10 +37,10 @@ Never silently substitute CAD-predicted PCB/JST positions for CT measurements or
 
 ## Test / validation status
 
-- Prior compilation regression fixed (\`Option::map_or\` callback).
+- Prior compilation regression fixed (`Option::map_or` callback).
 - Detector status consistency fixed: truly incomplete missing magnet or array is rejected; missing *optional* glass BB can be accepted with three complete boards.
 - User verified **42/42 app tests passing** immediately before this UI/report change.
 - A formatting regression assertion was added for the CAD mapping preview. The updated source has been checked in GitHub, but Rust tests and GUI rendering for this change must still be rerun on Windows:
-  \`cargo test -p app\` and \`cargo run -p app --release\`.
+  `cargo test -p app` and `cargo run -p app --release`.
 
 The main remaining scientific dependency is new GK stationary calibration data followed by independent motion validation, not additional reinterpretation of the existing CAD estimates.
