@@ -613,12 +613,15 @@ impl CbctGeometry {
             "PASS: 3 boards, 48 CT sensor positions".to_string(),
         ];
         for board in boards {
-            let (position,source)=match board.raw_board_id {
-                0=>("Top (board 0)","CAD board estimate"),
-                1=>("Left (board 1)","CT board geometry"),
-                2=>("Right (board 2)","CT board geometry"),
+            let position=match board.raw_board_id {
+                0=>"Top (board 0)",
+                1=>"Left (board 1)",
+                2=>"Right (board 2)",
                 _=>return Err("Unexpected GK raw board ID".into()),
             };
+            let source=self.arrays.iter().find(|a|a.name==board.detection_name)
+                .and_then(|a|a.pcb_center_lps_mm)
+                .map_or("KiCad board estimate","CT board geometry");
             lines.push(format!(
                 "{position}  •  {source}  •  {:.3} mm RMS",
                 board.geometric_rms_mm));
