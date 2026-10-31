@@ -2555,6 +2555,33 @@ mod tracking_mode_ui_tests {
     use super::*;
 
     #[test]
+    fn mapping_details_are_optional_and_cannot_approve_without_valid_ct() {
+        let mut context=Context::default();
+        let _=update(&mut context,Message::ToggleCadMappingDetails);
+        assert!(!context.gk_calibration.cad_review_details_expanded);
+        assert!(!context.gk_calibration.cad_mapping_approved);
+
+        context.gk_calibration.cad_review_preview=Some(
+            "CANDIDATE — not an independently measured JST connector".into());
+        context.gk_calibration.cad_review_summary=Some(
+            "PASS: 3 boards, 48 CT sensor positions".into());
+        let _=update(&mut context,Message::ToggleCadMappingDetails);
+        assert!(context.gk_calibration.cad_review_details_expanded);
+        let _=update(&mut context,Message::ToggleCadMappingDetails);
+        assert!(!context.gk_calibration.cad_review_details_expanded);
+
+        // Expanding the report and retaining a plausible-looking summary
+        // can NEVER authorize CAD-based magnetic calibration by themselves.
+        let _=update(&mut context,Message::ApproveCadGkRegistration);
+        assert!(!context.gk_calibration.cad_mapping_approved);
+        assert!(context.gk_calibration.calibrated_candidate.is_none());
+        let _=update(&mut context,Message::RevokeCadGkRegistration);
+        assert!(context.gk_calibration.cad_review_preview.is_none());
+        assert!(context.gk_calibration.cad_review_summary.is_none());
+        assert!(!context.gk_calibration.cad_review_details_expanded);
+    }
+
+    #[test]
     fn algorithm_selection_is_independent_of_the_three_plot_tabs() {
         let mut context = Context::default();
         assert_eq!(context.dashboard_tab, DashboardTab::LiveTracking);
