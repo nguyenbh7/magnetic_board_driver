@@ -1214,6 +1214,128 @@ mod tests {
         assert!(geometry.experimental_candidate_profile().is_err());
     }
 
+    fn synthetic_reviewed_cad_report() -> serde_json::Value {
+        let mut json:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        let specs=[
+            ("array_superior",[100.0,-75.0,28.0],[1.,0.,0.],[0.,0.,-1.]),
+            ("array_left",[190.0,-122.0,-82.0],[0.,0.,1.],[-1.,0.,0.]),
+            ("array_right",[8.0,-126.0,-82.0],[0.,0.,1.],[1.,0.,0.]),
+        ];
+        for (idx,(name,center,up,normal)) in specs.iter().enumerate() {
+            let right=cross(*up,*normal);
+            let mut pts=Vec::new();
+            for col in 0..4 {
+                for row in 0..4 {
+                    let x=(col as f64-1.5)*4.5;
+                    let y=(row as f64-1.5)*4.5;
+                    pts.push([
+                        center[0]+x*right[0]+y*up[0],
+                        center[1]+x*right[1]+y*up[1],
+                        center[2]+x*right[2]+y*up[2],
+                    ]);
+                }
+            }
+            pts.reverse();
+            let obj=&mut json["objects"][idx*2+1];
+            obj["name"]=serde_json::json!(*name);
+            obj["center_lps_mm"]=serde_json::json!(center);
+            obj["chip_grid_lps_mm"]=serde_json::json!(pts);
+            obj["board_normal_lps"]=serde_json::json!(normal);
+            obj["grid_rms_mm"]=serde_json::json!(0.05);
+            let midpoint=[
+                center[0]-14.875*up[0],
+                center[1]-14.875*up[1],
+                center[2]-14.875*up[2],
+            ];
+            if idx==0 {
+                // Recovered superior has no CT-measured PCB outline.
+                obj["board_center_lps_mm"]=serde_json::Value::Null;
+                obj["detection_method"]=serde_json::json!("chip_first_generic_board_fallback");
+                obj["pcb_center_cad_estimate_lps_mm"]=serde_json::json!(midpoint);
+                let jst=|x:f64,y:f64| {
+                    [center[0]+x*right[0]+y*up[0],
+                     center[1]+x*right[1]+y*up[1],
+                     center[2]+x*right[2]+y*up[2]]
+                };
+                obj["pcb_cad_geometry"]=serde_json::json!({
+                    "status":"CAD_PREDICTION_NOT_CT_MEASUREMENT",
+                    "source":"MLX90393_board4/MLX90393_board3.kicad_pcb Edge.Cuts + J1-J3; known GK JST/chip-face mounting",
+                    "nominal_pcb_dimensions_mm":[43.4,60.45],
+                    "board_center_offset_toward_jst_mm":14.875,
+                    "jst_toward_from_documented_mounting_lps":[-1.0,0.0,0.0],
+                    "connectors_found_in_ct":false,
+                    "pcb_outline_found_in_ct":false,
+                    "jst_connector_footprint_centers_lps_mm":{
+                        "J1":jst(9.20,-42.275),
+                        "J2":jst(0.109185,-42.28619),
+                        "J3":jst(-8.80,-42.300)
+                    },
+                });
+            } else {
+                obj["board_center_lps_mm"]=serde_json::json!(midpoint);
+            }
+        }
+        json
+    }
+
+    #[test]
+    fn reviewed_cad_ct_registration_passes_without_fabricating_measured_pcb_center() {
+        let json=synthetic_reviewed_cad_report();
+        let geometry=CbctGeometry::from_detector_json(
+            &json.to_string(),"oct30.zip".into(),"qc".into()).unwrap();
+        // Existing production CT-only path remains strict.
+        assert!(geometry.register_ct_boards_v2().is_err());
+        assert!(geometry.experimental_candidate_profile().is_err());
+        let preview=geometry.registration_review_cad_preview().unwrap();
+        assert!(preview.contains("HUMAN REVIEW REQUIRED"));
+        assert!(preview.contains("array_superior raw0"));
+        assert!(preview.contains("KiCad projected PCB/JST MOUNTING PRIOR"));
+        let boards=geometry.register_ct_boards_v2_with_reviewed_cad().unwrap();
+        assert_eq!(boards.len(),3);
+        assert_eq!(boards.iter().map(|b|b.sensors_lps_mm.len()).sum::<usize>(),48);
+        for (idx,b) in boards.iter().enumerate() {
+            assert_eq!(b.raw_board_id,idx as u16);
+            assert_eq!(b.firmware_to_detector[0],15);
+            assert_eq!(b.firmware_to_detector[15],0);
+            assert!(b.geometric_rms_mm<1e-8);
+        }
+        let profile=geometry.experimental_candidate_profile_with_reviewed_cad().unwrap();
+        assert_eq!(profile.boards.len(),3);
+        assert_eq!(profile.magnets.len(),3);
+        assert_eq!(geometry.arrays[0].pcb_center_lps_mm,None);
+    }
+
+    #[test]
+    fn reviewed_cad_rejects_missing_provenance_wrong_mounting_and_tampered_jst() {
+        let source=synthetic_reviewed_cad_report();
+        for mode in ["unknown_revision","wrong_center","flipped_face",
+                     "wrong_jst","missing_connector","unverified_firmware"] {
+            let mut json=source.clone();
+            let a=&mut json["objects"][1];
+            match mode {
+                "unknown_revision"=>a["pcb_cad_geometry"]["source"]=
+                    serde_json::json!("unknown_board.kicad_pcb"),
+                "wrong_center"=>a["pcb_center_cad_estimate_lps_mm"]=
+                    serde_json::json!([90.0,-72.0,28.0]),
+                "flipped_face"=>a["board_normal_lps"]=
+                    serde_json::json!([0.0,0.0,1.0]),
+                "wrong_jst"=>a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]["J1"]=
+                    serde_json::json!([140.0,-30.0,0.0]),
+                "missing_connector"=>a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]
+                    .as_object_mut().unwrap().remove("J3").unwrap(),
+                "unverified_firmware"=>a["detection_method"]=
+                    serde_json::json!("other_detector"),
+                _=>unreachable!(),
+            };
+            let geometry=CbctGeometry::from_detector_json(
+                &json.to_string(),"bad.zip".into(),"qc".into());
+            if let Ok(geometry)=geometry {
+                assert!(geometry.registration_review_cad_preview().is_err(),
+                    "must reject CAD tampering: {mode}");
+            }
+        }
+    }
+
     #[test]
     fn import_cad_derived_pcb_and_jst_predictions_as_preview_only() {
         let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
