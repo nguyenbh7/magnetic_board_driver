@@ -479,10 +479,16 @@ impl CbctGeometry {
         }
         let projected_jst={
             let along=dot(jst_prior,normal);
-            unit([jst_prior[0]-along*normal[0],
-                  jst_prior[1]-along*normal[1],
-                  jst_prior[2]-along*normal[2]])?
+            let planar=[jst_prior[0]-along*normal[0],
+                        jst_prior[1]-along*normal[1],
+                        jst_prior[2]-along*normal[2]];
+            if magnitude(planar)<0.70 {
+                return Err(format!("{name}: documented JST direction points out of CT chip plane"));
+            }
+            unit(planar)?
         };
+        let up=[-projected_jst[0],-projected_jst[1],-projected_jst[2]];
+        let right=unit(cross(up,normal))?;
         if dot(displacement,projected_jst)/sep<0.995 {
             return Err(format!("{name}: CAD connector side disagrees with confirmed mounting"));
         }
@@ -504,8 +510,9 @@ impl CbctGeometry {
             let delta=offset(jst_projections[i+1],jst_projections[i]);
             let length=magnitude(delta);
             if !(8.5..=9.6).contains(&length)
-                || dot(delta,projected_jst).abs()>0.7 {
-                return Err(format!("{name}: J1-J3 CAD positions disagree with PCB layout"));
+                || dot(delta,projected_jst).abs()>0.7
+                || dot(delta,right)>-8.5 {
+                return Err(format!("{name}: J1-J3 CAD positions/handedness disagree with PCB layout"));
             }
         }
         Ok(pcb)
