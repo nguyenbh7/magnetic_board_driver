@@ -980,6 +980,33 @@ mod tests {
         assert!(c.summary().contains("HDMM reflective sticker: NOT independently"));
     }
     #[test]
+    fn chip_first_board_without_pcb_centroid_imports_ct_geometry_but_not_auto_registration() {
+        // Matches the October30 generic chip-first output: 16 real CT-chip
+        // positions recovered, PCB outline and connector centroid unknown.
+        // Initial CT geometry preview must work without silently guessing a
+        // JST end or permitting a live magnetic calibration.
+        let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        report["objects"][1]["name"]=serde_json::json!("array_left");
+        report["objects"][3]["name"]=serde_json::json!("array_right");
+        report["objects"][5]["name"]=serde_json::json!("array_superior");
+        report["objects"][5]["board_center_lps_mm"]=serde_json::Value::Null;
+        report["objects"][5]["board_normal_lps"]=serde_json::json!([0.0,0.0,-1.0]);
+        report["objects"][5]["grid_rms_mm"]=serde_json::json!(0.054);
+        report["objects"][5]["detection_method"]=serde_json::json!("chip_first_generic_board_fallback");
+        report["counts"]=serde_json::json!({"magnet":3,"array":3,"bb":1});
+        let geometry=CbctGeometry::from_detector_json(
+            &report.to_string(),"recovered_scan.zip".into(),"ct_output".into()).unwrap();
+        assert_eq!(geometry.arrays.len(),3);
+        assert_eq!(geometry.arrays.iter()
+                   .map(|b|b.detected_chip_positions_lps_mm.len()).sum::<usize>(),48);
+        assert_eq!(geometry.arrays.iter()
+                   .find(|b|b.name=="array_superior").unwrap().pcb_center_lps_mm,None);
+        let error=geometry.register_ct_boards_v2().unwrap_err();
+        assert!(error.contains("array_superior: missing CT PCB centroid"),"{error}");
+        assert!(geometry.experimental_candidate_profile().is_err());
+    }
+
+    #[test]
     fn exported_coordinates_contain_all_48_ct_detector_indices() {
         let c=CbctGeometry::from_detector_json(&sample(),"scan.zip".into(),"qc".into()).unwrap();
         let csv=c.coordinates_csv();
