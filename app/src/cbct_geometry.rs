@@ -59,6 +59,9 @@ pub struct CbctArray {
     pub grid_rms_mm: f64,
     pub pcb_center_lps_mm: Option<[f64; 3]>,
     pub chip_face_normal_lps: Option<[f64; 3]>,
+    /// Nominal KiCad midpoint in chip plane, NOT independently CT observed.
+    pub pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
+    pub jst_connector_cad_estimates_lps_mm: std::collections::BTreeMap<String,[f64;3]>,
 }
 /// Provisional v2 CT/JST chip correspondence, in firmware sensor order.
 /// The coordinate transformation uses the KiCad/A1 chip-axis hypothesis.
@@ -105,6 +108,16 @@ struct DetectedObject {
     unsigned_axis_lps: Option<[f64; 3]>,
     board_center_lps_mm: Option<[f64; 3]>,
     board_normal_lps: Option<[f64; 3]>,
+    pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
+    pcb_cad_geometry: Option<PcbCadGeometry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PcbCadGeometry {
+    status: String,
+    #[serde(default)]
+    jst_connector_footprint_centers_lps_mm:
+        std::collections::BTreeMap<String,[f64;3]>,
 }
 
 /// Diagnose missing *board locations* without trusting detector array names:
@@ -285,6 +298,22 @@ impl CbctGeometry {
                     let rms = object.grid_rms_mm
                         .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 1.0)
                         .ok_or_else(|| format!("{} has invalid/large chip grid RMS", object.name))?;
+                    if let Some(v)=object.pcb_center_cad_estimate_lps_mm {
+                        if !valid_point(&v) {
+                            return Err(format!("{} invalid projected CAD PCB center",object.name));
+                        }
+                    }
+                    let jst=if let Some(cad)=object.pcb_cad_geometry {
+                        if cad.status=="CAD_PREDICTION_NOT_CT_MEASUREMENT" {
+                            if cad.jst_connector_footprint_centers_lps_mm.len()!=3 ||
+                               cad.jst_connector_footprint_centers_lps_mm.values().any(|p|!valid_point(p)) {
+                                return Err(format!("{} has incomplete CAD JST predictions",object.name));
+                            }
+                            cad.jst_connector_footprint_centers_lps_mm
+                        } else {
+                            std::collections::BTreeMap::new()
+                        }
+                    } else { std::collections::BTreeMap::new() };
                     arrays.push(CbctArray {
                         name: object.name,
                         detected_chip_positions_lps_mm: pts,
@@ -292,6 +321,8 @@ impl CbctGeometry {
                         grid_rms_mm: rms,
                         pcb_center_lps_mm: object.board_center_lps_mm,
                         chip_face_normal_lps: object.board_normal_lps,
+                        pcb_center_cad_estimate_lps_mm:object.pcb_center_cad_estimate_lps_mm,
+                        jst_connector_cad_estimates_lps_mm:jst,
                     });
                 }
                 "bb" => markers.push(CbctMarker {
@@ -556,6 +587,14 @@ impl CbctGeometry {
                 lines.push(format_row("sensor_ct_detector_index",&array.name,index.to_string(),
                     *chip,self.rigid_origin_lps_mm));
             }
+            if let Some(p)=array.pcb_center_cad_estimate_lps_mm {
+                lines.push(format_row("pcb_CENTER_CAD_PREDICTION_NOT_CT_MEASURED",
+                    &array.name,String::new(),p,self.rigid_origin_lps_mm));
+            }
+            for (label,p) in &array.jst_connector_cad_estimates_lps_mm {
+                lines.push(format_row("JST_FOOTPRINT_CAD_PREDICTION_NOT_CT_MEASURED",
+                    &array.name,label.to_string(),*p,self.rigid_origin_lps_mm));
+            }
         }
         for marker in &self.markers {
             lines.push(format_row("glass_BB_not_verified_HDMM",&marker.name,String::new(),
@@ -582,6 +621,10 @@ impl CbctGeometry {
             let p = array.center_lps_mm;
             lines.push(format!("{}: {} CT-detected chips, center [{:.2}, {:.2}, {:.2}] LPS mm; grid RMS {:.3} mm (NOT firmware index order)",
                 array.name,array.detected_chip_positions_lps_mm.len(),p[0],p[1],p[2],array.grid_rms_mm));
+            if let Some(c)=array.pcb_center_cad_estimate_lps_mm {
+                lines.push(format!("  KiCad-predicted PCB center projected to chip plane: [{:.2}, {:.2}, {:.2}] mm; NOT CT-observed; {} JST footprint predictions available.",
+                    c[0],c[1],c[2],array.jst_connector_cad_estimates_lps_mm.len()));
+            }
         }
         for marker in &self.markers {
             let p=marker.center_lps_mm;
@@ -1003,6 +1046,34 @@ mod tests {
                    .find(|b|b.name=="array_superior").unwrap().pcb_center_lps_mm,None);
         let error=geometry.register_ct_boards_v2().unwrap_err();
         assert!(error.contains("array_superior: missing CT PCB centroid"),"{error}");
+        assert!(geometry.experimental_candidate_profile().is_err());
+    }
+
+    #[test]
+    fn import_cad_derived_pcb_and_jst_predictions_as_preview_only() {
+        let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        let board=&mut report["objects"][5];
+        board["name"]=serde_json::json!("array_superior");
+        board["board_center_lps_mm"]=serde_json::Value::Null;
+        board["pcb_center_cad_estimate_lps_mm"]=serde_json::json!([10.0,-14.875,0.0]);
+        board["pcb_cad_geometry"]=serde_json::json!({
+            "status":"CAD_PREDICTION_NOT_CT_MEASUREMENT",
+            "jst_connector_footprint_centers_lps_mm":{
+                "J1":[19.2,-42.275,0.0],
+                "J2":[10.11,-42.286,0.0],
+                "J3":[1.2,-42.300,0.0]
+            }
+        });
+        let geometry=CbctGeometry::from_detector_json(
+            &report.to_string(),"scan.zip".into(),"qc".into()).unwrap();
+        let array=geometry.arrays.iter()
+            .find(|a|a.name=="array_superior").unwrap();
+        assert_eq!(array.pcb_center_lps_mm,None);
+        assert_eq!(array.pcb_center_cad_estimate_lps_mm,Some([10.0,-14.875,0.0]));
+        assert_eq!(array.jst_connector_cad_estimates_lps_mm.len(),3);
+        assert!(geometry.summary().contains("NOT CT-observed"));
+        assert!(geometry.coordinates_csv().contains("JST_FOOTPRINT_CAD_PREDICTION_NOT_CT_MEASURED"));
+        assert!(geometry.register_ct_boards_v2().is_err());
         assert!(geometry.experimental_candidate_profile().is_err());
     }
 
