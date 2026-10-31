@@ -1,3 +1,17 @@
+## 2026-10-31 — User confirmed BOTH CT JSON and direct DICOM app import work
+
+User report after `hall-effect-motion-tracking` generic chip-first fallback passed 7/7 real CT scans: **both** (i) **Live Tracking → Rigid 6-DOF → Open CT detections.json** for previously incomplete October30 detection and (ii) **Import DICOM** through the desktop app **worked**. This confirms the requested DICOM **detection + initial geometry import UI workflow end-to-end** on at least one of the previously failing Oct30 acquisitions; it does not establish calibration or live tracking accuracy.
+
+The user asked why the GUI shows `Enable EXPERIMENTAL 6-DOF tracking (review first)`. It is a **separate, intentional, normally disabled activation gate**:
+- `Message::EnableExperimentalGkTracking` is active only when `context.gk_calibration.calibrated_candidate.is_some()`. On click, the app runs `set_experimental_gk_profile(profile, background)`, selects `TrackingMode::Rigid6Dof`, turns **off** the separate independent-magnet live fitting, and posts a measured-stationary-field-RMSE warning that the model has not been independently validated against HDMM.
+- A candidate only exists after CT import, stationary Hall capture, `Calibrate tracking model`, signed finite-cylinder remanence/offset fitting and screening of stationary field RMSE (currently 0.5 mT) and `|remanence|` 300–2200 mT; limits are provisional heuristic checks, not clinical accuracy.
+- In the chip-first October30 CT imports, `array_superior.board_center_lps_mm` is intentionally `null` because its original PCB outline/connector offset was not resolved. Therefore `register_ct_boards_v2()` **must fail closed**; `experimental_candidate_profile()` cannot be assembled and **the experimental enable button should remain inactive** after just loading these CTs. The physical superior JST/chip-side mounting prior has been verbally confirmed, but the Rust code has not yet gained an explicit reviewed prior-based registration option. Do not invent a PCB centroid, nor equate initial geometry import to permission for magnetic fit.
+- Existing non-GK A1 demo profile is a distinct pathway. CT import alone must not switch on experimental GK tracking.
+
+Recommended UI wording for a future cleanup: `Activate calibrated experimental 6-DOF fit` with explicit adjacent disabled reason `Requires reviewed CT-to-firmware mapping and successful stationary Hall calibration`; not necessary to complete the DICOM import deliverable.
+
+
+
 ## 2026-10-31 — Seven-scan generalized chip-first Python detector passed; next Rust GUI import test
 
 The user ran the revised `hall-effect-motion-tracking` `a1-calibration` 7-scan validation on **five October30 CBCTs** and **two October23 controls**. All **seven** Python DICOM runs exited 0 and emitted `gk_cbct_detections_v1`, `status=unreviewed`, **3 magnets, 3 boards (48 CT chips), 1 BB**. Five Oct30 scans used `chip_first_generic_board_fallback` to recover missing `array_superior`, with 16/16 node signals and **0.0366–0.0539-mm in-plane 4×4 lattice RMS**. Both Oct23 controls retained original 3-board detection, no fallback. Median total runtime **56.43 s**. This is real Python detection validation, **not yet a Rust/iced GUI import result**. All 84 updated Python tests previously passed on Windows.
