@@ -1321,8 +1321,10 @@ mod tests {
                     serde_json::json!([0.0,0.0,1.0]),
                 "wrong_jst"=>a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]["J1"]=
                     serde_json::json!([140.0,-30.0,0.0]),
-                "missing_connector"=>a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]
-                    .as_object_mut().unwrap().remove("J3").unwrap(),
+                "missing_connector"=>{
+                    a["pcb_cad_geometry"]["jst_connector_footprint_centers_lps_mm"]
+                        .as_object_mut().unwrap().remove("J3").unwrap();
+                },
                 "unverified_firmware"=>a["detection_method"]=
                     serde_json::json!("other_detector"),
                 _=>unreachable!(),
