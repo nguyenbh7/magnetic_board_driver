@@ -104,6 +104,8 @@ enum Message {
     CopyCbctDetails,
     CopyCbctLog,
     CopyGkCalibrationStatus,
+    ToggleCadMappingDetails,
+    CopyCadMappingDetails,
     CaptureRigidBackground,
     BeginGkBackground,
     BeginGkReference,
@@ -228,6 +230,8 @@ struct GkCalibration {
     /// A human must inspect candidate mapping and then separately approve
     /// the specific currently loaded CT. No persistence across CT/port reload.
     cad_review_preview: Option<String>,
+    cad_review_summary: Option<String>,
+    cad_review_details_expanded: bool,
     cad_mapping_approved: bool,
     status: String,
 }
@@ -955,6 +959,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.cbct_geometry = None;
                 context.gk_calibration.calibrated_candidate = None;
                 context.gk_calibration.cad_review_preview = None;
+                context.gk_calibration.cad_review_summary = None;
+                context.gk_calibration.cad_review_details_expanded = false;
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.cbct_last_log.clear();
@@ -988,6 +994,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     // correspondence before enabling experimental tracking.
                     context.gk_calibration.calibrated_candidate = None;
                     context.gk_calibration.cad_review_preview = None;
+                    context.gk_calibration.cad_review_summary = None;
+                    context.gk_calibration.cad_review_details_expanded = false;
                     context.gk_calibration.cad_mapping_approved = false;
                     context.rigid_fit.invalidate_for_gk_calibration();
                     }
@@ -1040,6 +1048,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.cbct_geometry = Some(geometry);
                 context.gk_calibration.calibrated_candidate = None;
                 context.gk_calibration.cad_review_preview = None;
+                context.gk_calibration.cad_review_summary = None;
+                context.gk_calibration.cad_review_details_expanded = false;
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 }
@@ -1106,26 +1116,45 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::ReviewCadGkRegistration => {
             context.gk_calibration.cad_mapping_approved = false;
             context.gk_calibration.cad_review_preview = None;
+            context.gk_calibration.cad_review_summary = None;
+            context.gk_calibration.cad_review_details_expanded = false;
             context.gk_calibration.calibrated_candidate = None;
             context.rigid_fit.invalidate_for_gk_calibration();
             match context.cbct_geometry.as_ref() {
-                Some(geometry) => match geometry.registration_review_cad_preview() {
-                    Ok(details) => {
+                Some(geometry) => match geometry.registration_review_cad_preview()
+                    .and_then(|details|geometry.registration_review_cad_summary()
+                        .map(|summary|(details,summary))) {
+                    Ok((details,summary)) => {
                         context.gk_calibration.cad_review_preview = Some(details);
+                        context.gk_calibration.cad_review_summary = Some(summary);
                         context.gk_calibration.status =
-                            "CAD/JST mounting-based registration geometry PASSED. Inspect the full mapping below and confirm raw board wiring; THEN explicitly approve for experimental magnetic calibration.".into();
+                            "Mapping checks passed. Review the three boards, then approve for experimental calibration.".into();
                     }
                     Err(error) => {
                         context.gk_calibration.status =
-                            format!("CAD mapping preview REJECTED: {error}");
+                            format!("Mapping checks failed: {error}");
                     }
                 },
                 None => {
                     context.gk_calibration.status =
-                        "Import CT geometry before reviewing the CAD mapping.".into();
+                        "Import CT geometry before reviewing the mapping.".into();
                 }
             }
             Task::none()
+        }
+        Message::ToggleCadMappingDetails => {
+            if context.gk_calibration.cad_review_preview.is_some() {
+                context.gk_calibration.cad_review_details_expanded =
+                    !context.gk_calibration.cad_review_details_expanded;
+            }
+            Task::none()
+        }
+        Message::CopyCadMappingDetails => {
+            if let Some(report)=&context.gk_calibration.cad_review_preview {
+                iced::clipboard::write(report.clone())
+            } else {
+                Task::none()
+            }
         }
         Message::ApproveCadGkRegistration => {
             // Preview AND the current candidate must independently validate.
@@ -1137,12 +1166,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.gk_calibration.cad_mapping_approved=true;
                     context.gk_calibration.calibrated_candidate=None;
                     context.gk_calibration.status =
-                        "CAD/JST sensor mapping explicitly APPROVED FOR EXPERIMENTAL CALIBRATION ONLY (not CT-measured connector geometry, not live motion accuracy). Capture stationary fields and calibrate; live tracking remains disabled.".into();
+                        "Mapping approved for experimental calibration. Tracking remains off until Hall calibration succeeds.".into();
                 }
                 Ok(_) => {
                     context.gk_calibration.cad_mapping_approved=false;
                     context.gk_calibration.status =
-                        "CAD mapping was not previewed for this CT; review again.".into();
+                        "Mapping changed or was not previewed. Review again.".into();
                 }
                 Err(error) => {
                     context.gk_calibration.cad_mapping_approved=false;
@@ -1155,10 +1184,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::RevokeCadGkRegistration => {
             context.gk_calibration.cad_mapping_approved=false;
             context.gk_calibration.cad_review_preview=None;
+            context.gk_calibration.cad_review_summary=None;
+            context.gk_calibration.cad_review_details_expanded=false;
             context.gk_calibration.calibrated_candidate=None;
             context.rigid_fit.invalidate_for_gk_calibration();
             context.gk_calibration.status =
-                "CAD mapping approval revoked; experimental tracking disabled.".into();
+                "Mapping approval revoked. Experimental tracking disabled.".into();
             Task::none()
         }
         Message::CalibrateGkTracking => {
@@ -2071,81 +2102,118 @@ fn view(context: &Context) -> Element<'_, Message> {
         .width(Length::Fill)
         .style(iced::widget::container::bordered_box);
 
-        // DICOM imports are unreviewed geometry, never a tracking profile.
-        // Historical A1/stage presets remain available in the implementation,
-        // but no preset selection is required for the GK import workflow.
-        let tracking_panel = container(column![
-            text("Tracking Configuration & Controls"),
-            text("Model: Joint 6-DOF rigid body"),
-            text("1. OPTIONAL: with magnets removed and boards fixed, capture 3 s of background. No background = lower-confidence fitted board offsets."),
-            if context.gk_calibration.capturing.is_none() {
-                button("Capture no-magnet background").on_press(Message::BeginGkBackground)
-            } else { button("Capture no-magnet background") },
-            text(if context.gk_calibration.background.is_some() { "Background: 48 sensors captured" }
-                else { "Background: skipped / not captured (allowed)" }),
-            text("2. Install magnets; import/review CT. A chip-first receiver without visible PCB outline may require a reviewed KiCad/JST mounting prior."),
-            text(if context.cbct_geometry.is_some() { "CT: imported for review" } else { "CT: not imported" }),
-            if context.cbct_geometry.is_some() {
-                button("1. Preview CAD-assisted CT-to-firmware mapping")
-                    .on_press(Message::ReviewCadGkRegistration)
-            } else { button("1. Preview CAD-assisted CT-to-firmware mapping") },
-            text(context.gk_calibration.cad_review_preview.as_deref()
-                .unwrap_or("CAD mapping not reviewed. The default measured-PCB registration remains unchanged.")),
-            text("CHECK before approval: raw0=TOP, raw1=PATIENT LEFT, raw2=PATIENT RIGHT; 16 chips per board; current PCB revision; chip-facing sides; top JST points PATIENT RIGHT, side JSTs point INFERIOR. CAD connector locations have NOT been measured in CT."),
-            if context.gk_calibration.cad_review_preview.is_some()
-                    && !context.gk_calibration.cad_mapping_approved {
-                button("2. Approve reviewed CAD/JST mapping for experimental calibration")
-                    .on_press(Message::ApproveCadGkRegistration)
-            } else { button("2. Approve reviewed CAD/JST mapping for experimental calibration") },
-            if context.gk_calibration.cad_mapping_approved {
-                button("Revoke CAD/JST mapping approval").on_press(Message::RevokeCadGkRegistration)
-            } else { button("Revoke CAD/JST mapping approval") },
-            text(if context.gk_calibration.cad_mapping_approved {
-                "CAD/JST MAPPING APPROVED for experimental calibration only — NOT validated magnetic tracking."
-            } else { "CAD/JST MAPPING NOT APPROVED. No CAD-only geometry may enter calibration." }),
-            text("3. Capture 3 s of stationary Hall fields with or WITHOUT CT import; archive with corresponding raw logs."),
-            if context.gk_calibration.capturing.is_none() {
-                button("Capture stationary reference").on_press(Message::BeginGkReference)
-            } else { button("Capture stationary reference") },
-            text(if context.gk_calibration.reference.is_some() { "Reference fields: 48 sensors captured" }
-                else { "Reference fields: not captured" }),
-            text("4. Calibrate signed magnet strengths and validate the field residuals before tracking."),
-            if context.gk_calibration.reference.is_some() {
-                button("Calibrate tracking model").on_press(Message::CalibrateGkTracking)
-            } else { button("Calibrate tracking model") },
-            text(if context.gk_calibration.status.is_empty() {
-                "Calibration: not started".to_string()
-            } else { context.gk_calibration.status.clone() }),
-            button("Copy calibration diagnostics").on_press(Message::CopyGkCalibrationStatus),
-            text("CT registration: v2 JST/PCB-centroid geometry candidate, using the established A1 Hall axis convention. Inspect the board orientation and magnet dimensions before enabling."),
-            if context.gk_calibration.calibrated_candidate.is_some() {
-                button("Enable EXPERIMENTAL 6-DOF tracking (review first)").on_press(Message::EnableExperimentalGkTracking)
-            } else { button("Enable EXPERIMENTAL 6-DOF tracking (review first)") },
-            if context.gk_calibration.reference.is_some() {
-                button("Save calibration inputs (.json)").on_press(Message::ExportGkCalibration)
-            } else { button("Save calibration inputs (.json)") },
-            text("CT and background are optional for raw logging/reference export. Calibration requires CT; without measured background it fits board-constant offsets only. Retain .bin and DICOM logs."),
-            // Retain the legacy profile importer under an explicit archival label.
-            button("Legacy: load manually calibrated JSON").on_press(Message::LoadRigidProfile),
-            text(profile_status),
+        // Keep the full scientific registration report available on demand
+        // without flooding the main tracking controls with 48 indices and
+        // three raw Hall-to-LPS matrices.
+        let cad_mapping_panel = container(column![
+            text("CT sensor mapping").size(20),
+            text("Sensor positions come from CT. The top board's connector direction uses the reviewed KiCad mounting estimate."),
             row![
-                if rigid.result.is_some() {
-                    button("Set rigid zero").on_press(Message::ResetRigidZero)
-                } else {
-                    button("Set rigid zero")
-                },
-                text(if rigid.zero_ready { "Reference: set" } else { "Reference: not set" }),
+                if context.cbct_geometry.is_some() {
+                    button("Preview mapping").on_press(Message::ReviewCadGkRegistration)
+                } else { button("Preview mapping") },
+                if context.gk_calibration.cad_review_preview.is_some() {
+                    button(if context.gk_calibration.cad_review_details_expanded {
+                        "Hide details"
+                    } else { "Show details" }).on_press(Message::ToggleCadMappingDetails)
+                } else { button("Show details") },
+                if context.gk_calibration.cad_review_preview.is_some() {
+                    button("Copy mapping").on_press(Message::CopyCadMappingDetails)
+                } else { button("Copy mapping") },
             ].spacing(8),
-            text(position_line),
-            text(rotation_line),
-            text(format!("Status: {}", rigid.status)),
-            text(fit_quality),
-        ].spacing(6))
+            text(context.gk_calibration.cad_review_summary.as_deref()
+                .unwrap_or("No mapping preview yet. Import CT results and select Preview mapping."))
+                .size(16),
+            if context.gk_calibration.cad_review_details_expanded {
+                container(
+                    scrollable(
+                        text(context.gk_calibration.cad_review_preview.as_deref()
+                            .unwrap_or("No mapping details available.")).size(14)
+                    ).height(Length::Fixed(230.0))
+                ).padding(8).width(Length::Fill)
+                    .style(iced::widget::container::bordered_box)
+            } else {
+                container(text(""))
+            },
+            text("Before approval: confirm board 0 = top, 1 = left, 2 = right; correct PCB revision and chip-facing sides; top JST toward patient right and side JSTs inferior."),
+            row![
+                if context.gk_calibration.cad_review_preview.is_some()
+                    && !context.gk_calibration.cad_mapping_approved {
+                    button("Approve for calibration")
+                        .on_press(Message::ApproveCadGkRegistration)
+                } else { button("Approve for calibration") },
+                if context.gk_calibration.cad_mapping_approved {
+                    button("Revoke approval").on_press(Message::RevokeCadGkRegistration)
+                } else { button("Revoke approval") },
+            ].spacing(8),
+            text(if context.gk_calibration.cad_mapping_approved {
+                "APPROVED for experimental calibration only. This does not validate tracking."
+            } else if context.gk_calibration.cad_review_preview.is_some() {
+                "PREVIEW PASSED. Awaiting explicit approval."
+            } else {
+                "NOT APPROVED. A valid CT mapping preview is required."
+            }),
+        ].spacing(9))
         .padding(12)
         .width(Length::Fill)
         .style(iced::widget::container::bordered_box);
 
-        let mut rigid_content = column![dicom_panel, tracking_panel].spacing(12);
+        // Magnetic calibration stays separate from CT geometry and approval.
+        let tracking_panel = container(column![
+            text("Magnetic calibration and tracking").size(20),
+            text("Experiment workflow: fixed boards, no magnets, then stationary magnets."),
+            if context.gk_calibration.capturing.is_none() {
+                button("Capture background").on_press(Message::BeginGkBackground)
+            } else { button("Capture background") },
+            text(if context.gk_calibration.background.is_some() {
+                "Background captured (48 sensors)."
+            } else {
+                "No background captured. Optional; fitted offsets are less reliable."
+            }),
+            if context.gk_calibration.capturing.is_none() {
+                button("Capture stationary fields").on_press(Message::BeginGkReference)
+            } else { button("Capture stationary fields") },
+            text(if context.gk_calibration.reference.is_some() {
+                "Stationary reference captured (48 sensors)."
+            } else {
+                "Stationary reference not captured."
+            }),
+            if context.gk_calibration.reference.is_some() {
+                button("Calibrate tracking").on_press(Message::CalibrateGkTracking)
+            } else { button("Calibrate tracking") },
+            text(if context.gk_calibration.status.is_empty() {
+                "Calibration not started.".to_string()
+            } else { context.gk_calibration.status.clone() }),
+            button("Copy calibration report").on_press(Message::CopyGkCalibrationStatus),
+            text("Calibration requires matching CT and Hall measurements. Passing a stationary fit does not establish motion accuracy."),
+            if context.gk_calibration.calibrated_candidate.is_some() {
+                button("Enable experimental tracking").on_press(Message::EnableExperimentalGkTracking)
+            } else { button("Enable experimental tracking") },
+            text(if context.gk_calibration.calibrated_candidate.is_some() {
+                "Experimental fit available after stationary calibration. Verify against HDMM."
+            } else { "Experimental tracking disabled until calibration succeeds." }),
+            if context.gk_calibration.reference.is_some() {
+                button("Save calibration data").on_press(Message::ExportGkCalibration)
+            } else { button("Save calibration data") },
+            text("Keep DICOM and raw Hall logs for offline analysis. Save calibration data before leaving the GK setup."),
+            button("Load legacy calibration").on_press(Message::LoadRigidProfile),
+            text(profile_status),
+            row![
+                if rigid.result.is_some() {
+                    button("Set zero").on_press(Message::ResetRigidZero)
+                } else { button("Set zero") },
+                text(if rigid.zero_ready { "Reference set" } else { "Reference not set" }),
+            ].spacing(8),
+            text(position_line),
+            text(rotation_line),
+            text(format!("Tracking status: {}", rigid.status)),
+            text(fit_quality),
+        ].spacing(9))
+        .padding(12)
+        .width(Length::Fill)
+        .style(iced::widget::container::bordered_box);
+
+        let mut rigid_content = column![dicom_panel, cad_mapping_panel, tracking_panel].spacing(12);
         // Always show the charts, including before the first background
         // capture or before any fitted pose exists. The canvases display
         // "Waiting..." rather than making the whole tracking view disappear.
