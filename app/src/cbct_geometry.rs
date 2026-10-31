@@ -696,9 +696,18 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
             script.display()
         ));
     }
-    let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("magnetic_board_driver").join("cbct_imports");
+    // User-visible experiment outputs belong in Downloads, not hidden
+    // per-user AppData. An explicit root override is useful for a lab
+    // acquisition drive and avoids checking large DICOM QC files into git.
+    let output_base = std::env::var_os("GK_CBCT_OUTPUT_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("Downloads").join("GK_CBCT_Results")
+        });
+    let root = output_base.join("imports");
     std::fs::create_dir_all(&root).map_err(|e|format!("Cannot create CBCT results folder: {e}"))?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?.as_nanos();
