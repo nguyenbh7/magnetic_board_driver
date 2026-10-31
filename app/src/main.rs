@@ -2107,7 +2107,9 @@ fn view(context: &Context) -> Element<'_, Message> {
         // three raw Hall-to-LPS matrices.
         let cad_mapping_panel = container(column![
             text("CT sensor mapping").size(20),
-            text("CT measures the sensor chips. The top board's connector direction comes from a KiCad mounting estimate, not a CT measurement."),
+            text("CT measures the sensor chips. The top board's connector direction comes from a KiCad mounting estimate, not a CT measurement.")
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             row![
                 if context.cbct_geometry.is_some() {
                     button("Preview mapping").on_press(Message::ReviewCadGkRegistration)
@@ -2123,20 +2125,37 @@ fn view(context: &Context) -> Element<'_, Message> {
             ].spacing(8),
             text(context.gk_calibration.cad_review_summary.as_deref()
                 .unwrap_or("No mapping preview yet. Import CT results and select Preview mapping."))
-                .size(16),
+                .size(16)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             if context.gk_calibration.cad_review_details_expanded {
+                // The scrollable and its content must BOTH fill the available
+                // horizontal space. Otherwise Iced sizes the scroll area to
+                // the unwrapped text, leaving a blank strip at the right.
                 container(column![
-                    text("Detailed sensor mapping (scroll for all three boards)").size(17),
+                    text("Detailed sensor mapping (scroll for all three boards)")
+                        .size(17).width(Length::Fill),
                     scrollable(
                         text(context.gk_calibration.cad_review_preview.as_deref()
-                            .unwrap_or("No mapping details available.")).size(16)
-                    ).height(Length::Fixed(420.0)),
-                ].spacing(8)).padding(12).width(Length::Fill)
-                    .style(iced::widget::container::bordered_box)
+                            .unwrap_or("No mapping details available."))
+                            .size(16)
+                            .width(Length::Fill)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fixed(420.0)),
+                ]
+                .spacing(8)
+                .width(Length::Fill))
+                .padding(12)
+                .width(Length::Fill)
+                .style(iced::widget::container::bordered_box)
             } else {
                 container(text(""))
             },
-            text("Before approval: confirm board 0 = top, 1 = left, 2 = right; correct PCB revision and chip-facing sides; top JST toward patient right and side JSTs inferior."),
+            text("Before approval: confirm board 0 = top, 1 = left, 2 = right; correct PCB revision and chip-facing sides; top JST toward patient right and side JSTs inferior.")
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             row![
                 if context.gk_calibration.cad_review_preview.is_some()
                     && !context.gk_calibration.cad_mapping_approved {
@@ -2154,7 +2173,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             } else {
                 "NOT APPROVED. A valid CT mapping preview is required."
             }),
-        ].spacing(9))
+        ].spacing(9).width(Length::Fill))
         .padding(12)
         .width(Length::Fill)
         .style(iced::widget::container::bordered_box);
