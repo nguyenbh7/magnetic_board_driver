@@ -528,7 +528,7 @@ impl CbctGeometry {
                 if cad.is_empty() {
                     format!("CT->firmware v2 registration NOT READY: {location}: {e}")
                 } else {
-                    format!("CT->firmware v2 registration NOT READY: {location}: {e}\nCAD-only board/connector landmarks available for manual review (NOT accepted as CT-measured JST direction):\\n{}",
+                    format!("CT->firmware v2 registration NOT READY: {location}: {e}\nCAD-only board/connector landmarks available for manual review (NOT accepted as CT-measured JST direction):\n{}",
                         cad.join("\n"))
                 }
             }
