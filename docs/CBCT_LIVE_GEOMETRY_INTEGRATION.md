@@ -1,3 +1,23 @@
+## 2026-10-31 — Seven-scan generalized chip-first Python detector passed; next Rust GUI import test
+
+The user ran the revised `hall-effect-motion-tracking` `a1-calibration` 7-scan validation on **five October30 CBCTs** and **two October23 controls**. All **seven** Python DICOM runs exited 0 and emitted `gk_cbct_detections_v1`, `status=unreviewed`, **3 magnets, 3 boards (48 CT chips), 1 BB**. Five Oct30 scans used `chip_first_generic_board_fallback` to recover missing `array_superior`, with 16/16 node signals and **0.0366–0.0539-mm in-plane 4×4 lattice RMS**. Both Oct23 controls retained original 3-board detection, no fallback. Median total runtime **56.43 s**. This is real Python detection validation, **not yet a Rust/iced GUI import result**. All 84 updated Python tests previously passed on Windows.
+
+The existing Rust `CbctGeometry::from_detector_json` should accept these complete scan outputs, because its optional `board_center_lps_mm` allows null. It should import a **CT geometry preview with all 48 chip coordinates and rigid magnet origin**, requiring manual review, without needing a magnetic calibration. It must still **fail closed in `register_ct_boards_v2`** because the chip-first superior board's PCB center/JST proxy is not physically measured. Previously documented superior mounting (chips toward patient/inferior, JST patient right) has now been confirmed by the user for Oct30; the Python candidate mapping is provisional and should not silently replace the Rust independent-centroid requirement without an explicit reviewed mounting-prior pathway. Initial CT import success and automated live magnetic profile success are different milestones.
+
+Added Rust parser regression `chip_first_board_without_pcb_centroid_imports_ct_geometry_but_not_auto_registration` (commit `525e326`); **requires local `cargo test -p app` run**. Next actual end-to-end check:
+
+```powershell
+cd F:\\GitHub\\magnetic_board_driver
+git switch feature/live-rigid-body-fit
+git pull --ff-only
+cargo test -p app
+cargo run -p app --release
+```
+
+In **Live Tracking → Rigid 6-DOF**, select **Open CT detections.json** for the already processed `%USERPROFILE%\\Downloads\\GK_CBCT_Results\\validation\\seven_scan_20261031T032537Z\\oct30_01\\detections.json` (fast import, no rerun) and verify CT preview 3 magnets/3 boards/48 chip positions/BB and correct identity. Then select **Import DICOM ZIP** or **Import DICOM folder** for the same Oct30 acquisition to verify that Rust launches the detector and parses its new output autonomously. Outputs under `Downloads\\GK_CBCT_Results\\imports\\import_*`. Record complete display and expected CT->firmware registration warning, rather than claiming full tracking calibration. If no DICOM Frame-of-Reference UID is present the app must continue rejecting it.
+
+
+
 # Implemented desktop DICOM/CBCT geometry import (2026-10-28)
 
 **This section supersedes the original proposed-architecture status
