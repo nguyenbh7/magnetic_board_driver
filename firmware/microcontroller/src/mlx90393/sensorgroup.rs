@@ -53,6 +53,12 @@ impl<I: I2c, P: Wait> Sensor<I, Option<P>> {
             .set_sensitivity_registers_fast(gain, resolution, hall_conf)
             .await
     }
+    pub async fn read_register_snapshot(
+        &mut self,
+    ) -> Option<rpc::MlxChipRegisterReadback> {
+        self.mlx.read_register_snapshot().await
+    }
+
     pub async fn read_sensitivity(&mut self) -> Option<(u8, u8, u8)> {
         self.mlx.read_sensitivity_values().await
     }
