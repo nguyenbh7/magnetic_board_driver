@@ -1438,7 +1438,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             .spacing(8),
 
             row![
-                button("Read from board").on_press(Message::GetMlxSensitivity),
+                button("Read cached setting").on_press(Message::GetMlxSensitivity),
                 button("Read timing").on_press(Message::GetMlxTiming),
                 button("Apply to detected boards").on_press(Message::SetMlxSensitivity),
             ]
