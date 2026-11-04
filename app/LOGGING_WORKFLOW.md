@@ -62,11 +62,23 @@ frames before the snapshot was taken. Stop the stream, select a new
 filename, verify the readback, and then begin streaming for best
 timing provenance.
 
-The branch's **software default** is GAIN_SEL=0, RES=0,
-HALL_CONF=0xC; its conversion is XY=0.751 µT/count and
-Z=1.210 µT/count for that configuration, conditional on
-compensation and ADC encoding. Code defaults are not
-independent verification of what historic chips used.
+**CACHED SOFTWARE DEFAULT IS NOT THE CHIP RESET DEFAULT:** The branch's
+firmware application-level mlx_sensitivity context initializes to
+GAIN_SEL=0, RES=0, HALLCONF=0xC; those values would mean
+XY=0.751 µT/count, Z=1.210 µT/count if explicitly programmed.
+However, the firmware's Sensor::from_mlx initializes every chip by
+calling mlx.reset(), then set_measurement_configuration() **reads the
+actual hardware registers into the separate per-sensor state** used for
+conversion. Melexis MLX90393 datasheet Rev 012, Table 16 lists
+**factory reset GAIN_SEL=7, RES_XYZ=0, HALLCONF=0xC, TCMP=0**,
+which corresponds to **XY=0.150 µT/count and Z=0.242 µT/count**
+in Table 17 (TCMP disabled, 25°C). The A1 historical MLXBF002
+count-lattice report from Nov 4, 2026 strongly matched gain7/res0/0xC
+(p95 0.000339 counts), consistent with the physical factory reset
+and prior firmware conversion rather than the misleading cached context.
+These values **remain inferred historical settings**, not hardware
+registers recorded at acquisition. The new sidecar corrects this
+future-provenance gap without changing the chip settings.
 
 **Deployment:** both the desktop app and the MCU must be rebuilt and
 the MCU reflashed for the new RPC. A new GUI attached to old
