@@ -1547,4 +1547,60 @@ mod logging_safety_tests {
         assert_eq!(fs::read(&path).unwrap(), b"MLXBF002");
         fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn register_snapshot_sidecar_is_new_and_incomplete_is_explicit() {
+        let bin_path = fresh_test_path();
+        let original = b"MLXBF002 stable binary data";
+        fs::write(&bin_path, original).unwrap();
+        let sidecar = bin_path.with_extension("mlx_settings.json");
+        let mut snapshot = MlxRegisterSnapshot::default();
+        snapshot.board_mask = 1;
+        snapshot.sensor_masks[0] = 0b11;
+        snapshot.chips[0][0].read_ok = true;
+        snapshot.chips[0][0].register_00 = [0, 0x0c];
+        snapshot.chips[0][0].gain = 0;
+        snapshot.chips[0][0].resolution_x = 0;
+        snapshot.chips[0][0].resolution_y = 0;
+        snapshot.chips[0][0].resolution_z = 0;
+        snapshot.chips[0][0].hall_conf = 0x0c;
+        let message = save_mlx_register_snapshot(&bin_path, "COM_TEST", &snapshot).unwrap();
+        assert!(message.contains("INCOMPLETE REGISTER SNAPSHOT"));
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(value["schema"], "mlx90393_per_chip_register_snapshot_v1");
+        assert_eq!(value["expected_present_chips"], 2);
+        assert_eq!(value["successful_register_readbacks"], 1);
+        assert_eq!(value["all_detected_chips_read"], false);
+        assert_eq!(value["uniform_gain_resolution_hall_and_tcmp"], false);
+        assert_eq!(value["hardware_registers"]["chips"][0][0]["hall_conf"], 12);
+        assert_eq!(fs::read(&bin_path).unwrap(), original);
+        assert!(save_mlx_register_snapshot(&bin_path, "COM_TEST", &snapshot).is_err());
+        assert_eq!(fs::read(&bin_path).unwrap(), original);
+        fs::remove_file(sidecar).unwrap();
+        fs::remove_file(bin_path).unwrap();
+    }
+
+    #[test]
+    fn complete_uniform_snapshot_requires_successful_per_chip_reads() {
+        let bin_path = fresh_test_path();
+        let sidecar = bin_path.with_extension("mlx_settings.json");
+        let mut snapshot = MlxRegisterSnapshot::default();
+        snapshot.board_mask = 1;
+        snapshot.sensor_masks[0] = 0b11;
+        for i in 0..2 {
+            snapshot.chips[0][i].read_ok = true;
+            snapshot.chips[0][i].register_00 = [0, 0x0c];
+            snapshot.chips[0][i].gain = 0;
+            snapshot.chips[0][i].resolution_x = 0;
+            snapshot.chips[0][i].resolution_y = 0;
+            snapshot.chips[0][i].resolution_z = 0;
+            snapshot.chips[0][i].hall_conf = 0x0c;
+        }
+        let status = save_mlx_register_snapshot(&bin_path, "COM_TEST", &snapshot).unwrap();
+        assert!(status.contains("REGISTER SNAPSHOT SAVED"));
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(value["all_detected_chips_read"], true);
+        assert_eq!(value["uniform_gain_resolution_hall_and_tcmp"], true);
+        fs::remove_file(sidecar).unwrap();
+    }
+
 }
