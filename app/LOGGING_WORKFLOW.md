@@ -49,7 +49,7 @@ setting changes are blocked while a binary log is open. Starting
 a new stream is deferred until the initial snapshot request completes;
 retry Start Stream after the readback status appears.
 
-**Important:** The preexisting Read from board sensitivity status reports
+**Important:** The preexisting sensitivity UI, now labeled **Read cached setting**, reports
 **cached firmware context**, not a genuine readback of all chips.
 The new snapshot is an actual, non-mutating register query, but
 it only applies to the *time it was captured*; it cannot establish the
