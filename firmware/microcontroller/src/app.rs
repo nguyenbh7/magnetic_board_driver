@@ -7,6 +7,7 @@ use crate::handlers::{
     stream_field,
     stop_stream,
     get_mlx_sensitivity_handler,
+    get_mlx_register_snapshot_handler,
     set_mlx_sensitivity_handler,
     get_mlx_timing_handler,
     get_board_presence_handler,
@@ -18,6 +19,7 @@ use data_transfer::rpc::{
     StartFieldStream,
     StopFieldStream,
     GetMlxSensitivity,
+    GetMlxRegisterSnapshot,
     SetMlxSensitivity,
     GetMlxTiming,
     GetBoardPresence,
@@ -126,6 +128,7 @@ define_dispatch! {
         | StartFieldStream          | spawn     | stream_field                  |
         | StopFieldStream           | blocking  | stop_stream                   |
         | GetMlxSensitivity         | blocking  | get_mlx_sensitivity_handler   |
+        | GetMlxRegisterSnapshot    | async     | get_mlx_register_snapshot_handler |
         | SetMlxSensitivity         | async     | set_mlx_sensitivity_handler   |
         | GetMlxTiming              | async     | get_mlx_timing_handler        |
         | GetBoardPresence          | async     | get_board_presence_handler     |
