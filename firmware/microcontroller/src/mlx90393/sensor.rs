@@ -101,6 +101,45 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
         status
     }
 
+    /// Read actual MLX90393 configuration registers, not cached defaults.
+    /// No writes occur. Failure to decode or read all registers returns None.
+    pub async fn read_register_snapshot(
+        &mut self,
+    ) -> Option<data_transfer::rpc::MlxChipRegisterReadback> {
+        let (status0, bytes0) = self.run_command(Command::read_register(0x00)).await;
+        if status0.error { return None; }
+        let reg0 = Register::<0x00>::new([bytes0[1], bytes0[2]]);
+
+        let (status1, bytes1) = self.run_command(Command::read_register(0x01)).await;
+        if status1.error { return None; }
+        let reg1 = Register::<0x01>::new([bytes1[1], bytes1[2]]);
+
+        let (status2, bytes2) = self.run_command(Command::read_register(0x02)).await;
+        if status2.error { return None; }
+        let reg2 = Register::<0x02>::new([bytes2[1], bytes2[2]]);
+
+        let hall_conf = reg0.hall_conf()?.as_raw_u8();
+        let resolution = reg2.resolution();
+        Some(data_transfer::rpc::MlxChipRegisterReadback {
+            read_ok: true,
+            register_00: reg0.bytes(),
+            register_01: reg1.bytes(),
+            register_02: reg2.bytes(),
+            gain: reg0.gain().as_u8(),
+            resolution_x: resolution.x.as_u8(),
+            resolution_y: resolution.y.as_u8(),
+            resolution_z: resolution.z.as_u8(),
+            hall_conf,
+            temperature_compensation: matches!(
+                reg1.temperature_compensation(),
+                TemperatureCompensation::Enabled
+            ),
+            osr: reg2.osr(),
+            dig_filt: reg2.dig_filt(),
+            osr2: reg2.osr2(),
+        })
+    }
+
     pub async fn read_sensitivity_values(&mut self) -> Option<(u8, u8, u8)> {
         let reg0 = self.read_register::<0x00>().await;
         let gain = reg0.gain().as_u8();
