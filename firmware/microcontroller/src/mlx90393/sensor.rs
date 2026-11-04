@@ -101,23 +101,33 @@ impl<I: I2c, P: Wait> MLX90393<I, Option<P>> {
         status
     }
 
-    /// Read actual MLX90393 configuration registers, not cached defaults.
-    /// No writes occur. Failure to decode or read all registers returns None.
+    /// Checked register read: unlike legacy run_command, transport errors
+    /// are not discarded. Do not claim verification from an all-zero buffer.
+    async fn read_snapshot_register(&mut self, address: u8) -> Option<[u8; 2]> {
+        let command = Command::read_register(address);
+        let command_bytes = command.write_command();
+        let mut data = command.read_buffer();
+        self.i2c.write(self.address, &command_bytes).await.ok()?;
+        self.i2c.read(self.address, &mut data).await.ok()?;
+        let status = Status::from_u8(&data[0]);
+        if status.error { return None; }
+        Some([data[1], data[2]])
+    }
+
+    /// Read actual MLX90393 configuration registers, never cached defaults.
+    /// This function never writes configuration registers.
     pub async fn read_register_snapshot(
         &mut self,
     ) -> Option<data_transfer::rpc::MlxChipRegisterReadback> {
-        let (status0, bytes0) = self.run_command(Command::read_register(0x00)).await;
-        if status0.error { return None; }
-        let reg0 = Register::<0x00>::new([bytes0[1], bytes0[2]]);
-
-        let (status1, bytes1) = self.run_command(Command::read_register(0x01)).await;
-        if status1.error { return None; }
-        let reg1 = Register::<0x01>::new([bytes1[1], bytes1[2]]);
-
-        let (status2, bytes2) = self.run_command(Command::read_register(0x02)).await;
-        if status2.error { return None; }
-        let reg2 = Register::<0x02>::new([bytes2[1], bytes2[2]]);
-
+        let reg0 = Register::<0x00>::new(
+            self.read_snapshot_register(0x00).await?
+        );
+        let reg1 = Register::<0x01>::new(
+            self.read_snapshot_register(0x01).await?
+        );
+        let reg2 = Register::<0x02>::new(
+            self.read_snapshot_register(0x02).await?
+        );
         let hall_conf = reg0.hall_conf()?.as_raw_u8();
         let resolution = reg2.resolution();
         Some(data_transfer::rpc::MlxChipRegisterReadback {
