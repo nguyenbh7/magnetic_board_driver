@@ -108,6 +108,37 @@ pub struct MlxTimingStatus {
 
 pub const MAX_SENSOR_BOARDS: usize = 3;
 
+/// One MLX90393 chip's ACTUAL hardware register snapshot, read at acquisition
+/// time. Missing/failed reads must never be interpreted as default settings.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct MlxChipRegisterReadback {
+    pub read_ok: bool,
+    pub register_00: [u8; 2], // GAIN_SEL, HALL_CONF
+    pub register_01: [u8; 2], // TCMP_EN and other configuration
+    pub register_02: [u8; 2], // RES_X/Y/Z, OSR, DIG_FILT, OSR2
+    pub gain: u8,
+    pub resolution_x: u8,
+    pub resolution_y: u8,
+    pub resolution_z: u8,
+    pub hall_conf: u8, // raw 0x0 (two-phase) or 0xC (four-phase)
+    pub temperature_compensation: bool,
+    pub osr: u8,
+    pub dig_filt: u8,
+    pub osr2: u8,
+}
+
+/// Snapshot for up to 3 boards x 16 address-indexed sensors.
+/// Valid only for the currently connected device at the time it is read.
+/// This is NOT recorded in historic MLXBF002 log files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
+pub struct MlxRegisterSnapshot {
+    pub board_mask: u8,
+    pub sensor_masks: [u16; MAX_SENSOR_BOARDS],
+    pub chips: [[MlxChipRegisterReadback; SENSORS_PER_BOARD]; MAX_SENSOR_BOARDS],
+}
+
+
+
 #[cfg_attr(feature = "use-defmt", derive(defmt::Format))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, PartialEq, MaxSize)]
 pub struct BoardPresence {
@@ -127,6 +158,7 @@ endpoints! {
     | SetMlxSensitivity  | MlxSensitivityConfig | MlxSensitivityStatus  | "mlx/sensitivity/set" |
     | GetMlxTiming             | ()            | MlxTimingStatus       | "mlx/timing/get" |
     | GetBoardPresence        | ()            | BoardPresence        | "boards/presence" |
+    | GetMlxRegisterSnapshot  | ()            | MlxRegisterSnapshot  | "mlx/registers/snapshot" |
 }
 
 
