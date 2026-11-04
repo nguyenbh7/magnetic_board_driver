@@ -54,6 +54,9 @@ use data_transfer::{
         MlxSensitivityStatus,
         GetMlxTiming,
         MlxTimingStatus,
+        GetMlxRegisterSnapshot,
+        MlxRegisterSnapshot,
+        SENSORS_PER_BOARD,
     },
 };
 
@@ -102,6 +105,7 @@ enum Message {
     StopLogging,
     WroteFile(Result<usize, String>),
     LogFlushed(Result<(), String>),
+    MlxSnapshotSaved(Result<String, String>),
     UpdateMlxGain(String),
     UpdateMlxResolution(String),
     UpdateMlxHallConf(String),
@@ -173,6 +177,8 @@ struct Context {
     mlx_hall_conf: String,
     mlx_status: Option<MlxSensitivityStatus>,
     mlx_timing_status: Option<MlxTimingStatus>,
+    mlx_snapshot_status: String,
+    mlx_snapshot_pending: bool,
     ui_scale_steps: i8,
     logged_bytes: u64,
     log_started_at: Option<std::time::Instant>,
@@ -245,13 +251,13 @@ fn ui_scale_factor(context: &Context) -> f32 {
 fn mlx_status_text(context: &Context) -> String {
     match &context.mlx_status {
         Some(status) => format!(
-            "Current: ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
+            "Firmware cached setting (NOT per-chip readback): ok={} · gain={} · resolution={} · hall_conf=0x{:X}",
             status.ok,
             status.gain,
             status.resolution,
             status.hall_conf,
         ),
-        None => "Current: not read yet".to_string(),
+        None => "Cached setting: not requested".to_string(),
     }
 }
 
@@ -488,6 +494,99 @@ async fn get_mlx_timing(client: HostClient<WireError>) -> MlxTimingStatus {
         .unwrap_or_default()
 }
 
+/// Write real hardware register readback beside the *new* binary log,
+/// never into MLXBF002 itself. The JSON is exclusive-create/immutable.
+fn save_mlx_register_snapshot(
+    log_path: &std::path::Path,
+    port: &str,
+    snapshot: &MlxRegisterSnapshot,
+) -> Result<String, String> {
+    let sidecar = log_path.with_extension("mlx_settings.json");
+    let present_count: usize = snapshot.sensor_masks.iter()
+        .map(|mask| mask.count_ones() as usize).sum();
+    let mut read_count = 0usize;
+    let mut first_setting: Option<(u8, u8, u8, u8, u8, bool)> = None;
+    let mut uniform = true;
+    for board in 0..MAX_SENSOR_BOARDS {
+        for index in 0..SENSORS_PER_BOARD {
+            if snapshot.sensor_masks[board] & (1u16 << index) == 0 {
+                continue;
+            }
+            let chip = snapshot.chips[board][index];
+            if !chip.read_ok {
+                continue;
+            }
+            read_count += 1;
+            let setting = (
+                chip.gain, chip.resolution_x, chip.resolution_y,
+                chip.resolution_z, chip.hall_conf, chip.temperature_compensation
+            );
+            if let Some(first) = first_setting {
+                if setting != first { uniform = false; }
+            } else {
+                first_setting = Some(setting);
+            }
+        }
+    }
+    let complete = present_count > 0 && read_count == present_count;
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| format!("System clock error: {err}"))?
+        .as_millis();
+    let document = serde_json::json!({
+        "schema": "mlx90393_per_chip_register_snapshot_v1",
+        "capture_time_unix_ms": unix_ms,
+        "binary_log_file": log_path.display().to_string(),
+        "serial_port": port,
+        "capture_phase": "after_new_binary_file_created_before_explicit_stream_start_when_operator_follows_workflow",
+        "register_source": "fresh_hardware_rpc_readback_not_cached_firmware_defaults",
+        "read_only": true,
+        "expected_present_chips": present_count,
+        "successful_register_readbacks": read_count,
+        "all_detected_chips_read": complete,
+        "uniform_gain_resolution_hall_and_tcmp": complete && uniform,
+        "original_binary_contains_settings": false,
+        "limitations": [
+            "A snapshot is evidence of registers at capture time only, not of historical 2026-11-02 settings.",
+            "An active stream may predate file selection; capture is not synchronized to the first frame in that case.",
+            "Missing, unreadable and changed settings invalidate claims of complete per-chip provenance.",
+            "MLXBF002 stores preconverted microtesla measurements, not raw ADC counts or register metadata.",
+            "The sensor read commands report firmware/I2C response status; no independent oscilloscope verification."
+        ],
+        "hardware_registers": snapshot,
+    });
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|err| format!("Cannot encode MLX register snapshot: {err}"))?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&sidecar)
+        .map_err(|err| format!("Snapshot {} not written: {err}", sidecar.display()))?;
+    output.write_all(&bytes)
+        .and_then(|_| output.write_all(b"\n"))
+        .and_then(|_| output.sync_all())
+        .map_err(|err| format!("Snapshot {} incomplete: {err}", sidecar.display()))?;
+    Ok(format!(
+        "{}: {read_count}/{present_count} chips read; uniform={} · {}",
+        if complete { "REGISTER SNAPSHOT SAVED" }
+        else { "INCOMPLETE REGISTER SNAPSHOT SAVED" },
+        complete && uniform,
+        sidecar.display()
+    ))
+}
+
+async fn capture_mlx_snapshot_for_log(
+    client: HostClient<WireError>,
+    log_path: PathBuf,
+    port: String,
+) -> Result<String, String> {
+    let snapshot = client
+        .send_resp::<GetMlxRegisterSnapshot>(&())
+        .await
+        .map_err(|err| format!("Cannot read hardware MLX registers; update connected firmware: {err:?}"))?;
+    save_mlx_register_snapshot(&log_path, &port, &snapshot)
+}
+
 async fn field_subscribe(client: HostClient<WireError>) -> Option<SensorSubscription> {
     let subs = client.subscribe_exclusive::<BoardFrameTopic>(64).await.ok()?;
     Some(SensorSubscription::new(subs))
@@ -669,6 +768,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
+            if context.file_writer.is_some() && context.mlx_snapshot_pending {
+                context.stream_status = "Waiting for hardware register snapshot; retry Start Stream after it finishes".to_string();
+                return Task::none();
+            }
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
 
@@ -779,8 +882,21 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                         context.log_finalize_in_progress = false;
                         context.log_write_failed = false;
                         context.log_notice = format!(
-                            "New log created: {}. Start Field Stream to record.", path.display()
+                            "New log created: {}. Register snapshot requested.", path.display()
                         );
+                        if let Some(sw) = &context.sensor_watcher {
+                            context.mlx_snapshot_pending = true;
+                            context.mlx_snapshot_status =
+                                "Reading hardware registers from all detected sensors...".to_string();
+                            let client = sw.get_client();
+                            let port = sw.port_info().0.port_name.clone();
+                            return Task::perform(
+                                capture_mlx_snapshot_for_log(client, path, port),
+                                Message::MlxSnapshotSaved,
+                            );
+                        }
+                        context.mlx_snapshot_status =
+                            "WARNING: no connected board; log has NO register snapshot.".to_string();
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                         context.log_notice = format!(
@@ -793,6 +909,14 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     }
                 }
             }
+            Task::none()
+        },
+        Message::MlxSnapshotSaved(result) => {
+            context.mlx_snapshot_pending = false;
+            context.mlx_snapshot_status = match result {
+                Ok(status) => status,
+                Err(err) => format!("WARNING: NO VERIFIED REGISTER SIDECAR: {err}"),
+            };
             Task::none()
         },
         Message::StopLogging => {
@@ -869,6 +993,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SetMlxSensitivity => {
+            if context.file_writer.is_some() || context.log_stop_requested || context.mlx_snapshot_pending {
+                context.mlx_snapshot_status = "BLOCKED: cannot change sensor sensitivity while a log is open or snapshotting.".to_string();
+                return Task::none();
+            }
             if let Some(sw) = &context.sensor_watcher {
                 let gain = context.mlx_gain.parse::<u8>().unwrap_or(255);
                 let resolution = context.mlx_resolution.parse::<u8>().unwrap_or(255);
@@ -1265,7 +1393,10 @@ fn view(context: &Context) -> Element<'_, Message> {
             ]
             .spacing(16),
 
-            text("Changes are applied to the detected sensor boards."),
+            text("Displayed sensitivity is cached firmware context, NOT a per-chip register read."),
+            text(format!("Recording register export: {}", context.mlx_snapshot_status)),
+            text("Selecting a new .bin also saves <filename>.mlx_settings.json with actual per-chip registers. Requires updated firmware; no existing files are overwritten."),
+            text("Changes are applied to detected boards only when no binary log is open."),
 
             row![
                 column![
