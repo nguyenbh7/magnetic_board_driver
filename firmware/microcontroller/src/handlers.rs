@@ -40,6 +40,40 @@ pub fn get_mlx_sensitivity_handler(
     }
 }
 
+/// Read all present chips' actual register 0x00/01/02 values for an
+/// acquisition sidecar. Do not infer missing chips from context defaults.
+pub async fn get_mlx_register_snapshot_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    _rqst: (),
+) -> data_transfer::rpc::MlxRegisterSnapshot {
+    let presence = detect_board_presence_from_context(context).await;
+    context.board_presence = presence.clone();
+    let mut snapshot = data_transfer::rpc::MlxRegisterSnapshot {
+        board_mask: presence.board_mask,
+        sensor_masks: presence.sensor_masks,
+        ..Default::default()
+    };
+
+    for board_index in 0..N {
+        if presence.board_mask & (1u8 << board_index) == 0 {
+            continue;
+        }
+        let mut group = context.sensor_groups[board_index].lock().await;
+        for sensor_index in 0..group.num_sensors() {
+            if presence.sensor_masks[board_index] & (1u16 << sensor_index) == 0 {
+                continue;
+            }
+            if let Some(readback) =
+                group.sensors[sensor_index].read_register_snapshot().await
+            {
+                snapshot.chips[board_index][sensor_index] = readback;
+            }
+        }
+    }
+    snapshot
+}
+
 pub async fn get_board_presence_handler(
     context: &mut Context,
     _header: VarHeader,
