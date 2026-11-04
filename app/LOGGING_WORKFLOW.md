@@ -8,8 +8,12 @@ The desktop app groups the instructions, file-selection controls, current/last
 filename, log status, and warnings inside a **Measurement logging** bordered
 panel. Follow the numbered instructions shown at the top of the panel.
 
-1. Select **Select File** and choose a **new** `.bin` filename. The app creates
-   that file with the `MLXBF002` header, and refuses names that already exist.
+1. Select **Select File** and choose a **new** `.bin` filename, with the MCU
+   connected and the stream stopped if possible. The app creates the file with
+   the `MLXBF002` header, refuses existing names, and then automatically
+   requests actual MLX90393 registers 0x00/0x01/0x02 from detected chips.
+   A new companion `<logname>.mlx_settings.json` is saved beside the `.bin`.
+   **Verify the Register snapshot status before starting the stream.**
 2. Click **Start Field Stream** to begin acquiring data. The active sensor
    board frames are appended to the open log.
 3. Click **Stop Field Stream** if you want to pause. With the log still open,
@@ -21,6 +25,63 @@ panel. Follow the numbered instructions shown at the top of the panel.
 **Important:** Starting the field stream with no file selected only displays
 live data; it does not save a new file. **Stop logging does not stop the field
 stream**; stop the stream separately as needed.
+
+## Per-run register metadata (new in mlx-live-fit)
+
+The live app exports a **read-only hardware-register snapshot** right after
+creating each NEW MLXBF002 log. The snapshot is a separate JSON sidecar
+(e.g., run01.bin becomes run01.mlx_settings.json).
+The existing binary format and magnetic-data-parser remain unchanged.
+
+Each board/index (up to three boards x 16 chips) includes:
+- Raw registers 0x00 (gain/Hall phase), 0x01 (TCMP and more), and
+  0x02 (separate XYZ resolution, OSR, DIG_FILT, OSR2).
+- Decoded gain 0..7, separate res X/Y/Z each 0..3, Hall config
+  0x0 or 0xC, TCMP enable, OSR, filter, and original register bytes.
+- Presence/read-success masks, sample counts, uniformity flag,
+  read timestamp, serial port, and provenance/limitations.
+
+No existing JSON sidecar is overwritten: exclusive file creation is used.
+On a missing RPC/firmware, transport failure or failed register read,
+the app warns explicitly; incomplete snapshots are marked and
+never presented as verified full-device configuration. Sensitivity
+setting changes are blocked while a binary log is open. Starting
+a new stream is deferred until the initial snapshot request completes;
+retry Start Stream after the readback status appears.
+
+**Important:** The preexisting Read from board sensitivity status reports
+**cached firmware context**, not a genuine readback of all chips.
+The new snapshot is an actual, non-mutating register query, but
+it only applies to the *time it was captured*; it cannot establish the
+configuration of the original historical October/November Hall sweeps.
+MLXBF002 stores preconverted microtesla vectors, not gain/res register
+values or raw ADC counts.
+
+A stream already active before selecting a filename might have produced
+frames before the snapshot was taken. Stop the stream, select a new
+filename, verify the readback, and then begin streaming for best
+timing provenance.
+
+The branch's **software default** is GAIN_SEL=0, RES=0,
+HALL_CONF=0xC; its conversion is XY=0.751 µT/count and
+Z=1.210 µT/count for that configuration, conditional on
+compensation and ADC encoding. Code defaults are not
+independent verification of what historic chips used.
+
+**Deployment:** both the desktop app and the MCU must be rebuilt and
+the MCU reflashed for the new RPC. A new GUI attached to old
+firmware must report a missing snapshot; it must not
+invent plausible register values.
+
+Run tests from magnetic_board_driver:
+
+    cargo test -p app logging_safety_tests
+
+Then perform one disposable manual GUI check with updated firmware,
+stop stream, select a NEW log file, confirm a new JSON sidecar
+reports the expected per-chip readbacks, and start/stop a brief
+stream. Confirm reusing the same log/sidecar paths does not modify
+either existing file. Never modify the original A1/VGM raw logs.
 
 ## Overwrite and loss protection
 
