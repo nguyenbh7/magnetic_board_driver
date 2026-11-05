@@ -1418,6 +1418,36 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_pcb_center_provenance_is_preserved_and_visible_not_approved() {
+        let mut report=synthetic_reviewed_cad_report();
+        let top=&mut report["objects"][1];
+        top["board_center_lps_mm"]=serde_json::json!([85.125,-75.0,28.0]);
+        top["board_center_source"]=
+            serde_json::json!("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY");
+        let g=CbctGeometry::from_detector_json(
+            &report.to_string(),"synthetic.zip".into(),"qc".into()).unwrap();
+        let top_array=g.arrays.iter().find(|a|a.name=="array_superior").unwrap();
+        assert_eq!(top_array.board_center_lps_mm,Some([85.125,-75.0,28.0]));
+        assert_eq!(top_array.board_center_source.as_deref(),
+                   Some("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"));
+        let summary=g.registration_review_cad_summary().unwrap();
+        assert!(summary.contains("Hybrid CT PCB outline (UNVERIFIED)"));
+        let preview=g.registration_review_cad_preview().unwrap();
+        assert!(preview.contains("HYBRID full-outline CT candidate"));
+        assert!(preview.contains("REVIEW ONLY"));
+        assert!(g.register_ct_boards_v2().is_ok()); // numerical geometry, NOT calibration approval
+        let mut bad=report.clone();
+        bad["objects"][1]["board_center_source"]=
+            serde_json::json!("UNKNOWN_UNVERIFIED_SOURCE");
+        assert!(CbctGeometry::from_detector_json(
+            &bad.to_string(),"a".into(),"b".into()).is_err());
+        bad=report.clone();
+        bad["objects"][1]["board_center_lps_mm"]=serde_json::Value::Null;
+        assert!(CbctGeometry::from_detector_json(
+            &bad.to_string(),"a".into(),"b".into()).is_err());
+    }
+
+    #[test]
     fn reviewed_cad_rejects_missing_provenance_wrong_mounting_and_tampered_jst() {
         let source=synthetic_reviewed_cad_report();
         for mode in ["unknown_revision","wrong_center","flipped_face",
