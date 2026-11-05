@@ -9,7 +9,9 @@
 - Opt-in Rust test `experimental_oct30_recorded_gk_motion_time_series_replay` in `app/src/rigid_fit.rs`: loads private recorded data and A (required), B (optional), assembles unchanged Rust `BoardFrame` samples and sensor masks, ingests **every raw frame**, and solves every tenth board frame by default (fixed offline 10-frame stride, approximately 3–4 fitted poses/sec; override via `GK_OCT30_FIT_STRIDE`). This is *offline solver subsampling*, NOT a measurement of actual live execution cadence. Does not modify live tracking flags or alter optimizer tolerances.
 - Primary A uses `experimental_candidate_profile_with_reviewed_cad()`. B only runs if the unchanged `register_ct_boards_v2()` gate passes **and the firmware-sensor ordering matches A**. Otherwise B is recorded as a deliberate failure while A continues. Sensor centers, normals, magnets, original raw Hall measurements, exclusions and independent CT truth remain fixed. Both arms recalibrate signed finite-cylinder strengths/board-constant offsets using their own frozen geometry (as the app would for either model); the result must **not** be interpreted as a geometry-only magnetic error comparison, because changes in mapping axes alter fitted nuisance parameters. No CT motion target is passed into calibration or optimization.
 - Reports accepted/rejected frame counts, motion fit RMSE, stationary strength/offset calibration QC, and **full geodesic rotation disagreement plus LPS translation-vector disagreement** against independent CT truth. Pre pose is the median of *accepted* fits in **1.0–4.5 s**; final pose is the median accepted fit in the **last 8 s**. The relative orientation is `R_post @ R_pre.T`. If either plateau lacks three accepted poses, the run explicitly reports **insufficient fits** instead of inventing a motion result. The optional private trajectory contains attempted times, pose, error and acceptance. The shareable **sanitized summary** contains no raw Hall fields, absolute CT feature positions or DICOM UIDs; it still represents potentially research-sensitive derived data.
-- The original CT truth is a **single pre/post endpoint**. There is no independent mid-motion CT truth and no HDMM comparison from this archive. Original point-dipole differential fits (~1.76°) use a different physical field model and are only context, not proof the finite-cylinder Rust solver matches.
+- **Previously recorded background:** The earlier October30 research analysis used a separate no-magnet MLXBF002 background recording. When this **same-session background .bin** is available, provide `--background-bin`: the exporter retains the per-sensor raw median and Rust calls the unchanged `fit_magnet_strengths` plus `set_experimental_gk_profile(profile,Some(background))`, matching the live app's measured-background path. Without it, the app's existing `fit_strengths_with_board_offsets` nuisance-field alternative is explicitly reported as lower confidence. Never substitute a background recorded with a different Hall sensitivity configuration or hardware layout. Neither route changes the pose solver.
+
+The original CT truth is a **single pre/post endpoint**. There is no independent mid-motion CT truth and no HDMM comparison from this archive. Original point-dipole differential fits (~1.76°) use a different physical field model and are only context, not proof the finite-cylinder Rust solver matches.
 
 ## One-time commands — Windows, use existing downloaded files
 
@@ -26,6 +28,19 @@ $archive="$HOME\Downloads\GK_manequinn measurement_10_30_2026_2_board2_complete.
 $primary="$HOME\Downloads\GK_CBCT_Results\oct30_prepost_primary_for_hybrid"
 $replay="$HOME\Downloads\GK_CBCT_Results\oct30_motion_replay_PRIVATE.json"
 
+# Optional, strongly preferred IF the existing Oct30 no-magnet background
+# MLXBF002 .bin file is available. Use the ORIGINAL matched recording.
+# Leave unset to use the app's lower-confidence board-offset fit.
+$backgroundBin=$null
+# Example: $backgroundBin="C:\path\to\the\original\oct30_background.bin"
+$backgroundArgs=@()
+if($backgroundBin) {
+  if(-not (Test-Path -LiteralPath $backgroundBin -PathType Leaf)) {
+    throw "Matched Oct30 background log missing: $backgroundBin"
+  }
+  $backgroundArgs=@("--background-bin",$backgroundBin)
+}
+
 foreach($path in @($archive,
   "$primary\pre\detections_with_cad_estimates.json",
   "$primary\post\detections_with_cad_estimates.json")) {
@@ -38,6 +53,7 @@ foreach($path in @($archive,
   --archive "$archive" `
   --ct-pre "$primary\pre\detections_with_cad_estimates.json" `
   --ct-post "$primary\post\detections_with_cad_estimates.json" `
+  @backgroundArgs `
   --output "$replay"
 if($LASTEXITCODE -ne 0){throw "Oct30 private export failed"}
 ```
