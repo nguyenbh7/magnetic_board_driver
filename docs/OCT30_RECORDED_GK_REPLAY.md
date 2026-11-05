@@ -53,14 +53,15 @@ git pull --ff-only origin feature/live-rigid-body-fit
 
 $env:GK_OCT30_REPLAY_IN="$replay"
 $env:GK_OCT30_PRIMARY_PRE="$primary\pre\detections_with_cad_estimates.json"
-$env:GK_OCT30_HYBRID_PRE="$HOME\Downloads\GK_CBCT_Results\oct30_hybrid_PCB_only_for_gk_replay\Oct30_pre\detections_hybrid_PCB_only_REVIEW.json"
+# First run baseline A alone; do not introduce the optional hybrid arm yet.
+Remove-Item Env:GK_OCT30_HYBRID_PRE -ErrorAction SilentlyContinue
 $env:GK_OCT30_SUMMARY_OUT="$HOME\Downloads\GK_CBCT_Results\oct30_RUST_motion_summary_sanitized.json"
 $env:GK_OCT30_TRAJECTORY_OUT="$HOME\Downloads\GK_CBCT_Results\oct30_RUST_motion_trajectory_PRIVATE.json"
 $env:GK_OCT30_FIT_STRIDE="10"
 cargo test -p app --release experimental_oct30_recorded_gk_motion_time_series_replay -- --nocapture
 ```
 
-The opt-in replay test runs only when `GK_OCT30_REPLAY_IN` is defined; ordinary `cargo test -p app --release` stays fast. Existing saved output paths are **not overwritten**. If B fails registration, it remains a clearly flagged optional case; continue analysis of A. **Do not loosen Rust CT-mapping or fit thresholds to obtain a passing B.**
+The opt-in replay test runs only when `GK_OCT30_REPLAY_IN` is defined; ordinary `cargo test -p app --release` stays fast. Existing saved output paths are **not overwritten**. First inspect baseline A's stationary calibration QC, accepted-fit count, and full CT vector disagreement. **Only if A yields interpretable results** is a B sensitivity run warranted: set `$env:GK_OCT30_HYBRID_PRE="$HOME\\Downloads\\GK_CBCT_Results\\oct30_hybrid_PCB_only_for_gk_replay\\Oct30_pre\\detections_hybrid_PCB_only_REVIEW.json"`, change `GK_OCT30_SUMMARY_OUT` and `GK_OCT30_TRAJECTORY_OUT` to **fresh B filenames**, then repeat the same Rust test. If B fails registration it remains clearly flagged; do **not** relax CT-mapping or fit thresholds to obtain a nominal pass.
 
 **Upload only `oct30_RUST_motion_summary_sanitized.json`** and the console test summary after verifying contents. Retain full Hall frames, private trajectories, and original detector coordinates locally. The next task is interpreting finite-cylinder fitting quality, wrap exclusions and CT endpoint errors—not more DICOM geometry engineering.
 
