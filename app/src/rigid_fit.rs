@@ -1094,6 +1094,297 @@ mod tests {
         assert!(strengths.iter().all(|x|x.is_finite()) && rmse.is_finite());
     }
 
+    /// The complete October30 GK recorded Hall NPZ->JSON replay, using exactly
+    /// this app's RigidLiveFit receive_frame -> RigidFitJob::run ->
+    /// apply_completion path. All private sensor frames and CT coordinates
+    /// remain on the user's machine; only scalar results are saved.
+    ///
+    /// Opt-in env:
+    /// GK_OCT30_REPLAY_IN, GK_OCT30_PRIMARY_PRE, GK_OCT30_SUMMARY_OUT.
+    /// GK_OCT30_HYBRID_PRE is optional: registration failure is reported and
+    /// does not block the original KiCad-based control.
+    #[test]
+    fn experimental_oct30_recorded_gk_motion_time_series_replay() {
+        use serde::Deserialize;
+        use std::path::Path;
+        #[derive(Deserialize)]
+        struct Frame {
+            board_id:u16, frame_id:u32, base_time_us:u64, sensor_mask:u16,
+            offsets_us:[u16;16], fields_ut:[[f64;3];16],
+        }
+        #[derive(Deserialize)]
+        struct ChannelMask {board_id:u16, sensor_indices:Vec<usize>, valid_mask:u16}
+        #[derive(Deserialize)]
+        struct Truth {
+            rotvec_rad:[f64;3], centroid_translation_lps_mm:[f64;3],
+            angle_deg:f64, centroid_displacement_mm:f64,
+        }
+        #[derive(Deserialize)]
+        struct Recorded {
+            format:String,frame_count:usize,frame_counts_by_board:[usize;3],
+            calibration_stationary_raw_mt:[[[f64;3];16];3],
+            excluded_channels:Vec<ChannelMask>,
+            ct_reference:Truth, frames:Vec<Frame>,
+        }
+        let Ok(path)=std::env::var("GK_OCT30_REPLAY_IN") else {return};
+        let pre=std::env::var("GK_OCT30_PRIMARY_PRE")
+            .expect("GK_OCT30_PRIMARY_PRE must be original same-scan optimized+KiCad CT JSON");
+        let out=std::env::var("GK_OCT30_SUMMARY_OUT")
+            .expect("GK_OCT30_SUMMARY_OUT must be a new local path outside Git");
+        assert!(!Path::new(&out).exists(),"Refusing overwrite of existing GK analysis report");
+        let data:Recorded=serde_json::from_str(&std::fs::read_to_string(&path)
+            .expect("Read PRIVATE recorded three-board Hall frames"))
+            .expect("Parse private GK recorded frames");
+        assert_eq!(data.format,"gk_oct30_private_hall_replay_frames_v1");
+        assert_eq!(data.frame_counts_by_board,[1382;3]);
+        assert_eq!(data.frame_count,4146);
+        assert_eq!(data.frames.len(),4146);
+        assert!(data.ct_reference.angle_deg>0.1 && data.ct_reference.angle_deg<15.0);
+        assert!(data.ct_reference.centroid_displacement_mm>0.05
+                && data.ct_reference.centroid_displacement_mm<20.0);
+        let mut masks=[0_u16;3];
+        assert_eq!(data.excluded_channels.len(),3);
+        for (b,entry) in data.excluded_channels.iter().enumerate() {
+            assert_eq!(entry.board_id as usize,b);
+            assert!(entry.valid_mask.count_ones()>=8);
+            for &i in &entry.sensor_indices {
+                assert!(i<16 && entry.valid_mask&(1<<i)==0);
+            }
+            masks[b]=entry.valid_mask;
+        }
+        let ct_input=std::fs::read_to_string(&pre).expect("Read primary pre CT detector JSON");
+        let geom=crate::cbct_geometry::CbctGeometry::from_detector_json(
+            &ct_input,"oct30_pre".into(),"oct30_qc".into())
+            .expect("Primary CT import");
+        let baseline=geom.experimental_candidate_profile_with_reviewed_cad()
+            .expect("Primary KiCad-reviewed experimental profile");
+
+        let stride=std::env::var("GK_OCT30_FIT_STRIDE").ok()
+            .map(|v|v.parse::<u32>().expect("GK_OCT30_FIT_STRIDE integer"))
+            .unwrap_or(10);
+        assert!((1..=100).contains(&stride),"Fit stride must be 1..100");
+
+        // Report comparison of physical transforms; a matching angle magnitude
+        // alone is NOT an accurate 6-DOF motion fit.
+        fn pose_delta(first:[f64;6],last:[f64;6],truth:&Truth)
+            -> serde_json::Value
+        {
+            let trans=[
+                last[0]-first[0],last[1]-first[1],last[2]-first[2],
+            ];
+            let initial=rodrigues([first[3],first[4],first[5]]);
+            let final_r=rodrigues([last[3],last[4],last[5]]);
+            let relative=mul_matrix(final_r,transpose(initial));
+            let tr=relative[0][0]+relative[1][1]+relative[2][2];
+            let angle=(((tr-1.0)/2.0).clamp(-1.0,1.0)).acos()*RAD_TO_DEG;
+            let ct_r=rodrigues(truth.rotvec_rad);
+            let mismatch=mul_matrix(relative,transpose(ct_r));
+            let mismatch_angle=(((mismatch[0][0]+mismatch[1][1]+mismatch[2][2]-1.0)/2.0)
+                .clamp(-1.0,1.0)).acos()*RAD_TO_DEG;
+            let shift_norm=dot(trans,trans).sqrt();
+            let vector_err=sub(trans,truth.centroid_translation_lps_mm);
+            serde_json::json!({
+                "translation_lps_mm":trans,
+                "translation_magnitude_mm":shift_norm,
+                "translation_vector_error_vs_CT_mm":dot(vector_err,vector_err).sqrt(),
+                "rotation_angle_deg":angle,
+                "rotation_geodesic_error_vs_CT_deg":mismatch_angle,
+                "rotation_angle_magnitude_error_vs_CT_deg":
+                    (angle-truth.angle_deg).abs(),
+                "translation_magnitude_error_vs_CT_mm":
+                    (shift_norm-truth.centroid_displacement_mm).abs(),
+                "rotation_reference_origin":"PRE magnet centroid; initial fitted pose is subtracted",
+            })
+        }
+        fn med_pose(p:&[[f64;6]]) -> [f64;6] {
+            std::array::from_fn(|i|{
+                let mut v=p.iter().map(|x|x[i]).collect::<Vec<_>>();
+                v.sort_by(f64::total_cmp);
+                if v.len()%2==0 {(v[v.len()/2-1]+v[v.len()/2])*0.5}
+                else {v[v.len()/2]}
+            })
+        }
+        fn one_arm(
+            name:&str,mut profile:RigidProfile,data:&Recorded,masks:[u16;3],
+            stride:u32,trajectory:&mut Vec<serde_json::Value>
+        )->serde_json::Value {
+            // The *same app calibration method*, with no measured per-sensor
+            // no-magnet background in the original Oct30 movement NPZ.
+            let fitted=fit_strengths_with_board_offsets(
+                &profile,&data.calibration_stationary_raw_mt);
+            let (strengths,offsets,calibration_rmse)=match fitted {
+                Ok(v)=>v,
+                Err(e)=>return serde_json::json!({
+                    "arm":name,"status":"stationary_calibration_failed",
+                    "reason":e}),
+            };
+            for (m,s) in profile.magnets.iter_mut().zip(strengths) {
+                m.remanence_mt=s;
+            }
+            for b in &mut profile.boards {
+                b.background_mt=offsets[b.raw_board_id as usize];
+            }
+            let plausible=strengths.iter().all(|s|s.abs()>=300.0 && s.abs()<=2200.0);
+            let acceptable=plausible && calibration_rmse<=profile.max_rmse_mt;
+            let max_rmse=profile.max_rmse_mt;
+            let mut fit=RigidLiveFit::default();
+            fit.set_experimental_gk_profile(profile,None);
+            fit.set_presence(BoardPresence {board_mask:0b111,sensor_masks:masks});
+            let mut accepted=Vec::<(f64,[f64;6],f64,usize)>::new();
+            let mut attempts=0;
+            let mut fail_solver=0;
+            for source in &data.frames {
+                let mut frame=BoardFrame::default();
+                frame.board_id=source.board_id;
+                frame.frame_id=source.frame_id;
+                frame.base_time_us=source.base_time_us;
+                frame.sensor_mask=source.sensor_mask;
+                for i in 0..16 {
+                    frame.samples[i].bx_ut=source.fields_ut[i][0] as f32;
+                    frame.samples[i].by_ut=source.fields_ut[i][1] as f32;
+                    frame.samples[i].bz_ut=source.fields_ut[i][2] as f32;
+                    frame.samples[i].time_offset_us=source.offsets_us[i];
+                }
+                // Ingest EVERY frame, but dispatch finite-cylinder fits at
+                // a fixed, documented stride. This is offline subsampling,
+                // NOT an assertion about achieved live frame rate.
+                let Some(job)=fit.receive_frame(
+                    &frame,source.frame_id%stride==0) else {continue};
+                attempts+=1;
+                let completed=job.run();
+                let when=completed.time_us as f64/1e6;
+                let elapsed=completed.elapsed_ms;
+                let solved=completed.result.clone();
+                let old_rejected=fit.summary().rejected;
+                if solved.is_none(){fail_solver+=1;}
+                fit.apply_completion(completed);
+                let summary=fit.summary();
+                let ok=summary.rejected==old_rejected;
+                let (pose,rmse,count)=solved.map_or((None,None,None),
+                    |v|(Some(v.pose),Some(v.rmse_mt),Some(v.sensor_count)));
+                if ok {
+                    if let (Some(p),Some(r),Some(n))=(pose,rmse,count) {
+                        accepted.push((when,p,r,n));
+                    }
+                }
+                trajectory.push(serde_json::json!({
+                    "arm":name,"t_s":when,"accepted":ok,
+                    "pose_mm_rad":pose,"rmse_mt":rmse,"sensor_count":count,
+                    "solver_ms":elapsed,
+                }));
+            }
+            let duration=data.frames.iter().map(|f|f.base_time_us)
+                .max().unwrap_or(0) as f64/1e6;
+            let pre=accepted.iter().filter(|(t,_,_,_)|
+                *t>=1.0 && *t<=4.5).map(|(_,p,_,_)|*p).collect::<Vec<_>>();
+            let post=accepted.iter().filter(|(t,_,_,_)|
+                *t>=duration-8.0).map(|(_,p,_,_)|*p).collect::<Vec<_>>();
+            let comparison=if pre.len()>=3 && post.len()>=3 {
+                pose_delta(med_pose(&pre),med_pose(&post),&data.ct_reference)
+            } else {
+                serde_json::json!({"status":"insufficient_accepted_pre_or_post_plateau_fits",
+                    "pre_fit_count":pre.len(),"post_fit_count":post.len()})
+            };
+            let rms=accepted.iter().map(|(_,_,r,_)|*r).collect::<Vec<_>>();
+            let mean_rmse=if rms.is_empty(){None}else {
+                Some(rms.iter().sum::<f64>()/rms.len() as f64)};
+            serde_json::json!({
+                "arm":name,
+                "status":if acceptable {"research_replay_calibration_QC_pass"}
+                    else {"research_replay_calibration_QC_FAILED_not_activated"},
+                "calibration_source":"app fit_strengths_with_board_offsets; no measured sensor background",
+                "signed_remanences_mt":strengths,
+                "stationary_rmse_mt":calibration_rmse,
+                "calibration_gate_max_rmse_mt":max_rmse,
+                "calibration_strengths_plausible":plausible,
+                "calibration_QC_pass":acceptable,
+                "live_fitting_activated":false,
+                "fit_stride_per_board_frame":stride,
+                "all_raw_frames_ingested":true,
+                "fit_attempts":attempts,
+                "solver_failed_count":fail_solver,
+                "accepted_fits":accepted.len(),
+                "rejected_fits":fit.summary().rejected,
+                "mean_accepted_pose_rmse_mt":mean_rmse,
+                "pre_accepted_count":pre.len(),"post_accepted_count":post.len(),
+                "rigid_motion_vs_CT":comparison
+            })
+        }
+
+        let mut trajectory=Vec::new();
+        let mut results=vec![one_arm(
+            "A_original_CT_KiCad_prior",baseline,&data,masks,stride,&mut trajectory)];
+        if let Ok(optional)=std::env::var("GK_OCT30_HYBRID_PRE") {
+            let candidate=std::fs::read_to_string(&optional)
+                .expect("Read hybrid PCB-only pre geometry");
+            let check=crate::cbct_geometry::CbctGeometry::from_detector_json(
+                &candidate,"oct30_pre".into(),"oct30_qc".into())
+                .expect("Parse hybrid PCB-only geometry");
+            // Registered CT measurements and the Hall chips are held fixed.
+            assert_eq!(geom.magnets.len(),check.magnets.len());
+            for (a,b) in geom.magnets.iter().zip(&check.magnets) {
+                assert_eq!(a.center_lps_mm,b.center_lps_mm);
+                assert_eq!(a.unsigned_axis_lps,b.unsigned_axis_lps);
+            }
+            for a in &geom.arrays {
+                let b=check.arrays.iter().find(|b|b.name==a.name)
+                    .expect("Hybrid missing board");
+                assert_eq!(a.detected_chip_positions_lps_mm,b.detected_chip_positions_lps_mm);
+                assert_eq!(a.chip_face_normal_lps,b.chip_face_normal_lps);
+            }
+            if let Ok(profile)=check.experimental_candidate_profile() {
+                results.push(one_arm(
+                    "B_hybrid_superior_PCB_only",profile,&data,masks,stride,&mut trajectory));
+            } else {
+                results.push(serde_json::json!({
+                    "arm":"B_hybrid_superior_PCB_only",
+                    "status":"CT_to_firmware_registration_failed_do_NOT_relax_gate",
+                    "error":check.experimental_candidate_profile().unwrap_err(),
+                }));
+            }
+        }
+        let summary=serde_json::json!({
+            "format":"gk_oct30_rust_recorded_motion_replay_summary_v1",
+            "status":"RESEARCH_ONLY_NOT_VALIDATED_LIVE_GK_TRACKING",
+            "source":"original 1382/board Oct30 Hall recording + independently registered CT pre/post",
+            "ct_reference":{
+                "rotation_vector_rad":data.ct_reference.rotvec_rad,
+                "angle_deg":data.ct_reference.angle_deg,
+                "magnet_centroid_translation_lps_mm":data.ct_reference.centroid_translation_lps_mm,
+                "magnet_centroid_displacement_mm":data.ct_reference.centroid_displacement_mm,
+            },
+            "frame_count":data.frame_count,
+            "sensor_exclusions":data.excluded_channels.iter()
+                .map(|e|serde_json::json!({
+                    "board_id":e.board_id,"sensor_indices":e.sensor_indices,
+                    "valid_mask":e.valid_mask})).collect::<Vec<_>>(),
+            "arms":results,
+            "warnings":[
+                "The recorded NPZ contains no verified per-sensor no-magnet background.",
+                "Magnet polarity and signed Hall-axis mapping remain experimental.",
+                "Sensor gain/wrap state unavailable; predeclared channels are excluded, never unwrapped.",
+                "Pre/post CT reference is one movement only. No intermediate CT ground truth.",
+                "Finite-cylinder Rust model differs from earlier Python point-dipole differential fit.",
+                "All recorded frames are ingested, but finite-cylinder solve is attempted only at fixed stride.",
+                "Calibration or tracking acceptance must not be inferred from research replay alone."
+            ]
+        });
+        let output=std::path::PathBuf::from(&out);
+        if let Some(dir)=output.parent(){std::fs::create_dir_all(dir)
+            .expect("Create local GK summary directory");}
+        std::fs::write(&output,serde_json::to_string_pretty(&summary).unwrap()+"\n")
+            .expect("Write sanitized scalar GK motion summary");
+        if let Ok(traj_path)=std::env::var("GK_OCT30_TRAJECTORY_OUT") {
+            assert!(!Path::new(&traj_path).exists(),"Refuse overwrite of trajectory file");
+            let file=std::path::PathBuf::from(traj_path);
+            if let Some(dir)=file.parent(){std::fs::create_dir_all(dir).unwrap();}
+            std::fs::write(file,serde_json::to_string_pretty(&trajectory).unwrap()+"\n")
+                .expect("Write private time-resolved pose trajectory");
+        }
+        println!("GK Oct30 recorded motion -> {}\n{}",
+            out,serde_json::to_string_pretty(&summary).unwrap());
+    }
+
     #[test]
     fn profile_is_valid() { RigidProfile::a1_reference().unwrap(); }
 
