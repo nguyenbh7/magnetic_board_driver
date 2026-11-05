@@ -110,3 +110,28 @@ Hall minus CT translation components: **[−0.034462,+0.016462,−0.059589] mm**
 **Calibration limitations:** The run did **not** use the separately recorded no-magnet background (`measured_background_used=false`); it used `fit_strengths_with_board_offsets`. Stationary residual **0.4364452 mT** with **0.5000 mT** QC threshold; signed strength estimates **[−1667.72,+1557.10,+1328.48] mT**, in the screening range 300..2200 mT. Hence the basic research QC passes but is near its residual limit; fitted field offsets may absorb geometry, background or axis biases. Do not claim independent chip-center calibration. One pre/post CT pair cannot validate the motion trajectory between endpoints or predict clinical accuracy.
 
 **Narrow follow-up:** Baseline A has yielded a valid, interpretable retrospective endpoint result, so an **optional B** run is now justified as a controlled sensitivity test. Use the same private replay input, masks, fitted model, and fixed stride; set `GK_OCT30_HYBRID_PRE` to the pre-existing hybrid PCB-center-only review JSON and select fresh filenames for summary and trajectory. B must pass unchanged CT-to-firmware registration and must preserve A's exact firmware index order; if not, record the fail, don't tune it. A supplementary background-aware run is worth considering only with a *verified*, matched original no-magnet log: the earlier suggested name in Downloads was a guess and the current summary confirms no measured background was used. Do not confuse A/B geometry sensitivity with background method sensitivity, and do not re-open DICOM localization experiments.
+
+## Actual Oct30 Rust replay A/B outcome — hybrid PCB center does not improve independent CT motion (2026-11-04)
+
+The user ran the **real Oct30 A/B time-series Rust replay** and supplied `oct30_RUST_motion_A_B_summary_sanitized.json` (`gk_oct30_rust_recorded_motion_replay_summary_v1`). Both arms passed the existing CT→firmware registration (including unchanged sensor mapping), stationary calibration QC and **414/414** motion fits, with **zero** rejected fits/solver failures, identical 10-frame stride and source data. This is **replay performance on one recorded movement**, not an independently validated live tracking system.
+
+| Quantity | Original optimized CT + KiCad superior prior (A) | Hybrid superior PCB center only (B) | B minus A |
+| --- | ---: | ---: | ---: |
+| Independent CT rotation target | 1.71272924° | same | — |
+| Estimated rotation magnitude | 1.83516697° | 1.83667276° | +0.00150579° |
+| **Full 3D rotation geodesic error vs CT** | **0.16340485°** | **0.16355757°** | **+0.00015273°** |
+| Independent CT centroid translation magnitude | 0.51569266 mm | same | — |
+| Estimated translation magnitude | 0.45902421 mm | 0.45985303 mm | +0.00082882 mm |
+| **Full translation vector error vs CT** | **0.07077830 mm** | **0.07123993 mm** | **+0.00046163 mm** |
+| Translation magnitude-only error | 0.05666844 mm | 0.05583963 mm | −0.00082882 mm |
+| Stationary field RMSE | 0.43644522 mT | 0.43363725 mT | −0.00280797 mT |
+| Mean accepted motion field RMSE | 0.34963326 mT | 0.34879918 mT | −0.00083408 mT |
+| Fits accepted/attempted | 414/414 | 414/414 | no change |
+| Measured original no-magnet background used | **No** | **No** | no change |
+
+Both arms share raw board motion exclusions **board0 sensors 12/13; board2 sensors 14/15; none for board1**, giving **44 Hall sensor vectors** for motion fitting. No digital unwrapping was attempted. All original 4146 frames were ingested. The full signed magnet-strength fits differ mainly in the third coefficient: A **[−1667.7208, +1557.1006, +1328.4798] mT**, B **[−1667.7266,+1557.1020,+1331.0448] mT**, showing that the magnetic nuisance calibration partly adjusts to the geometry alternative. The two estimated LPS translation vectors differ by only **0.004985 mm** Euclidean. Original A's LPS translation is **[−0.0658863, −0.0207902, +0.4537951] mm**; B is **[−0.0659267, −0.0159126, +0.4548244] mm**.
+
+**Decision:** The hybrid PCB midpoint **does not provide a measurable practical accuracy improvement** for the Oct30 test movement. B reduces field residuals slightly (<0.003 mT) but is **very marginally worse on both independent 3D CT comparison metrics** (0.00015° geodesic; 0.00046 mm translation-vector difference). These tiny differences are **not statistically or physically meaningful** in a single-movement test. The increased precision of output decimals is computational, not validated measurement resolution. **Keep A as the default experimental GK geometry; archive B solely as a completed sensitivity analysis. Do not integrate the hybrid PCB center into the default live geometry, and do not restart CT localization research.** B passed same-channel correspondence, so this is a meaningful controlled research comparison, although each arm independently recalibrates magnet strengths/board offsets and the source PCB midpoint remains unvalidated.
+
+**Next limited GK experiment work:** Analyze temporal stability and residuals from the **already exported original Oct30 trajectory** and, only if the correct original session background log is verified, repeat **A with measured background** as a separate calibration-method comparison. Keep the fixed CT 3D endpoint reference, signed axis mapping, exclusions, and solver thresholds; do not tune to the CT target. One movement with only pre/post CT cannot establish intermediate-time tracking accuracy, robustness across poses, or HDMM equivalence. No new hardware acquisitions required to complete retrospective analysis.
+
