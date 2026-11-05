@@ -31,8 +31,14 @@ $replay="$HOME\Downloads\GK_CBCT_Results\oct30_motion_replay_PRIVATE.json"
 # Optional, strongly preferred IF the existing Oct30 no-magnet background
 # MLXBF002 .bin file is available. Use the ORIGINAL matched recording.
 # Leave unset to use the app's lower-confidence board-offset fit.
-$backgroundBin=$null
-# Example: $backgroundBin="C:\path\to\the\original\oct30_background.bin"
+$backgroundCandidate="$HOME\Downloads\GK_manequin_measurement_10_30_2026.bin"
+$backgroundBin=if(Test-Path -LiteralPath $backgroundCandidate -PathType Leaf) {
+  $backgroundCandidate
+} else {
+  $null
+}
+# If the actual saved original background is elsewhere, set $backgroundBin
+# to that file's exact local path. Do not substitute a different setup.
 $backgroundArgs=@()
 if($backgroundBin) {
   if(-not (Test-Path -LiteralPath $backgroundBin -PathType Leaf)) {
