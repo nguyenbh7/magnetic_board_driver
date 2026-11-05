@@ -135,3 +135,26 @@ Both arms share raw board motion exclusions **board0 sensors 12/13; board2 senso
 
 **Next limited GK experiment work:** Analyze temporal stability and residuals from the **already exported original Oct30 trajectory** and, only if the correct original session background log is verified, repeat **A with measured background** as a separate calibration-method comparison. Keep the fixed CT 3D endpoint reference, signed axis mapping, exclusions, and solver thresholds; do not tune to the CT target. One movement with only pre/post CT cannot establish intermediate-time tracking accuracy, robustness across poses, or HDMM equivalence. No new hardware acquisitions required to complete retrospective analysis.
 
+## Post-A/B temporal trajectory stability — analysis script added (no replay rerun)
+
+The real October30 A/B Rust replay is complete (A/B 414/414 accepted; independent CBCT endpoint errors 0.163405° / 0.070778 mm for A and 0.163558° / 0.071240 mm for B). Following that result, the next narrowed task is **temporal stability, not CT algorithm development or a new Rust fit**.
+
+Use `hall-effect-motion-tracking/tools/cbct_bridge/analyze_oct30_rust_motion_trajectory.py` with the already saved **private A/B per-fit trajectory** `oct30_RUST_motion_A_B_trajectory_PRIVATE.json`, the **private original raw-frame replay metadata** `oct30_motion_replay_PRIVATE.json` (only the end timestamp is read), and the **existing sanitized Rust A/B summary**. The analysis exactly repeats the original Rust initial 1.0–4.5-s and last 8-s plateau definitions and **verifies** pre/post counts and full 3D CT endpoint errors against the original Rust summary instead of silently using an inconsistent time origin. It reports stationary 3D positional/angular jitter, half-window drift, sensor-fit residuals, pre/post vs movement-phase statistics, step-to-step estimated motion and offline solver durations. If both arms are present, it compares relative pose time series at exactly matching timestamps. **No intermediate-frame CT ground truth exists**; do not label those estimated changes as measured motion accuracy.
+
+```powershell
+cd F:\GitHub\hall-effect-motion-tracking
+git switch a1-vgm-validation
+git pull --ff-only origin a1-vgm-validation
+cd .\tools\cbct_bridge
+.\.venv\Scripts\python.exe -m unittest -v test_analyze_oct30_rust_motion_trajectory.py
+
+$root="$HOME\Downloads\GK_CBCT_Results"
+.\.venv\Scripts\python.exe .\analyze_oct30_rust_motion_trajectory.py `
+  --trajectory "$root\oct30_RUST_motion_A_B_trajectory_PRIVATE.json" `
+  --replay "$root\oct30_motion_replay_PRIVATE.json" `
+  --rust-summary "$root\oct30_RUST_motion_A_B_summary_sanitized.json" `
+  --out "$root\oct30_RUST_trajectory_stability_sanitized.json"
+```
+
+Upload only the new scalar-only sanitized QC JSON, **not raw CT sources, full Hall fields or private per-fit trajectories**, after inspecting it. The new analysis script and six tests are committed but the user has **not yet run them on the original private trajectory**. Do not change registered geometry A/B, Hall field calibration or Rust solver during this QC step; consider the matched original-background experiment separately afterward.
+
