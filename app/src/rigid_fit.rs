@@ -1156,6 +1156,8 @@ mod tests {
         let geom=crate::cbct_geometry::CbctGeometry::from_detector_json(
             &ct_input,"oct30_pre".into(),"oct30_qc".into())
             .expect("Primary CT import");
+        let baseline_mapping=geom.register_ct_boards_v2_with_reviewed_cad()
+            .expect("Original KiCad CT-to-firmware registration");
         let baseline=geom.experimental_candidate_profile_with_reviewed_cad()
             .expect("Primary KiCad-reviewed experimental profile");
 
@@ -1332,15 +1334,33 @@ mod tests {
                 assert_eq!(a.detected_chip_positions_lps_mm,b.detected_chip_positions_lps_mm);
                 assert_eq!(a.chip_face_normal_lps,b.chip_face_normal_lps);
             }
-            if let Ok(profile)=check.experimental_candidate_profile() {
-                results.push(one_arm(
-                    "B_hybrid_superior_PCB_only",profile,&data,masks,stride,&mut trajectory));
-            } else {
-                results.push(serde_json::json!({
+            match check.register_ct_boards_v2() {
+                Ok(registration) if registration.iter().all(|b| {
+                    baseline_mapping.iter().any(|a|
+                        a.raw_board_id==b.raw_board_id &&
+                        a.firmware_to_detector==b.firmware_to_detector)
+                })=>{
+                    match check.experimental_candidate_profile() {
+                        Ok(profile)=>results.push(one_arm(
+                            "B_hybrid_superior_PCB_only",profile,
+                            &data,masks,stride,&mut trajectory)),
+                        Err(error)=>results.push(serde_json::json!({
+                            "arm":"B_hybrid_superior_PCB_only",
+                            "status":"hybrid_profile_construction_failed",
+                            "error":error
+                        })),
+                    }
+                }
+                Ok(_)=>results.push(serde_json::json!({
+                    "arm":"B_hybrid_superior_PCB_only",
+                    "status":"firmware_sensor_correspondence_changed_REJECTED",
+                    "reason":"Do not compare changed channel indices against baseline A",
+                })),
+                Err(error)=>results.push(serde_json::json!({
                     "arm":"B_hybrid_superior_PCB_only",
                     "status":"CT_to_firmware_registration_failed_do_NOT_relax_gate",
-                    "error":check.experimental_candidate_profile().unwrap_err(),
-                }));
+                    "error":error,
+                })),
             }
         }
         let summary=serde_json::json!({
