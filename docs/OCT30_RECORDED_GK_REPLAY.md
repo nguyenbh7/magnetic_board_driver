@@ -1,3 +1,5 @@
+> **2026-11-04 background provenance correction:** Do **not** assume that any similarly named October30 `.bin` file is a no-magnet baseline. The existing movement NPZ has no background; the separately recorded MLXBF002 background file has **not** been positively identified or verified. The prior example auto-selecting a guessed `GK_manequin_measurement_10_30_2026.bin` background was unsafe and is withdrawn. `export_oct30_hall_rust_replay.py --background-bin` now requires a matching `--background-audit` report plus explicit `--confirm-matched-no-magnet` operator attestation; see `hall-effect-motion-tracking/tools/cbct_bridge/OCT30_BACKGROUND_CALIBRATION_AUDIT_2026-11-04.md`. **No measured-background Rust comparison has been completed.** The existing original A and hybrid B board-offset results are unaffected.
+
 # October 30 Gamma Knife — recorded Hall time-series replay (research only)
 
 **Goal:** Resume the already recorded Gamma Knife experiment, NOT restart DICOM research. Run the original Oct30 **1,382 frames × 3 boards** through the Rust app's *existing* `RigidLiveFit::receive_frame` → `RigidFitJob::run` → `RigidLiveFit::apply_completion` path and compare the endpoint 6-DOF transform with pre/post CBCT. Geometry **A** is the already retained optimized three-board CT geometry plus authenticated KiCad superior PCB/JST prior. Geometry **B**, if supplied, uses the same 48 primary CT chip positions, magnets and BB but the hybrid superior PCB-center review candidate. No new scan, magnet model, board detection, UI panel or tracking enablement.
@@ -28,24 +30,11 @@ $archive="$HOME\Downloads\GK_manequinn measurement_10_30_2026_2_board2_complete.
 $primary="$HOME\Downloads\GK_CBCT_Results\oct30_prepost_primary_for_hybrid"
 $replay="$HOME\Downloads\GK_CBCT_Results\oct30_motion_replay_PRIVATE.json"
 
-# Optional, strongly preferred IF the existing Oct30 no-magnet background
-# MLXBF002 .bin file is available. Use the ORIGINAL matched recording.
-# Leave unset to use the app's lower-confidence board-offset fit.
-$backgroundCandidate="$HOME\Downloads\GK_manequin_measurement_10_30_2026.bin"
-$backgroundBin=if(Test-Path -LiteralPath $backgroundCandidate -PathType Leaf) {
-  $backgroundCandidate
-} else {
-  $null
-}
-# If the actual saved original background is elsewhere, set $backgroundBin
-# to that file's exact local path. Do not substitute a different setup.
+# No-magnet background provenance is NOT established. Keep this baseline
+# replay background-free. The separate authenticated candidate workflow,
+# including signal audit and explicit operator confirmation, is documented in
+# OCT30_BACKGROUND_CALIBRATION_AUDIT_2026-11-04.md in the analysis repository.
 $backgroundArgs=@()
-if($backgroundBin) {
-  if(-not (Test-Path -LiteralPath $backgroundBin -PathType Leaf)) {
-    throw "Matched Oct30 background log missing: $backgroundBin"
-  }
-  $backgroundArgs=@("--background-bin",$backgroundBin)
-}
 
 foreach($path in @($archive,
   "$primary\pre\detections_with_cad_estimates.json",
