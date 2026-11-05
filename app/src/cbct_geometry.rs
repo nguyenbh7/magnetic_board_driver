@@ -1427,7 +1427,7 @@ mod tests {
         let g=CbctGeometry::from_detector_json(
             &report.to_string(),"synthetic.zip".into(),"qc".into()).unwrap();
         let top_array=g.arrays.iter().find(|a|a.name=="array_superior").unwrap();
-        assert_eq!(top_array.board_center_lps_mm,Some([85.125,-75.0,28.0]));
+        assert_eq!(top_array.pcb_center_lps_mm,Some([85.125,-75.0,28.0]));
         assert_eq!(top_array.board_center_source.as_deref(),
                    Some("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"));
         let summary=g.registration_review_cad_summary().unwrap();
