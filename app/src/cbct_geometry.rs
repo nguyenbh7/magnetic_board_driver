@@ -58,6 +58,8 @@ pub struct CbctArray {
     pub center_lps_mm: [f64; 3],
     pub grid_rms_mm: f64,
     pub pcb_center_lps_mm: Option<[f64; 3]>,
+    /// Hybrid experimental PCB midpoint provenance, never physical approval.
+    pub board_center_source: Option<String>,
     pub chip_face_normal_lps: Option<[f64; 3]>,
     /// Nominal KiCad midpoint in chip plane, NOT independently CT observed.
     pub pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
@@ -110,6 +112,7 @@ struct DetectedObject {
     grid_rms_mm: Option<f64>,
     unsigned_axis_lps: Option<[f64; 3]>,
     board_center_lps_mm: Option<[f64; 3]>,
+    board_center_source: Option<String>,
     board_normal_lps: Option<[f64; 3]>,
     pcb_center_cad_estimate_lps_mm: Option<[f64; 3]>,
     pcb_cad_geometry: Option<PcbCadGeometry>,
@@ -313,6 +316,14 @@ impl CbctGeometry {
                             return Err(format!("{} invalid projected CAD PCB center",object.name));
                         }
                     }
+                    if let Some(source)=object.board_center_source.as_deref() {
+                        if source!="HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"
+                            || object.name!="array_superior"
+                            || object.board_center_lps_mm.is_none()
+                        {
+                            return Err(format!("{} has unsupported PCB-center source annotation",object.name));
+                        }
+                    }
                     let mut cad_nominal_prior_valid=false;
                     let jst=if let Some(cad)=object.pcb_cad_geometry {
                         if cad.status=="CAD_PREDICTION_NOT_CT_MEASUREMENT" {
@@ -345,6 +356,7 @@ impl CbctGeometry {
                         center_lps_mm: object.center_lps_mm,
                         grid_rms_mm: rms,
                         pcb_center_lps_mm: object.board_center_lps_mm,
+                        board_center_source: object.board_center_source,
                         chip_face_normal_lps: object.board_normal_lps,
                         pcb_center_cad_estimate_lps_mm:object.pcb_center_cad_estimate_lps_mm,
                         jst_connector_cad_estimates_lps_mm:jst,
@@ -637,8 +649,12 @@ impl CbctGeometry {
                 _=>return Err("Unexpected GK raw board ID".into()),
             };
             let source=self.arrays.iter().find(|a|a.name==board.detection_name)
-                .and_then(|a|a.pcb_center_lps_mm)
-                .map_or("KiCad board estimate", |_| "CT board geometry");
+                .map(|a| match (a.pcb_center_lps_mm,a.board_center_source.as_deref()) {
+                    (Some(_),Some("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"))=>
+                        "Hybrid CT PCB outline (UNVERIFIED)",
+                    (Some(_),_)=>"CT board geometry",
+                    (None,_)=>"KiCad board estimate",
+                }).ok_or("Registration returned unknown board")?;
             lines.push(format!(
                 "{position}  •  {source}  •  {:.3} mm RMS",
                 board.geometric_rms_mm));
@@ -652,10 +668,16 @@ impl CbctGeometry {
     /// The caller must obtain separate human approval before calibration.
     pub fn registration_review_cad_preview(&self) -> Result<String,String> {
         let boards=self.register_ct_boards_v2_with_reviewed_cad()?;
+        let has_hybrid=self.arrays.iter().any(|a|
+            a.board_center_source.as_deref()==Some("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"));
         let mut lines=vec![
             "CAD-assisted CT to firmware mapping — HUMAN REVIEW REQUIRED".to_string(),
-            "CT measures sensor chips, not the superior PCB or its JST connector.".into(),
-            "Superior orientation uses the documented KiCad mounting estimate; this is NOT an independent CT observation or validated Hall axis calibration.".into(),
+            if has_hybrid {
+                "Superior PCB center: HYBRID full-outline CT candidate; sensor chips are from the original detector. Physical PCB accuracy UNVERIFIED.".into()
+            } else {
+                "CT measures sensor chips; superior PCB/JST may instead use a KiCad mounting prior.".into()
+            },
+            "CT-only PCB/JST positions and candidate Hall axis transforms are NOT independently validated.".into(),
             String::new(),
             "Confirm before approval:".into(),
             "  Board cables: 0 = superior, 1 = patient left, 2 = patient right.".into(),
@@ -673,10 +695,11 @@ impl CbctGeometry {
                 2=>("Right","Patient right"),
                 _=>return Err("Unexpected GK raw board ID".into()),
             };
-            let source=if array.pcb_center_lps_mm.is_some() {
-                "CT-detected PCB/JST proxy"
-            } else {
-                "KiCad projected PCB/JST MOUNTING PRIOR (not CT observed)"
+            let source=match (array.pcb_center_lps_mm,array.board_center_source.as_deref()) {
+                (Some(_),Some("HYBRID_FULL_OUTLINE_CT_REVIEW_ONLY"))=>
+                    "Hybrid full-outline CT PCB estimate (REVIEW ONLY; not validated)",
+                (Some(_),_)=>"CT-detected PCB/JST proxy (not independently validated)",
+                (None,_)=>"KiCad projected PCB/JST MOUNTING PRIOR (not CT observed)",
             };
             lines.push(String::new());
             lines.push(format!("{name} ({location}) — {} raw{}",b.detection_name,b.raw_board_id));
