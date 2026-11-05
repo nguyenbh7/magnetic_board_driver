@@ -191,3 +191,26 @@ A/B time series agree exceptionally closely: **414 paired pose times**, relative
 
 **Small script-only extension:** existing `analyze_oct30_rust_motion_trajectory.py` now includes **`focused_motion_event_times`** (top three largest between-plateau position/orientation steps, before/after field residuals, and timestamps of peak estimated displacement/rotation). New seventh synthetic regression added; **needs user Windows run**. Re-run with the *same private inputs but a fresh sanitized output filename* to identify if step maxima coincide in A and B and whether timing matches the intended manipulation. No new Rust fits, CT processing, raw fields, or geometry changes. Only after understanding timing should optional original matched-background comparison be considered separately.
 
+## Oct30 motion-event timing resolved against earlier raw Hall-field audit (2026-11-04)
+
+The user uploaded the actual `oct30_RUST_motion_event_times_sanitized.json`, the **same** 828 fitted A/B pose records and 4146 recorded board frames as the already completed A/B experiment, now including scalar event times. The prior entire seven-test script / pipeline was executed far enough to produce this new sanitized output; the user did not supply an explicit test log, so **do not independently claim seven tests passed**. The report reproduces the original Rust CT endpoint metrics to 1e−5 for both arms. No new DICOM, Hall acquisition, magnetic fitting or model tuning occurred.
+
+**Largest between-plateau fitted step intervals, original geometry A**, relative to first Oct30 acquisition timestamp:
+
+| Estimated event | Interval or time (seconds) | Change | Fit RMSE before/after (mT) |
+| --- | --- | --- | --- |
+| Translation step #1 | **9.315918–9.578018** | **0.563110 mm** in 0.26210 s | 0.356602/0.352609 |
+| Translation step #2 | **7.277588–7.539718** | **0.508182 mm** in 0.26213 s | 0.346896/0.352552 |
+| Translation step #3 | **7.860000–8.122116** | **0.381252 mm** in 0.26212 s | 0.355980/0.360545 |
+| Rotation step #1 | **7.277588–7.539718** | **0.714075°** in 0.26213 s | 0.346896/0.352552 |
+| Rotation step #2 | **7.860000–8.122116** | **0.660874°** in 0.26212 s | 0.355980/0.360545 |
+| Rotation step #3 | **7.568817–7.830917** | **0.452873°** in 0.26210 s | 0.351998/0.355417 |
+| Peak estimated translation from initial window | **8.151199** | **1.698189 mm** | — |
+| Peak estimated rotation from initial window | **8.442336** | **2.663014°** | — |
+
+Hybrid B has **the exact same event intervals and peak times**, with differences in step amplitudes <0.002 mm or <0.001° for the listed events. The motion spikes **do not coincide with a large magnetic RMSE excursion**: before/after values remain around 0.35–0.36 mT, below the fixed 0.5-mT gate. This makes a geometry-specific optimizer failure *less likely* but does not rule out common-mode model or sensor artifacts. Notice all large steps span ~0.262 s: the Rust replay uses a 10-frame-per-board stride and has three clustered attempts per 10-frame cycle; these are **sample-to-sample differences at the long interpulse interval**, not instantaneous time discontinuities, patient velocity data, or achieved live response speed.
+
+**Crucial corroboration from an earlier, separate processing method on the SAME physical recording:** `OCT30_COLLEAGUE_NOTEBOOK_AND_NPZ_REPLAY_2026-11-04.md`, section `Independent uploaded Hall NPZ replay`, reports first raw field change **~6.52 s (right receiver), 6.72 s (superior), 6.75 s (left)** and full field changes **~7–10 seconds**, then stable post plateau. Thus the new fitted pose activity at 7.28–9.58 s is **temporally aligned with an independently computed *raw-field change*, but NOT independently measured physical motion**. A deliberate larger excursion and partial return before final CT is plausible, not confirmed; pre/post CT measures only the final state. No HDMM or independent intermediate-time motion trace was provided for the Oct30 acquisition.
+
+**Disposition:** **Close event-timing analysis, keep geometry A as research default, B as archived sensitivity.** Nothing justifies more DICOM source-center hunting or solver threshold adjustment. The remaining defensible focused comparison is **original same-session independently recorded no-magnet background vs board-constant-offset calibration**, if and only if an authentic matched background file is located and verified (same three boards, gain/resolution and acquisition setup). Do not guess its location, infer its provenance from an ambiguous filename, or confuse the different October 23 mannequin recording with October 30. Repeat only A, with unchanged original Hall frames, exclusions and independent CT endpoint; inspect full 3D CT error and stationary/background residual separately. A single movement remains research evidence only, not a validated accuracy/latency or HDMM claim.
+
