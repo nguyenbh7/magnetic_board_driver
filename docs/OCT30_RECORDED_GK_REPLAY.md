@@ -91,3 +91,22 @@ The opt-in replay test runs only when `GK_OCT30_REPLAY_IN` is defined; ordinary 
 
 - Prior: Windows app `cargo test -p app --release` **43/43 passed** before adding the opt-in replay test; pre/post hybrid JSON preparation and 11 Python geometry tests succeeded.
 - New Oct30 NPZ exporter, CT target synthetic tests and opt-in Rust recorded-motion test are **committed but not yet exercised on the user's local original data or Windows toolchain**. Do not claim a successful 6-DOF replay or measured accuracy until that run is available.
+
+## FIRST REAL RUN — Original Oct30 Rust baseline A results (2026-11-04)
+
+**Actual user-produced `oct30_RUST_motion_summary_sanitized.json` received and analyzed.** The opt-in `experimental_oct30_recorded_gk_motion_time_series_replay` completed baseline **A_original_CT_KiCad_prior**: original optimized CT source, 16 superior chip-first sensor estimates, authenticated KiCad/JST orientation. The output states research-only and `live_fitting_activated=false`; neither real-time live throughput nor HDMM accuracy is established.
+
+| Oct30 endpoint (independently registered CT) | CT | Rust Hall A | Error |
+| --- | ---: | ---: | ---: |
+| Rotation angle | 1.71272924° | 1.83516697° | 0.12243773° magnitude |
+| Relative 3D rotation | registered CT orientation | Rust estimated orientation | **0.16340485° geodesic** |
+| Magnet-centroid translation magnitude | 0.51569266 mm | 0.45902421 mm | 0.05666844 mm magnitude |
+| Full magnet-centroid translation vector | [−0.031424,−0.037253,+0.513385] mm LPS | [−0.065886,−0.020790,+0.453795] mm LPS | **0.0707783 mm Euclidean** |
+
+Hall minus CT translation components: **[−0.034462,+0.016462,−0.059589] mm**, displacement direction error approximately **5.0°**. All errors refer to the **magnet centroid** and the registered CT LPS frame, not nose or HDMM marker motion.
+
+**Runtime/fit counts:** 4146 recorded raw frames (1382 per raw board), 10-frame fixed fit stride, **414 attempted, 414 accepted, zero rejected or solver failures**. 36 fitted initial-plateau poses and 84 fitted final-plateau poses enter medians. Mean accepted finite-cylinder field residual RMSE **0.3496333 mT**. The `>8-mT` transient or `>10-mT` endpoint jump rule excluded board0 sensors **12/13** and board2 sensors **14/15**, leaving **44** sensor vectors for pose fitting; **all 48** still contribute to initial stationary calibration by current method. No digital unwrapping performed.
+
+**Calibration limitations:** The run did **not** use the separately recorded no-magnet background (`measured_background_used=false`); it used `fit_strengths_with_board_offsets`. Stationary residual **0.4364452 mT** with **0.5000 mT** QC threshold; signed strength estimates **[−1667.72,+1557.10,+1328.48] mT**, in the screening range 300..2200 mT. Hence the basic research QC passes but is near its residual limit; fitted field offsets may absorb geometry, background or axis biases. Do not claim independent chip-center calibration. One pre/post CT pair cannot validate the motion trajectory between endpoints or predict clinical accuracy.
+
+**Narrow follow-up:** Baseline A has yielded a valid, interpretable retrospective endpoint result, so an **optional B** run is now justified as a controlled sensitivity test. Use the same private replay input, masks, fitted model, and fixed stride; set `GK_OCT30_HYBRID_PRE` to the pre-existing hybrid PCB-center-only review JSON and select fresh filenames for summary and trajectory. B must pass unchanged CT-to-firmware registration and must preserve A's exact firmware index order; if not, record the fail, don't tune it. A supplementary background-aware run is worth considering only with a *verified*, matched original no-magnet log: the earlier suggested name in Downloads was a guess and the current summary confirms no measured background was used. Do not confuse A/B geometry sensitivity with background method sensitivity, and do not re-open DICOM localization experiments.
