@@ -158,3 +158,36 @@ $root="$HOME\Downloads\GK_CBCT_Results"
 
 Upload only the new scalar-only sanitized QC JSON, **not raw CT sources, full Hall fields or private per-fit trajectories**, after inspecting it. The new analysis script and six tests are committed but the user has **not yet run them on the original private trajectory**. Do not change registered geometry A/B, Hall field calibration or Rust solver during this QC step; consider the matched original-background experiment separately afterward.
 
+## Actual Oct30 A/B time-series stability QC — measured report (2026-11-04)
+
+The user ran the predeclared, scalar-only `analyze_oct30_rust_motion_trajectory.py` and supplied `oct30_RUST_trajectory_stability_sanitized.json` (format `gk_oct30_rust_pose_trajectory_aggregate_qc_v1`). Input: previously exported **4146 original board frames** and **828 Rust fitted poses** (414 per arm), ~**40.213 s** of source acquisition. **Both arms' recalculated CT endpoint metrics match the original Rust replay to 1e−5**; 414/414 accepted poses, 44 sensor channels, 0 rejected and no fit RMSE ≥90% of the preexisting 0.5-mT gate. This is not time-resolved CT verification.
+
+| Retrospective metric | A original CT + KiCad | B hybrid PCB midpoint |
+| --- | ---: | ---: |
+| Initial stationary translation **3D distance-about-median RMS** | **0.004848 mm** | 0.004834 mm |
+| Final stationary translation distance-about-median RMS | **0.004459 mm** | 0.004445 mm |
+| Initial stationary orientation **3D geodesic RMS** | **0.005683°** | 0.005687° |
+| Final stationary orientation geodesic RMS | **0.004525°** | 0.004523° |
+| First-to-second-half initial translation drift | 0.001816 mm | 0.001800 mm |
+| First-to-second-half final translation drift | 0.001804 mm | 0.001813 mm |
+| First-to-second-half initial rotational drift | 0.003423° | 0.003376° |
+| First-to-second-half final rotational drift | 0.001985° | 0.002014° |
+| Pre-window field-fit RMSE (RMS over poses) | 0.345181 mT | 0.344265 mT |
+| Post-window field-fit RMSE | 0.350019 mT | 0.349312 mT |
+| Between-plateau field-fit RMSE | 0.350236 mT | 0.349377 mT |
+| Between-plateau largest single fitted-position step | **0.563110 mm** | 0.564608 mm |
+| Between-plateau largest single fitted-orientation step | **0.714075°** | 0.714524° |
+| Peak estimated translation magnitude vs pre plateau | **1.698189 mm** | 1.699932 mm |
+| Peak estimated rotation magnitude vs pre plateau | **2.663014°** | 2.665049° |
+| Offline solver median / p95 / max | 0.8852/1.3680/1.8809 ms | 0.8641/1.3218/1.8671 ms |
+
+Existing CT independently measured **0.515693-mm magnet centroid final displacement** and **1.712729° final rotation**; original A estimated final **0.459024 mm /1.835167°** (0.070778-mm full 3D translation-vector error; 0.163405° rotation geodesic error). **The 1.70-mm and 2.66° intermediate fit peaks are not errors against the CT endpoint**; there may have been a larger genuine excursion followed by partial return. Likewise the ~0.56-mm and 0.714° consecutive steps may be commanded motion, solver discontinuities or measurement artifacts: the aggregate file has no event times or independently measured mid-motion reference. Do not claim any of these are patient/GK nose-tip motion measurements. Field RMSE remains below ~0.361 mT during the between-plateau interval, but a small residual cannot distinguish true motion from a plausible fit artifact.
+
+A/B time series agree exceptionally closely: **414 paired pose times**, relative translation discrepancy **0.004509-mm RMS** (median 0.004974, max 0.005811 mm) and relative 3D orientation discrepancy **0.002699° RMS** (median 0.002829, max 0.006067°). Confirms B barely changes the numerical fitted trajectory and reinforces choosing **default A**, not that A's source geometry is independently accurate.
+
+**Critical temporal sampling caveat:** attempted-fit sampling is nonuniform: **median inter-attempt interval 0.026367 s** vs **P95 0.262146 s** and source acquisition ~40.213 s. The Rust replay triggers optimization on `frame_id % 10 == 0` **for each of three boards**; its roughly three nearby attempts every ten raw frames are correlated, not 414 uniformly spaced statistically independent samples. Offline optimizer durations ~0.9 ms do **not** measure complete hardware acquisition, stream latency, system throughput, or live 6-DOF latency.
+
+**Interpretation:** stationary repeated-fit scatter is small (~4–5 μm translation, ~0.005° orientation) compared with A's 0.0708-mm/0.1634° final CT disagreement; this suggests systematic modeling/registration/background differences or uncertainty in CT reference dominate *over measured short-window scatter* for this motion, but it does not isolate a cause or prove actual micrometer physical precision. The pre/post stationary periods are presumed stable, not independently stillness-verified; no intermediate CT or HDMM truth. The A/B method is finished. Focus the **next step on locating/timing the large estimated motion steps in the existing private trajectory and comparing with experiment command/time history**, NOT re-fitting magnet geometry or retuning DICOM.
+
+**Small script-only extension:** existing `analyze_oct30_rust_motion_trajectory.py` now includes **`focused_motion_event_times`** (top three largest between-plateau position/orientation steps, before/after field residuals, and timestamps of peak estimated displacement/rotation). New seventh synthetic regression added; **needs user Windows run**. Re-run with the *same private inputs but a fresh sanitized output filename* to identify if step maxima coincide in A and B and whether timing matches the intended manipulation. No new Rust fits, CT processing, raw fields, or geometry changes. Only after understanding timing should optional original matched-background comparison be considered separately.
+
