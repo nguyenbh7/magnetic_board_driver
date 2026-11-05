@@ -1123,6 +1123,8 @@ mod tests {
         struct Recorded {
             format:String,frame_count:usize,frame_counts_by_board:[usize;3],
             calibration_stationary_raw_mt:[[[f64;3];16];3],
+            #[serde(default)]
+            calibration_background_raw_mt:Option<[[[f64;3];16];3]>,
             excluded_channels:Vec<ChannelMask>,
             ct_reference:Truth, frames:Vec<Frame>,
         }
@@ -1210,14 +1212,23 @@ mod tests {
             name:&str,mut profile:RigidProfile,data:&Recorded,masks:[u16;3],
             stride:u32,trajectory:&mut Vec<serde_json::Value>
         )->serde_json::Value {
-            // The *same app calibration method*, with no measured per-sensor
-            // no-magnet background in the original Oct30 movement NPZ.
-            let fitted=fit_strengths_with_board_offsets(
-                &profile,&data.calibration_stationary_raw_mt);
+            // Reuse actual original no-magnet background if provided.
+            // Otherwise match the app's explicit lower-confidence
+            // per-board-constant nuisance-field calibration.
+            let with_background=data.calibration_background_raw_mt.is_some();
+            let fitted=if let Some(bg)=data.calibration_background_raw_mt.as_ref() {
+                fit_magnet_strengths(
+                    &profile,bg,&data.calibration_stationary_raw_mt)
+                    .map(|(s,r)|(s,[[0.0;3];3],r))
+            } else {
+                fit_strengths_with_board_offsets(
+                    &profile,&data.calibration_stationary_raw_mt)
+            };
             let (strengths,offsets,calibration_rmse)=match fitted {
                 Ok(v)=>v,
                 Err(e)=>return serde_json::json!({
                     "arm":name,"status":"stationary_calibration_failed",
+                    "background_measured":with_background,
                     "reason":e}),
             };
             for (m,s) in profile.magnets.iter_mut().zip(strengths) {
@@ -1230,7 +1241,8 @@ mod tests {
             let acceptable=plausible && calibration_rmse<=profile.max_rmse_mt;
             let max_rmse=profile.max_rmse_mt;
             let mut fit=RigidLiveFit::default();
-            fit.set_experimental_gk_profile(profile,None);
+            fit.set_experimental_gk_profile(
+                profile,data.calibration_background_raw_mt);
             fit.set_presence(BoardPresence {board_mask:0b111,sensor_masks:masks});
             let mut accepted=Vec::<(f64,[f64;6],f64,usize)>::new();
             let mut attempts=0;
@@ -1294,7 +1306,12 @@ mod tests {
                 "arm":name,
                 "status":if acceptable {"research_replay_calibration_QC_pass"}
                     else {"research_replay_calibration_QC_FAILED_not_activated"},
-                "calibration_source":"app fit_strengths_with_board_offsets; no measured sensor background",
+                "calibration_source":if with_background {
+                    "app fit_magnet_strengths with original measured raw sensor background"
+                } else {
+                    "app fit_strengths_with_board_offsets; no measured raw sensor background"
+                },
+                "measured_background_used":with_background,
                 "signed_remanences_mt":strengths,
                 "stationary_rmse_mt":calibration_rmse,
                 "calibration_gate_max_rmse_mt":max_rmse,
@@ -1380,7 +1397,7 @@ mod tests {
                     "valid_mask":e.valid_mask})).collect::<Vec<_>>(),
             "arms":results,
             "warnings":[
-                "The recorded NPZ contains no verified per-sensor no-magnet background.",
+                "The movement NPZ has no no-magnet background; a separate matched original MLXBF002 background may be supplied, otherwise board-offset calibration is lower confidence.",
                 "Magnet polarity and signed Hall-axis mapping remain experimental.",
                 "Sensor gain/wrap state unavailable; predeclared channels are excluded, never unwrapped.",
                 "Pre/post CT reference is one movement only. No intermediate CT ground truth.",
