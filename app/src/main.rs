@@ -898,6 +898,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.invalidate_for_gk_calibration();
             context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
+            context.sensor_component_full_scale_mt.clear();
+            context.hdmm_marker_coordinate_input.clear();
             context.dashboard_tab = DashboardTab::LiveTracking;
             context.tracking_mode = TrackingMode::Rigid6Dof;
             context.stream_status = "idle".to_string();
@@ -985,6 +987,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.gk_calibration.cad_review_details_expanded = false;
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
+                context.hdmm_marker_coordinate_input.clear();
                 context.cbct_status = format!(
                     "Selected {}. Re-import CT; previous geometry and mapping approval cleared.",
                     variant
@@ -1174,6 +1177,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::BeginGkBackground => {
             context.rigid_fit.invalidate_for_gk_calibration();
+            context.hdmm_marker_coordinate_input.clear();
             context.gk_calibration.begin(false);
             Task::none()
         }
@@ -1208,6 +1212,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ImportGkBackground => {
+            if context.gk_calibration.capturing.is_some() {
+                context.gk_calibration.status="Finish the current 3-second Hall capture before importing a background".into();
+                return Task::none();
+            }
             iced::window::oldest()
                 .and_then(|id| iced::window::run(id,import_gk_background_file))
                 .then(Task::future)
@@ -1233,6 +1241,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ConfirmImportedGkBackground => {
+            if context.gk_calibration.capturing.is_some() {
+                context.gk_calibration.status="Cannot replace background during an active Hall capture".into();
+                return Task::none();
+            }
             if let Some(raw)=context.gk_calibration.pending_background.take() {
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.gk_calibration.background=Some(raw);
@@ -1973,11 +1985,14 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::ReceivedMlxSensitivity(status) => {
             context.mlx_gain = status.gain.to_string();
             context.mlx_resolution = status.resolution.to_string();
+            let changed=context.mlx_status.as_ref().is_none_or(|old|
+                old.gain!=status.gain || old.resolution!=status.resolution ||
+                old.hall_conf!=status.hall_conf);
             context.mlx_hall_conf = hall_conf_value_to_label(status.hall_conf).to_string();
             context.mlx_status = Some(status);
-            // Any previous full-scale warning limit might belong to a
-            // different sensor gain/resolution; require explicit re-entry.
-            context.sensor_component_full_scale_mt.clear();
+            // Changing gain/resolution can change full-scale, but merely
+            // rereading unchanged settings should preserve the user range.
+            if changed { context.sensor_component_full_scale_mt.clear(); }
             Task::none()
         }
 
@@ -2378,7 +2393,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 } else { button("Save background only") },
                 button("Load background").on_press(Message::ImportGkBackground),
             ].spacing(8),
-            if context.gk_calibration.pending_background.is_some() {
+            if context.gk_calibration.pending_background.is_some()
+                && context.gk_calibration.capturing.is_none() {
                 button("Confirm same setup and use background")
                     .on_press(Message::ConfirmImportedGkBackground)
             } else { button("Confirm same setup and use background") },
