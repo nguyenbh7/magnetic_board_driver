@@ -1209,12 +1209,12 @@ mod tests {
         ));
         std::fs::write(&base,b"{}").unwrap();
         let args=CbctDetectorVariant::Hybrid.python_args(Some(&base)).unwrap();
-        assert_eq!(args[0],"--detector-variant");
-        assert_eq!(args[1],"hybrid");
-        assert_eq!(args[2],"--colleague-notebook");
-        assert_eq!(args[3],base.as_os_str());
+        assert_eq!(args[0].to_string_lossy(),"--detector-variant");
+        assert_eq!(args[1].to_string_lossy(),"hybrid");
+        assert_eq!(args[2].to_string_lossy(),"--colleague-notebook");
+        assert_eq!(args[3].as_os_str(),base.as_os_str());
         let other=CbctDetectorVariant::Colleague.python_args(Some(&base)).unwrap();
-        assert_eq!(other[1],"colleague");
+        assert_eq!(other[1].to_string_lossy(),"colleague");
         std::fs::remove_file(base).unwrap();
     }
 
