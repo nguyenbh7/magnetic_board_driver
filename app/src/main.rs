@@ -90,8 +90,8 @@ enum Message {
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
     SelectCbctDetectorVariant(cbct_geometry::CbctDetectorVariant),
-    ChooseCbctColleagueNotebook,
-    CbctColleagueNotebookPicked(Option<PathBuf>),
+    ChooseCbctImporterNotebook,
+    CbctImporterNotebookPicked(Option<PathBuf>),
     ImportCbctZip,
     ImportCbctFolder,
     LoadCbctDetectionsJson,
@@ -307,7 +307,7 @@ struct Context {
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
     cbct_detector_variant: cbct_geometry::CbctDetectorVariant,
-    cbct_colleague_notebook: Option<PathBuf>,
+    cbct_importer_notebook: Option<PathBuf>,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -675,7 +675,7 @@ fn select_cbct_directory(
     async move { dialog.pick_folder().await.map(|handle| handle.path().to_path_buf()) }
 }
 
-fn select_cbct_colleague_notebook(
+fn select_cbct_importer_notebook(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Option<PathBuf>> + use<> {
     let dialog = rfd::AsyncFileDialog::new()
@@ -970,14 +970,14 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ChooseCbctColleagueNotebook => {
+        Message::ChooseCbctImporterNotebook => {
             if context.cbct_importing { return Task::none(); }
             iced::window::oldest()
-                .and_then(|id|iced::window::run(id,select_cbct_colleague_notebook))
+                .and_then(|id|iced::window::run(id,select_cbct_importer_notebook))
                 .then(Task::future)
-                .map(Message::CbctColleagueNotebookPicked)
+                .map(Message::CbctImporterNotebookPicked)
         }
-        Message::CbctColleagueNotebookPicked(path) => {
+        Message::CbctImporterNotebookPicked(path) => {
             if context.cbct_importing { return Task::none(); }
             if let Some(path)=path {
                 if !path.is_file() || path.extension().and_then(|x|x.to_str())
@@ -985,8 +985,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.cbct_status = format!("Importer notebook must be an existing trusted .ipynb: {}",path.display());
                     return Task::none();
                 }
-                if context.cbct_colleague_notebook.as_ref()!=Some(&path) {
-                    context.cbct_colleague_notebook=Some(path.clone());
+                if context.cbct_importer_notebook.as_ref()!=Some(&path) {
+                    context.cbct_importer_notebook=Some(path.clone());
                     context.cbct_geometry=None;
                     context.gk_calibration.calibrated_candidate=None;
                     context.gk_calibration.cad_review_preview=None;
@@ -1028,9 +1028,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 if context.cbct_importing { return Task::none(); }
                 context.cbct_importing = true;
                 let variant=context.cbct_detector_variant;
-                let colleague_notebook=if variant==cbct_geometry::CbctDetectorVariant::Original {
-                    None
-                } else { context.cbct_colleague_notebook.clone() };
+                let importer_notebook=if variant==cbct_geometry::CbctDetectorVariant::Hybrid {
+                    context.cbct_importer_notebook.clone()
+                } else { None };
                 context.cbct_status = format!(
                     "{}: detecting magnets, 48 chips, and glass BB from {} (background task)...",
                     variant,path.display()
@@ -1048,7 +1048,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.cbct_progress = Some(Arc::clone(&progress));
                 context.cbct_started = Some(std::time::Instant::now());
                 Task::perform(
-                    run_cbct_import_off_thread(path,variant,colleague_notebook,progress),
+                    run_cbct_import_off_thread(path,variant,importer_notebook,progress),
                     Message::CbctImportCompleted,
                 )
             } else {
@@ -1363,13 +1363,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "geometry_sensor_order": "CT_detector_order_with_v2_JST_candidate",
                             "frame_of_reference_uid": geometry.frame_uid,
                             "selected_detector_variant":geometry.selected_detector_variant,
-                            "colleague_notebook_sha256":geometry.colleague_notebook_sha256,
+                            "importer_notebook_sha256":geometry.importer_notebook_sha256,
                             "detector_replay": {
                                 "format": "gk_cbct_detections_v1",
                                 "coordinate_frame": "DICOM_LPS_mm",
                                 "frame_of_reference_uid": geometry.frame_uid,
                                 "selected_detector_variant": geometry.selected_detector_variant,
-                                "colleague_notebook_sha256": geometry.colleague_notebook_sha256,
+                                "importer_notebook_sha256": geometry.importer_notebook_sha256,
                                 "status": "unreviewed",
                                 "requires_review": true,
                                 "objects": geometry.magnets.iter().map(|m|serde_json::json!({
@@ -2135,15 +2135,15 @@ fn view(context: &Context) -> Element<'_, Message> {
                 if context.cbct_importing {
                     button("Select importer notebook")
                 } else {
-                    button("Select importer notebook").on_press(Message::ChooseCbctColleagueNotebook)
+                    button("Select importer notebook").on_press(Message::ChooseCbctImporterNotebook)
                 },
-                text(context.cbct_colleague_notebook.as_ref().map(|p|
+                text(context.cbct_importer_notebook.as_ref().map(|p|
                     p.file_name().map(|f|f.to_string_lossy().into_owned())
                         .unwrap_or_else(||p.display().to_string())
-                ).unwrap_or_else(||"No colleague notebook selected".into())),
+                ).unwrap_or_else(||"No importer notebook selected".into())),
             ].spacing(8),
-            text("Original: maintained detector. Hybrid: optimized board outlines. Your importer: full colleague board detector."),
-            text("Hybrid and your importer need a trusted .ipynb. Every imported geometry needs a new mapping review and calibration."),
+            text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
+            text("Hybrid requires a trusted importer notebook. Switching methods clears prior geometry approval; all modes require mapping review and calibration."),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
