@@ -92,6 +92,10 @@ enum Message {
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
     SelectCbctDetectorVariant(cbct_geometry::CbctDetectorVariant),
+    CheckCbctSetup,
+    CbctSetupChecked(Result<String,String>),
+    CopyCbctSetupInstructions,
+    CopyCbctSetupResults,
     ImportCbctZip,
     ImportCbctFolder,
     LoadCbctDetectionsJson,
@@ -320,6 +324,8 @@ struct Context {
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
     cbct_detector_variant: cbct_geometry::CbctDetectorVariant,
+    cbct_setup_status: String,
+    cbct_setup_checking: bool,
     hdmm_marker_coordinate_input: String,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
@@ -731,6 +737,10 @@ async fn run_cbct_import_off_thread(
     }).await
 }
 
+async fn run_cbct_dependency_check_off_thread() -> Result<String,String> {
+    async_std::task::spawn_blocking(cbct_geometry::inspect_dicom_environment).await
+}
+
 fn open_file(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Result<rfd::FileHandle, Error>> + use<> {
@@ -995,6 +1005,26 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.cbct_last_log.clear();
             }
             Task::none()
+        }
+        Message::CheckCbctSetup => {
+            if context.cbct_setup_checking || context.cbct_importing {return Task::none();}
+            context.cbct_setup_checking=true;
+            context.cbct_setup_status="Checking the bundled DICOM script, Python environment and packages (no installation)...".into();
+            Task::perform(run_cbct_dependency_check_off_thread(),Message::CbctSetupChecked)
+        }
+        Message::CbctSetupChecked(result) => {
+            context.cbct_setup_checking=false;
+            context.cbct_setup_status=match result {
+                Ok(summary)=>format!("DICOM environment ready for Original/Optimized.\n{summary}"),
+                Err(error)=>format!("DICOM setup needs attention:\n{error}"),
+            };
+            Task::none()
+        }
+        Message::CopyCbctSetupInstructions => {
+            iced::clipboard::write(cbct_geometry::dicom_setup_instructions())
+        }
+        Message::CopyCbctSetupResults => {
+            iced::clipboard::write(context.cbct_setup_status.clone())
         }
         Message::ImportCbctZip => {
             if context.cbct_importing { return Task::none(); }
@@ -2234,6 +2264,17 @@ fn view(context: &Context) -> Element<'_, Message> {
             text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
             text("Original and Optimized use scripts shipped inside this app repo (Python runtime still needed). Hybrid is experimental and unavailable until its reviewed detector source is installed."),
             text("Changing detector revokes mapping approval. A successful CT import never enables magnetic tracking."),
+            row![
+                if context.cbct_setup_checking || context.cbct_importing {
+                    button("Check DICOM packages")
+                } else {button("Check DICOM packages").on_press(Message::CheckCbctSetup)},
+                button("Copy setup commands").on_press(Message::CopyCbctSetupInstructions),
+                button("Copy package report").on_press(Message::CopyCbctSetupResults),
+            ].spacing(8),
+            text("Install once on each lab computer: app/python_cbct/requirements.txt. Run scripts/setup_dicom_windows.ps1 or use Copy setup commands. No packages are installed by these buttons."),
+            text(if context.cbct_setup_status.is_empty() {
+                "DICOM Python environment not checked on this computer.".to_string()
+            } else {context.cbct_setup_status.clone()}),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
