@@ -1346,6 +1346,22 @@ mod tests {
     }
 
     #[test]
+    fn lab_laptop_requirement_manifest_and_checker_are_bundled() {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let python=root.join("python_cbct");
+        for name in ["requirements.txt","check_dicom_environment.py","cbct_detect.py"] {
+            assert!(python.join(name).is_file(),"Missing lab setup file: {name}");
+        }
+        assert!(root.join("..").join("scripts").join("setup_dicom_windows.ps1").is_file());
+        let instructions=dicom_setup_instructions();
+        assert!(instructions.contains("requirements.txt"));
+        assert!(instructions.contains("setup_dicom_windows.ps1"));
+        assert!(!instructions.contains("hall-effect-motion-tracking"));
+        assert!(instructions.contains("py -3.11"));
+        // No package installer is automatically started by Check DICOM setup.
+    }
+
+    #[test]
     fn detector_version_preflight_rejects_old_cli_without_scanning() {
         // Source-level regression for the exact failure encountered on Windows:
         // an old cbct_detect.py accepts only `scan --output`.
