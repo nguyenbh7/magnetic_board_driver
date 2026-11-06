@@ -2499,6 +2499,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                 _=>format!("Board {board_id}: awaiting raw Hall fields"),
             };
             rigid_content=rigid_content
+                .push(text(if sensor_board.invalid_samples>0 {
+                    format!("RAW DATA WARNING: board {board_id} has {} missing/nonfinite sample(s) in this trace epoch.",sensor_board.invalid_samples)
+                } else { "Raw component values received so far are finite (not proof against saturation).".into() }))
                 .push(row![
                     text(format!("Board {} raw Bx/By/Bz",board_id)),
                     pick_list(sensor_board.available_sensors,
@@ -2698,6 +2701,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                             text(selected_text),
                         ]
                         .spacing(12),
+                        text(if summary.invalid_samples>0 {
+                            format!("RAW DATA WARNING: {} invalid/missing components",summary.invalid_samples)
+                        } else { "Received field values are finite; clipping remains possible".into() }),
                         text(match (summary.peak_component_mt,summary.peak_sensor_index) {
                             (Some(peak),Some(sensor)) => {
                                 let limit=context.sensor_component_full_scale_mt.trim()
