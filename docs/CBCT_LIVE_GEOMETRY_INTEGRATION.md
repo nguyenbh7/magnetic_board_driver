@@ -1,3 +1,26 @@
+## 2026-11-06 — Hybrid runtime no longer prompts for a Jupyter notebook
+
+**Code change committed, full Hybrid source vendoring still pending:** The user-facing notebook picker is removed from `app/src/main.rs`, including its async file dialog, messages, path field, and background-task path argument. **Original / Hybrid / Optimized** remain the three detector choices; none of them requires selecting an external file in the GUI.
+
+The import command for Hybrid is now simply `cbct_detect.py <scan> --output <dir> --detector-variant hybrid`. The Python detector loads a **maintained, ordinary module** `tools/cbct_bridge/hybrid_board_detector.py`. Unlike the former runtime notebook AST loader, it does not execute or need `find_magnets_arrays(1).ipynb` during CT import. The original five reviewed board functions must be **vendored once** using the committed `tools/cbct_bridge/vendor_hybrid_board_detector.py`, which is described in the other repository's README. That original notebook is currently held only on the user's Windows workstation; the generated module is **not yet committed**, so Hybrid will fail explicitly until the one-time source-vendoring step is completed. **Do not claim a turnkey Hybrid workflow or real-image validation yet.** Original and Optimized remain functional in the meantime.
+
+The Rust variant tests assert exactly two args (`--detector-variant hybrid`) and no notebook path, while Python routing tests mock the source module and test the missing-module failure. New structured source provenance `hybrid_source_sha256` is retained in `detections.json`, CT review and calibration exports. Old importer-hash JSON keys remain accepted only as backwards-compatible persisted file aliases. Method switching still invalidates the CT geometry, mapping approval and active experimental profile, without altering captured Hall reference/background data.
+
+**Local completion checks after vendoring reviewed Hybrid code:**
+
+```powershell
+cd F:\GitHub\hall-effect-motion-tracking
+python .\tools\cbct_bridge\vendor_hybrid_board_detector.py
+python -m unittest discover -s tools\cbct_bridge -p "test_vendor_hybrid_board_detector.py" -v
+python -m unittest discover -s tools\cbct_bridge -p "test_cbct_detector_variant_selector.py" -v
+
+cd F:\GitHub\magnetic_board_driver
+cargo test -p app --release
+cargo run -p app --release
+```
+
+Then manually compare Hybrid outputs on the same real CT files against the already saved research A/B Hybrid geometry before committing and using the new option. Source code work has **not** been compiled or executed on the user's Windows computer in this turn.
+
 ## 2026-11-06 — Final operator names: Original / Hybrid / Optimized (supersedes the preceding 3-way naming)
 
 The DICOM detector dropdown now contains **Original**, **Hybrid**, and **Optimized** (default). There are **no collaborator names in the GUI**. These are *three actual algorithm configurations*, not aliases of the same mode:
