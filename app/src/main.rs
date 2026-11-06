@@ -1314,13 +1314,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "geometry_sensor_order": "CT_detector_order_with_v2_JST_candidate",
                             "frame_of_reference_uid": geometry.frame_uid,
                             "selected_detector_variant":geometry.selected_detector_variant,
-                            "importer_notebook_sha256":geometry.importer_notebook_sha256,
+                            "hybrid_source_sha256":geometry.hybrid_source_sha256,
                             "detector_replay": {
                                 "format": "gk_cbct_detections_v1",
                                 "coordinate_frame": "DICOM_LPS_mm",
                                 "frame_of_reference_uid": geometry.frame_uid,
                                 "selected_detector_variant": geometry.selected_detector_variant,
-                                "importer_notebook_sha256": geometry.importer_notebook_sha256,
+                                "hybrid_source_sha256": geometry.hybrid_source_sha256,
                                 "status": "unreviewed",
                                 "requires_review": true,
                                 "objects": geometry.magnets.iter().map(|m|serde_json::json!({
