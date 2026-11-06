@@ -2892,6 +2892,46 @@ mod tracking_mode_ui_tests {
     }
 
     #[test]
+    fn background_capture_and_portable_roundtrip_need_no_ct_or_stationary_reference() {
+        let mut capture=GkCalibration::default();
+        capture.begin(false);
+        capture.capturing.as_mut().unwrap().started=
+            std::time::Instant::now()-std::time::Duration::from_secs(4);
+        for cycle in 0..2 {
+            for raw_board in 0..3 {
+                let mut frame=BoardFrame::default();
+                frame.board_id=raw_board;
+                frame.sensor_mask=0xffff;
+                frame.frame_id=cycle;
+                for (i,value) in frame.samples.iter_mut().enumerate() {
+                    value.bx_ut=1000.0*raw_board as f32 + i as f32;
+                    value.by_ut=0.0;
+                    value.bz_ut=0.0;
+                }
+                capture.accept_frame(&frame);
+            }
+        }
+        let raw=capture.background.expect("48 vectors must complete after two full board cycles");
+        assert!(capture.reference.is_none());
+        let json=GkBackgroundFile::from_raw(raw).unwrap().to_bytes().unwrap();
+        assert_eq!(GkBackgroundFile::from_bytes(&json).unwrap().raw(),raw);
+    }
+
+    #[test]
+    fn loaded_background_is_inactive_until_operator_confirms_matching_hardware() {
+        let mut context=Context::default();
+        let mut raw=[[[0.0;3];16];3];
+        raw[0][0]=[0.012,-0.024,0.033];
+        context.gk_calibration.pending_background=Some(raw);
+        assert!(context.gk_calibration.background.is_none());
+        let _=update(&mut context,Message::ConfirmImportedGkBackground);
+        assert_eq!(context.gk_calibration.background,Some(raw));
+        assert!(context.gk_calibration.pending_background.is_none());
+        assert!(context.gk_calibration.reference.is_none());
+        assert!(!context.rigid_fit.enabled());
+    }
+
+    #[test]
     fn algorithm_selection_is_independent_of_the_three_plot_tabs() {
         let mut context = Context::default();
         assert_eq!(context.dashboard_tab, DashboardTab::LiveTracking);
