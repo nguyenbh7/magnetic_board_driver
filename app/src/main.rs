@@ -2121,7 +2121,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![
                 text("Detector:"),
                 pick_list(
-                    cbct_geometry::CbctDetectorVariant::ALL,
+                    cbct_geometry::CbctDetectorVariant::ALL.to_vec(),
                     Some(context.cbct_detector_variant),
                     Message::SelectCbctDetectorVariant,
                 ),
