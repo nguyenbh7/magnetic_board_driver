@@ -10,6 +10,47 @@ use std::io::{BufRead, BufReader, Read};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 
+/// The selected CT *detection algorithm*. This is never a calibration approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CbctDetectorVariant {
+    #[default]
+    Original,
+    Hybrid,
+    Colleague,
+}
+impl CbctDetectorVariant {
+    pub const ALL: [Self; 3] = [Self::Original, Self::Hybrid, Self::Colleague];
+    fn cli_value(self) -> &'static str {
+        match self { Self::Original => "original", Self::Hybrid => "hybrid", Self::Colleague => "colleague" }
+    }
+    fn python_args(self, colleague_notebook: Option<&Path>) -> Result<Vec<std::ffi::OsString>, String> {
+        use std::ffi::OsString;
+        if self == Self::Original { return Ok(vec![]); } // Preserve old script compatibility.
+        let path=colleague_notebook.ok_or_else(|| format!(
+            "{} needs a trusted local colleague DICOM importer notebook. Use 'Select importer notebook' before importing.",
+            self
+        ))?;
+        if !path.is_file() || path.extension().and_then(|s|s.to_str())
+            .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
+            return Err(format!("Importer notebook does not exist or is not an .ipynb: {}",path.display()));
+        }
+        Ok(vec![
+            OsString::from("--detector-variant"),OsString::from(self.cli_value()),
+            OsString::from("--colleague-notebook"),path.as_os_str().to_os_string(),
+        ])
+    }
+}
+impl std::fmt::Display for CbctDetectorVariant {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label=match self {
+            Self::Original => "Original (production CT detector)",
+            Self::Hybrid => "Hybrid (optimized colleague PCB)",
+            Self::Colleague => "Your DICOM importer (full colleague PCB)",
+        };
+        f.write_str(label)
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct ImportProgress {
     pub latest: String,
@@ -984,6 +1025,16 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
+    import_dicom_with_variant(scan,CbctDetectorVariant::Original,None,progress)
+}
+
+pub fn import_dicom_with_variant(
+    scan: &Path,
+    variant: CbctDetectorVariant,
+    colleague_notebook: Option<&Path>,
+    progress: Arc<Mutex<ImportProgress>>
+) -> Result<CbctGeometry, String> {
+    let detector_args=variant.python_args(colleague_notebook)?;
     if !scan.exists() {
         return Err(format!("DICOM series or ZIP not found: {}", scan.display()));
     }
@@ -1023,9 +1074,10 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
     record(&progress, "Finding Python environment with DICOM dependencies...".into());
     let (python,prefix,python_location) = discover_cbct_python(&script)?;
     record(&progress, format!("DICOM Python: {python_location}"));
-    record(&progress, "Launching Python CBCT detector...".into());
+    record(&progress, format!("Launching Python CBCT detector: {} (preview only; no automatic calibration)",variant));
     let mut child = Command::new(&python)
         .args(&prefix).arg("-u").arg(&script).arg(scan).arg("--output").arg(&result_dir)
+        .args(&detector_args)
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn()
         .map_err(|e|format!("Unable to launch selected Python DICOM environment {python_location}: {e}"))?;
@@ -1070,6 +1122,21 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
     if cancelled { return Err("Detection cancelled by user. No geometry was imported.".into()); }
     let report_path=result_dir.join("detections.json");
     let raw=std::fs::read_to_string(&report_path);
+    // Never accept an experimental detector's result without matching provenance.
+    if let Ok(ref report)=raw {
+        if variant != CbctDetectorVariant::Original {
+            let source=serde_json::from_str::<serde_json::Value>(report).map_err(|e|
+                format!("Invalid experimental detector output: {e}"))?;
+            let actual=source.get("selected_detector_variant").and_then(|v|v.as_str());
+            if actual!=Some(variant.cli_value()) || source.get("colleague_notebook_sha256")
+                .and_then(|v|v.as_str()).is_none_or(|hash|hash.len()!=64) {
+                return Err(format!(
+                    "Experimental CT detector provenance missing/mismatched: requested {}, result {:?}. No geometry imported.",
+                    variant.cli_value(), actual
+                ));
+            }
+        }
+    }
     if !status.success() {
         // Python returns code 1 for incomplete detection but still writes
         // object counts/coordinates. Missing BB alone is nonfatal; missing
