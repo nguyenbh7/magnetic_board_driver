@@ -1070,6 +1070,49 @@ fn validate_detector_report_source(
     Ok(())
 }
 
+/// Catch mismatched live-app/detector versions BEFORE running expensive CT code.
+/// Detection script --help is cheap and does not import CT image libraries.
+fn check_cbct_detector_compatibility(
+    script: &Path,
+    variant: CbctDetectorVariant,
+    python: &std::ffi::OsStr,
+    prefix: &[std::ffi::OsString],
+) -> Result<(), String> {
+    let output=Command::new(python)
+        .args(prefix).arg(script).arg("--help").output()
+        .map_err(|e|format!(
+            "Unable to check CBCT detector CLI at {}: {e}",
+            script.display()
+        ))?;
+    if !output.status.success() {
+        return Err(format!(
+            "CBCT detector help failed before image processing: {} (status {}). stderr: {}",
+            script.display(), output.status,
+            String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>()
+        ));
+    }
+    let help=String::from_utf8_lossy(&output.stdout);
+    if !help.contains("--detector-variant") {
+        return Err(format!(
+            "DICOM detector version mismatch: the live app selected {}, but the script at {}              does not support --detector-variant. Update hall-effect-motion-tracking              (a1-vgm-validation), verify CBCT_DETECT_SCRIPT isn't pointing to an older copy,              and restart the app. No DICOM was processed.",
+            variant,script.display()
+        ));
+    }
+    // Hybrid was historically implemented outside Rust; fail with a clear
+    // prerequisite message instead of pretending the Python module is native.
+    if variant == CbctDetectorVariant::Hybrid {
+        let module=script.parent().unwrap_or_else(||Path::new("."))
+            .join("hybrid_board_detector.py");
+        if !module.is_file() {
+            return Err(format!(
+                "Hybrid source is not installed: {}. The reviewed Hybrid algorithm                  has not yet been ported into native Rust or committed as a built-in                  detector. Original and Optimized remain available; no fallback                  was performed.",
+                module.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
@@ -1118,9 +1161,16 @@ pub fn import_dicom_with_variant(
         .map_err(|e| e.to_string())?.as_nanos();
     let result_dir = root.join(format!("import_{}_{}",std::process::id(),stamp));
     std::fs::create_dir(&result_dir).map_err(|e|format!("Cannot create unique CBCT output folder: {e}"))?;
+    record(&progress, format!(
+        "CT detection script: {} (CBCT_DETECT_SCRIPT override: {})",
+        script.display(),
+        if std::env::var_os("CBCT_DETECT_SCRIPT").is_some() { "set" } else { "not set" },
+    ));
     record(&progress, "Finding Python environment with DICOM dependencies...".into());
     let (python,prefix,python_location) = discover_cbct_python(&script)?;
     record(&progress, format!("DICOM Python: {python_location}"));
+    record(&progress, format!("Checking {} detector/script compatibility...",variant));
+    check_cbct_detector_compatibility(&script,variant,&python,&prefix)?;
     record(&progress, format!("Launching Python CBCT detector: {} (preview only; no automatic calibration)",variant));
     let mut child = Command::new(&python)
         .args(&prefix).arg("-u").arg(&script).arg(scan).arg("--output").arg(&result_dir)
@@ -1213,6 +1263,16 @@ pub fn import_dicom_with_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detector_version_preflight_rejects_old_cli_without_scanning() {
+        // Source-level regression for the exact failure encountered on Windows:
+        // an old cbct_detect.py accepts only `scan --output`.
+        let old_help="usage: cbct_detect.py [-h] --output OUTPUT [--no-qc] scan";
+        assert!(!old_help.contains("--detector-variant"));
+        assert!(CbctDetectorVariant::Hybrid.python_args()
+            .iter().any(|arg|arg=="--detector-variant"));
+    }
 
     #[test]
     fn detector_selection_is_built_in_without_notebook_picker() {
