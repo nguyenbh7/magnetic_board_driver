@@ -1033,6 +1033,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.gk_calibration.cad_review_details_expanded = false;
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
+                context.hdmm_marker_coordinate_input.clear();
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
@@ -1071,6 +1072,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.gk_calibration.cad_review_details_expanded = false;
                     context.gk_calibration.cad_mapping_approved = false;
                     context.rigid_fit.invalidate_for_gk_calibration();
+                    context.hdmm_marker_coordinate_input.clear();
                     }
                     Err(error) => {
                         context.cbct_status = format!("CBCT import failed: {error}");
