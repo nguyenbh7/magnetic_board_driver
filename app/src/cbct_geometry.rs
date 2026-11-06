@@ -70,6 +70,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct CbctGeometry {
+    /// Algorithm that created these detections, preserved across JSON loads/export.
+    pub selected_detector_variant: String,
+    /// Audit hash of trusted colleague importer notebook for experimental methods.
+    pub colleague_notebook_sha256: Option<String>,
     pub scan_path: PathBuf,
     pub qc_directory: PathBuf,
     pub frame_uid: String,
@@ -137,6 +141,10 @@ pub struct CbctMarker {
 struct DetectorReport {
     format: String,
     coordinate_frame: String,
+    #[serde(default)]
+    selected_detector_variant: Option<String>,
+    #[serde(default)]
+    colleague_notebook_sha256: Option<String>,
     frame_of_reference_uid: Option<String>,
     status: String,
     #[serde(default)]
@@ -309,6 +317,18 @@ impl CbctGeometry {
         if report.format != "gk_cbct_detections_v1" || report.coordinate_frame != "DICOM_LPS_mm" {
             return Err("Unsupported CT detector format or coordinate frame".into());
         }
+        let detector_variant=report.selected_detector_variant.as_deref()
+            .unwrap_or("original_legacy_unlabeled");
+        if !matches!(detector_variant,"original"|"hybrid"|"colleague"|"original_legacy_unlabeled") {
+            return Err(format!("Unknown CBCT detector method: {detector_variant}"));
+        }
+        if matches!(detector_variant,"hybrid"|"colleague") &&
+            !report.colleague_notebook_sha256.as_deref()
+                .is_some_and(|h|h.len()==64 && h.bytes().all(|x|x.is_ascii_hexdigit())) {
+            return Err("Experimental CT detector report must retain importer notebook SHA256".into());
+        }
+        let detector_variant=detector_variant.to_string();
+        let colleague_sha=report.colleague_notebook_sha256.clone();
         // The glass BB is optional for magnet/board calibration. All
         // three magnets and all 48 sensors remain mandatory. Accept an
         // incomplete detector report ONLY when validation below proves
@@ -490,6 +510,8 @@ impl CbctGeometry {
         }
         Ok(Self {
             scan_path, qc_directory,
+            selected_detector_variant:detector_variant,
+            colleague_notebook_sha256:colleague_sha,
             frame_uid: uid,
             rigid_origin_lps_mm: origin,
             rigid_axes_to_lps: axes,
@@ -911,6 +933,10 @@ impl CbctGeometry {
     pub fn summary(&self) -> String {
         let mut lines = vec![
             "CBCT INITIAL GEOMETRY — UNREVIEWED (not a magnetic fit profile)".to_string(),
+            format!("Selected detector: {} (all CT geometry requires independent review)",
+                    self.selected_detector_variant),
+            format!("Experimental detector notebook SHA256: {}",
+                    self.colleague_notebook_sha256.as_deref().unwrap_or("not applicable / legacy")),
             format!("Source: {}", self.scan_path.display()),
             format!("DICOM LPS frame: {}", self.frame_uid),
             format!("Three-magnet rigid origin L/P/S: {:.3}, {:.3}, {:.3} mm",
