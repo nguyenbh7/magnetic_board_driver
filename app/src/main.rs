@@ -144,6 +144,7 @@ enum Message {
         board_id: u16,
         sensor_index: u8,
     },
+    SetSensorComponentFullScale(String),
 
     StartFieldStream,
     FieldStreamStarted(Result<(), String>),
@@ -310,6 +311,8 @@ struct Context {
     ping_field: Option<SensorField>,
     sensor_grids: BTreeMap<u8, SensorGrid>,
     sensor_traces: SensorTraceState,
+    /// Requires an operator-verified range for the current MLX gain/res config.
+    sensor_component_full_scale_mt: String,
     dashboard_tab: DashboardTab,
     tracking_mode: TrackingMode,
     board_presence: BoardPresence,
@@ -1656,6 +1659,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
         Message::StartFieldStream => {
             context.rigid_fit.start_new_acquisition();
+            context.sensor_traces.reset_histories();
             context.gk_calibration.capturing = None;
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
@@ -1971,7 +1975,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.mlx_resolution = status.resolution.to_string();
             context.mlx_hall_conf = hall_conf_value_to_label(status.hall_conf).to_string();
             context.mlx_status = Some(status);
-
+            // Any previous full-scale warning limit might belong to a
+            // different sensor gain/resolution; require explicit re-entry.
+            context.sensor_component_full_scale_mt.clear();
             Task::none()
         }
 
@@ -2060,6 +2066,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             sensor_index,
         } => {
             context.sensor_traces.select_sensor(board_id, sensor_index);
+            Task::none()
+        }
+        Message::SetSensorComponentFullScale(value) => {
+            context.sensor_component_full_scale_mt=value;
             Task::none()
         }
     }
@@ -2438,6 +2448,48 @@ fn view(context: &Context) -> Element<'_, Message> {
             .push(rotation_plot(u16::MAX, rigid.rotation_history))
             .push(text("Rigid-fit predicted displacement at the manually confirmed HDMM marker (not actual HDMM):"))
             .push(hdmm_prediction_plot(rigid.hdmm_history));
+        // In the same scrollable live-tracking view, put raw selected-sensor
+        // Bx/By/Bz traces next to the joint rigid-body displacement plots.
+        // Each selected sensor can be changed without changing the fitter.
+        let full_scale=context.sensor_component_full_scale_mt.trim()
+            .parse::<f64>().ok().filter(|v|v.is_finite() && *v>0.0);
+        rigid_content=rigid_content
+            .push(text("Raw Hall sensor traces (mT) — displayed with rigid-body displacement; check for clipping/plateaus."))
+            .push(row![
+                text("Verified per-axis full-scale (mT):"),
+                text_input("Enter value for current gain/res", &context.sensor_component_full_scale_mt)
+                    .on_input(Message::SetSensorComponentFullScale),
+            ].spacing(8))
+            .push(text(if full_scale.is_some() {
+                "Warnings begin at 90% of your verified full-scale. This is a screening alert, not a hardware saturation flag."
+            } else {
+                "Full-scale not specified: saturation status UNKNOWN. Set the verified gain/resolution-dependent axis range."
+            }));
+        for sensor_board in context.sensor_traces.board_summaries() {
+            let board_id=sensor_board.board_id;
+            let alert=sensor_trace::above_warning_margin(
+                sensor_board.peak_component_mt,full_scale);
+            let peak_label=match (sensor_board.peak_component_mt, sensor_board.peak_sensor_index) {
+                (Some(peak),Some(sensor))=>format!(
+                    "Board {} peak |axis field| across all sensor histories: {:.3} mT (sensor {}). {}",
+                    board_id,peak,sensor,
+                    if alert {"WARNING: >=90% of configured full-scale; possible clipping"} else if full_scale.is_some() {
+                        "Below configured warning margin; saturation still not excluded"
+                    } else {"No validated full-scale margin"}
+                ),
+                _=>format!("Board {board_id}: awaiting raw Hall fields"),
+            };
+            rigid_content=rigid_content
+                .push(row![
+                    text(format!("Board {} raw Bx/By/Bz",board_id)),
+                    pick_list(sensor_board.available_sensors,
+                              sensor_board.selected_sensor_index,
+                              move |sensor_index| Message::SelectSensorTrace {board_id,sensor_index}),
+                ].spacing(8))
+                .push(text(peak_label))
+                .push(sensor_trace_plot(board_id,sensor_board.selected_sensor_index,
+                                        sensor_board.selected_trace));
+        }
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
             text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
@@ -2588,7 +2640,13 @@ fn view(context: &Context) -> Element<'_, Message> {
 
         let mut trace_content = column![
             text("Sensor field traces"),
-            text("Select one sensor per board to plot Bx, By, and Bz over time.")
+            text("Select one sensor per board to plot Bx, By, and Bz over time."),
+            text("Full-scale is configuration dependent. All-board raw peaks are checked; no firmware saturation flag is available."),
+            row![
+                text("Verified per-axis full-scale (mT):"),
+                text_input("Range for current gain/res", &context.sensor_component_full_scale_mt)
+                    .on_input(Message::SetSensorComponentFullScale),
+            ].spacing(8),
         ]
         .spacing(12);
 
@@ -2620,6 +2678,20 @@ fn view(context: &Context) -> Element<'_, Message> {
                             text(selected_text),
                         ]
                         .spacing(12),
+                        text(match (summary.peak_component_mt,summary.peak_sensor_index) {
+                            (Some(peak),Some(sensor)) => {
+                                let limit=context.sensor_component_full_scale_mt.trim()
+                                    .parse::<f64>().ok().filter(|v|v.is_finite() && *v>0.0);
+                                format!("Peak across all sensors: {:.3} mT (sensor {}). {}",
+                                    peak,sensor,
+                                    if sensor_trace::above_warning_margin(Some(peak),limit) {
+                                        "WARNING >=90% of verified full-scale; possible clipping"
+                                    } else if limit.is_some() {
+                                        "Below set alert margin; not proof against saturation"
+                                    } else {"Full-scale unknown; cannot assess saturation"})
+                            }
+                            _=>"No Hall fields yet".into(),
+                        }),
                         sensor_trace_plot(
                             board_id,
                             selected_sensor,
