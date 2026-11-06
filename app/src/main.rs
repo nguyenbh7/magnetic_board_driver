@@ -1143,8 +1143,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::CopyCbctStatus => {
             iced::clipboard::write(format!("DICOM import status: {}\nSelected import method: {}\nCT registration: {}",
-                context.cbct_detector_variant,
                 context.cbct_status,
+                context.cbct_detector_variant,
                 context.cbct_geometry.as_ref().map(|g|g.registration_preview_v2())
                     .unwrap_or_else(|| "No geometry imported.".into())))
         }
