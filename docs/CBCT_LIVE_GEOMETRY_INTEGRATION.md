@@ -1,3 +1,39 @@
+## 2026-11-06 — User-selectable CBCT detector in the live application (research geometry only)
+
+**Implemented on `feature/live-rigid-body-fit` (Rust) + `a1-vgm-validation` (Python); Windows build and real-scan GUI validation still pending.** The DICOM Geometry panel now provides a **Detector** dropdown:
+
+| Choice | Algorithm | Requirement / behavior |
+| --- | --- | --- |
+| **Original (production CT detector)** | Existing maintained `cbct_detect.py` and optimized `detector_core` with the usual chip-first rescue | Default. No colleague notebook needed. Old custom detector scripts still work when this is selected. |
+| **Hybrid (optimized colleague PCB)** | Colleague's reviewed full-outline footprint/contrast code with **optimized production reslice** for ordinary slabs; collaborator's side-layer reslices preserved | Select a **trusted local** `.ipynb` file first. No fallback chip-first rescue; geometry may fail its physical/CT quality gates. |
+| **Your DICOM importer (full colleague PCB)** | Same reviewed colleague five-function implementation with its **original reslice**, matching the full collaborator A/B candidate | Select the same trusted `.ipynb` file. No fallback chip-first rescue. |
+
+The `Select importer notebook` button browses to the trusted `find_magnets_arrays(1).ipynb` or its explicitly reviewed equivalent. This Python notebook is executable code even though the loader extracts a fixed set of function definitions: do not select untrusted files. The app freezes the method and path when import starts, runs the detector off the GUI event loop, retains a full QC output folder and activity log, and validates experimental `selected_detector_variant` and the notebook SHA256 in `detections.json`. The parsed geometry summary and calibration export preserve these attributes. **No choice automatically falls back to a different detector, mixes best-looking objects across outputs, approves a mapping, or enables magnetic tracking.** To retry after failure, manually choose another method and run Import ZIP/folder again; each run gets its own unique result directory.
+
+**Fail-closed state:** Changing the detector or notebook clears previous imported CT geometry, CAD/JST review preview, mapping approval, calibrated candidate, and active experimental 6-DOF profile. It intentionally preserves already captured raw Hall stationary-reference and measured-background arrays. Every newly imported detector result still passes the existing strict 3-magnet/3-board/48-chip/optional-BB geometry gate, and **CT-to-firmware mapping / no-magnet or stationary calibration / explicit operator approval** remain independent steps. The original production algorithm remains the default. Full-outline yield and numerical grid fits from October 30 do **not** independently validate sensor active-center location, PCB/JST geometry or clinical motion tracking.
+
+**Operator sequence:** open live app → select desired **Detector** → for Hybrid/Your Importer choose the reviewed colleague notebook → **Import ZIP** or **Import folder** → inspect per-run QC/detected objects and mapping → if unsuitable, change Detector and import again. There is also a separate **Load JSON** option for offline-reviewed geometry. For provenance, use **Copy details** and **Save calibration data**.
+
+**Tests to run in the correct local environments:**
+
+```powershell
+# Rust live app
+cd F:\GitHub\magnetic_board_driver
+git switch feature/live-rigid-body-fit
+git pull --ff-only origin feature/live-rigid-body-fit
+cargo test -p app --release
+cargo run -p app --release
+
+# Maintained Python detector implementation
+cd F:\GitHub\hall-effect-motion-tracking
+git switch a1-vgm-validation
+git pull --ff-only origin a1-vgm-validation
+cd tools\cbct_bridge
+.\.venv\Scripts\python.exe -m unittest -v test_cbct_detector_variant_selector.py
+```
+
+If the Python venv is instead in `hall-effect-motion-tracking\.venv`, activate that environment and use `python -m unittest -v test_cbct_detector_variant_selector.py`. Both research paths rely on the Python detector dependencies already installed for Original. **Real DICOM test:** import the same saved CT ZIP through Original, Hybrid, and Your Importer, review each result independently, and verify that switching revokes the prior mapping approval and disables the current experimental fit. Do not promote the most complete-looking geometry without a physical review.
+
 ## 2026-11-04 — Narrow hybrid PCB-only candidate for October30 GK motion A/B; no new UI or calibration logic
 
 ## 2026-11-04 — Integration checks PASSED on Windows; hand off to recorded GK replay
