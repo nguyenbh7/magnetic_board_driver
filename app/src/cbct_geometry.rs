@@ -23,25 +23,12 @@ impl CbctDetectorVariant {
     fn cli_value(self) -> &'static str {
         match self { Self::Original => "original", Self::Hybrid => "hybrid", Self::Optimized => "optimized" }
     }
-    fn python_args(self, importer_notebook: Option<&Path>) -> Result<Vec<std::ffi::OsString>, String> {
+    fn python_args(self) -> Vec<std::ffi::OsString> {
         use std::ffi::OsString;
         match self {
-            Self::Optimized => Ok(vec![]), // Current maintained detector default; compatible with existing scripts.
-            Self::Original => Ok(vec![
-                OsString::from("--detector-variant"),OsString::from("original"),
-            ]),
-            Self::Hybrid => {
-                let path=importer_notebook.ok_or_else(||
-                    "Hybrid requires a trusted importer notebook. Select importer notebook before importing.".to_string())?;
-                if !path.is_file() || path.extension().and_then(|s|s.to_str())
-                    .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
-                    return Err(format!("Importer notebook does not exist or is not an .ipynb: {}",path.display()));
-                }
-                Ok(vec![
-                    OsString::from("--detector-variant"),OsString::from("hybrid"),
-                    OsString::from("--importer-notebook"),path.as_os_str().to_os_string(),
-                ])
-            }
+            Self::Optimized => vec![],
+            Self::Original => vec![OsString::from("--detector-variant"),OsString::from("original")],
+            Self::Hybrid => vec![OsString::from("--detector-variant"),OsString::from("hybrid")],
         }
     }
 }
@@ -1085,16 +1072,15 @@ fn validate_detector_report_source(
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
-    import_dicom_with_variant(scan,CbctDetectorVariant::Optimized,None,progress)
+    import_dicom_with_variant(scan,CbctDetectorVariant::Optimized,progress)
 }
 
 pub fn import_dicom_with_variant(
     scan: &Path,
     variant: CbctDetectorVariant,
-    importer_notebook: Option<&Path>,
     progress: Arc<Mutex<ImportProgress>>
 ) -> Result<CbctGeometry, String> {
-    let detector_args=variant.python_args(importer_notebook)?;
+    let detector_args=variant.python_args();
     if !scan.exists() {
         return Err(format!("DICOM series or ZIP not found: {}", scan.display()));
     }
@@ -1228,31 +1214,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detector_selection_is_explicit_and_hybrid_requires_importer() {
+    fn detector_selection_is_built_in_without_notebook_picker() {
         assert_eq!(CbctDetectorVariant::default(),CbctDetectorVariant::Optimized);
-        assert_eq!(CbctDetectorVariant::ALL.len(),3);
-        let labels=CbctDetectorVariant::ALL.map(|method|method.to_string());
+        let labels=CbctDetectorVariant::ALL.map(|mode|mode.to_string());
         assert_eq!(labels,["Original","Hybrid","Optimized"]);
-        assert!(CbctDetectorVariant::Optimized.python_args(None).unwrap().is_empty());
-        let original=CbctDetectorVariant::Original.python_args(None).unwrap();
-        assert_eq!(original.len(),2);
-        assert_eq!(original[1].to_string_lossy(),"original");
-        let error=CbctDetectorVariant::Hybrid.python_args(None).unwrap_err();
-        assert!(error.contains("Select importer notebook"));
-        assert!(CbctDetectorVariant::Hybrid.python_args(Some(Path::new("does_not_exist.ipynb"))).is_err());
-        assert!(CbctDetectorVariant::Hybrid.python_args(Some(Path::new("does_not_exist.json"))).is_err());
-        let base=std::env::temp_dir().join(format!(
-            "gk_importer_test_{}_{}.ipynb",std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap().as_nanos()
-        ));
-        std::fs::write(&base,b"{}").unwrap();
-        let args=CbctDetectorVariant::Hybrid.python_args(Some(&base)).unwrap();
-        assert_eq!(args[0].to_string_lossy(),"--detector-variant");
-        assert_eq!(args[1].to_string_lossy(),"hybrid");
-        assert_eq!(args[2].to_string_lossy(),"--importer-notebook");
-        assert_eq!(args[3].as_os_str(),base.as_os_str());
-        std::fs::remove_file(base).unwrap();
+        assert!(CbctDetectorVariant::Optimized.python_args().is_empty());
+        for (mode,name) in [
+            (CbctDetectorVariant::Original,"original"),
+            (CbctDetectorVariant::Hybrid,"hybrid"),
+        ] {
+            let args=mode.python_args();
+            assert_eq!(args.len(),2);
+            assert_eq!(args[0].to_string_lossy(),"--detector-variant");
+            assert_eq!(args[1].to_string_lossy(),name);
+            assert!(!args.iter().any(|arg|arg.to_string_lossy().contains("notebook")));
+        }
     }
 
     #[test]
