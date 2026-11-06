@@ -1263,6 +1263,25 @@ mod tests {
         assert!(validate_detector_report_source(CbctDetectorVariant::Colleague,&untrusted).is_err());
     }
 
+    #[test]
+    fn imported_detector_method_is_visible_in_geometry_summary() {
+        let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
+        report["selected_detector_variant"]=serde_json::json!("hybrid");
+        report["colleague_notebook_sha256"]=serde_json::json!("b".repeat(64));
+        let geometry=CbctGeometry::from_detector_json(
+            &report.to_string(),"example.zip".into(),"qc".into()
+        ).unwrap();
+        assert_eq!(geometry.selected_detector_variant,"hybrid");
+        assert_eq!(geometry.colleague_notebook_sha256.as_deref(),
+                   Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(geometry.summary().contains("Selected detector: hybrid"));
+        let mut invalid=report.clone();
+        invalid["colleague_notebook_sha256"]=serde_json::Value::Null;
+        assert!(CbctGeometry::from_detector_json(
+            &invalid.to_string(),"example.zip".into(),"qc".into()
+        ).is_err());
+    }
+
     fn partial_board_detection(missing: &str) -> String {
         let mut objects=vec![
             serde_json::json!({"kind":"magnet","name":"magnet_left","center_lps_mm":[175.0,-100.0,-80.0]}),
