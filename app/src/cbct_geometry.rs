@@ -1014,7 +1014,7 @@ pub fn dicom_setup_instructions() -> String {
     let interpreter=venv.join(if cfg!(windows) {"Scripts/python.exe"}else{"bin/python"});
     let setup=install_root.join("scripts").join("setup_dicom_windows.ps1");
     format!(
-        "GK DICOM requirements: {}\\n         Use a dedicated Python 3.11 environment; the packages are NOT needed for Hall streaming or 6-DOF fitting.\\n         Windows PowerShell (recommended):\\n         powershell -ExecutionPolicy Bypass -File \\"{}\\"\\n         Manual Windows setup:\\n         py -3.11 -m venv \\"{}\\"\\n         & \\"{}\\" -m pip install -r \\"{}\\"\\n         & \\"{}\\" \\"{}\\"\\n         If you previously set CBCT_DETECT_SCRIPT to an old repo, remove that override.\\n         Current detector: {}\\n         Hybrid is not ready until its separately reviewed board algorithm is installed.",
+        "GK DICOM requirements: {}\n         Use a dedicated Python 3.11 environment; the packages are NOT needed for Hall streaming or 6-DOF fitting.\n         Windows PowerShell (recommended):\n         powershell -ExecutionPolicy Bypass -File \"{}\"\n         Manual Windows setup:\n         py -3.11 -m venv \"{}\"\n         & \"{}\" -m pip install -r \"{}\"\n         & \"{}\" \"{}\"\n         If you previously set CBCT_DETECT_SCRIPT to an old repo, remove that override.\n         Current detector: {}\n         Hybrid is not ready until its separately reviewed board algorithm is installed.",
         requirements.display(),setup.display(),venv.display(),
         interpreter.display(),requirements.display(),interpreter.display(),
         backend.join("check_dicom_environment.py").display(),script.display()
@@ -1027,7 +1027,7 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
     let script=configured_cbct_script();
     if !script.is_file() {
         return Err(format!(
-            "Bundled CBCT detector missing: {}\\n{}",
+            "Bundled CBCT detector missing: {}\n{}",
             script.display(),dicom_setup_instructions()
         ));
     }
@@ -1035,7 +1035,7 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
     let checker=script.with_file_name("check_dicom_environment.py");
     if !checker.is_file() {
         return Err(format!(
-            "DICOM checker missing: {}. Update the app's bundled Python source.\\n{}",
+            "DICOM checker missing: {}. Update the app's bundled Python source.\n{}",
             checker.display(),dicom_setup_instructions()
         ));
     }
@@ -1046,12 +1046,12 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
     let errors=String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         return Err(format!(
-            "DICOM environment is incomplete (Python: {selected}).\\n{diagnostic}\\n{errors}\\n{}",
+            "DICOM environment is incomplete (Python: {selected}).\n{diagnostic}\n{errors}\n{}",
             dicom_setup_instructions()
         ));
     }
     Ok(format!(
-        "{diagnostic}\\nAll Original/Optimized DICOM Python requirements verified in {selected}. No packages were installed."
+        "{diagnostic}\nAll Original/Optimized DICOM Python requirements verified in {selected}. No packages were installed."
     ))
 }
 
@@ -1114,7 +1114,7 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
         }
     }
     Err(format!(
-        "No Python environment with all DICOM dependencies was found.\\n{}\\nChecked interpreters: {}",
+        "No Python environment with all DICOM dependencies was found.\n{}\nChecked interpreters: {}",
         dicom_setup_instructions(),diagnostics.join(" | ")
     ))
 
