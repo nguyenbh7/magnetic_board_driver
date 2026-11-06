@@ -1957,6 +1957,75 @@ mod tests {
     }
 
     #[test]
+    fn stream_restarts_from_last_pose_but_establishes_fresh_zero() {
+        let mut live=RigidLiveFit::default();
+        live.set_profile(RigidProfile::a1_reference().unwrap());
+        let old_generation=live.generation;
+        let previous=[4.0,1.0,30.0,0.01,0.0,0.0];
+        live.apply_completion(RigidFitCompletion {
+            generation:old_generation, time_us:1_000_000,
+            result:Some(RigidFitResult {pose:previous,rmse_mt:0.02,sensor_count:48}),
+            elapsed_ms:1.0,
+        });
+        assert!(live.summary().zero_ready);
+        live.stop_stream();
+        live.start_new_acquisition();
+        assert_eq!(live.reacquisition_seed,Some(previous));
+        assert!(live.summary().result.is_none());
+        assert!(!live.summary().zero_ready);
+        assert!(live.summary().displacement_history.is_empty());
+        assert!(live.summary().xyz_history.is_empty());
+        assert!(live.summary().rotation_history.is_empty());
+        // Results from before restart are never accepted.
+        live.apply_completion(RigidFitCompletion {
+            generation:old_generation,time_us:2_000_000,
+            result:Some(RigidFitResult {pose:previous,rmse_mt:0.0,sensor_count:48}),
+            elapsed_ms:1.0,
+        });
+        assert!(live.summary().result.is_none());
+        let new_pose=[8.0,2.0,31.0,0.0,0.0,0.0];
+        live.apply_completion(RigidFitCompletion {
+            generation:live.generation,time_us:3_000_000,
+            result:Some(RigidFitResult {pose:new_pose,rmse_mt:0.0,sensor_count:48}),
+            elapsed_ms:1.0,
+        });
+        assert_eq!(live.summary().translation_from_zero,Some([0.0;3]));
+        assert!(live.reacquisition_seed.is_none());
+        live.invalidate_for_gk_calibration();
+        assert!(live.reacquisition_seed.is_none());
+        assert!(!live.summary().zero_ready);
+    }
+
+    #[test]
+    fn predicted_hdmm_marker_includes_rigid_rotation_and_translation() {
+        let mut profile=RigidProfile::a1_reference().unwrap();
+        profile.coordinate_frame=Some("DICOM_LPS_mm".into());
+        profile.origin_mm=[0.0;3];
+        let marker=[100.0,0.0,0.0];
+        let a=rigid_point_at_pose(&profile,[0.0;6],marker);
+        let b=rigid_point_at_pose(
+            &profile,[0.0,0.0,0.0,0.0,0.0,PI/2.0],marker);
+        assert!((dot(sub(b,a),sub(b,a)).sqrt()-100.0*2.0_f64.sqrt()).abs()<1e-8);
+        let mut fit=RigidLiveFit::default();
+        fit.set_profile(profile);
+        fit.set_hdmm_target_lps(marker).unwrap();
+        let generation=fit.generation;
+        for (time_us,rotation) in [(1_000_000,0.0),(2_000_000,PI/2.0)] {
+            fit.apply_completion(RigidFitCompletion {
+                generation,time_us,
+                result:Some(RigidFitResult {
+                    pose:[0.0,0.0,0.0,0.0,0.0,rotation],rmse_mt:0.0,sensor_count:48
+                }),elapsed_ms:1.0
+            });
+        }
+        assert!((fit.summary().hdmm_current_mm.unwrap()-100.0*2.0_f64.sqrt()).abs()<1e-8);
+        fit.reset_zero();
+        assert!(fit.summary().hdmm_history.is_empty());
+        fit.invalidate_for_gk_calibration();
+        assert!(!fit.summary().hdmm_point_ready);
+    }
+
+    #[test]
     fn interpolation_refuses_unbracketed_samples() {
         let mut q = VecDeque::new();
         q.push_back(BoardSnapshot {time_us:100,fields_mt:[Some([0.0;3]);16]});
