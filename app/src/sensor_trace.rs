@@ -37,9 +37,19 @@ pub struct BoardSensorTraceSummary {
     pub available_sensors: Vec<u8>,
     pub selected_sensor_index: Option<u8>,
     pub selected_trace: Vec<SensorTracePoint>,
+    /// Peak absolute component across EVERY available recorded sensor,
+    /// not only the one currently plotted. No saturation claim is implied.
+    pub peak_component_mt: Option<f64>,
+    pub peak_sensor_index: Option<u8>,
 }
 
 impl SensorTraceState {
+    /// A fresh stream must not splice raw traces from a previous recording
+    /// into new rigid-body time-zero plots. Preserve sensor choices.
+    pub fn reset_histories(&mut self) {
+        for board in self.boards.values_mut() { board.traces.clear(); }
+    }
+
     pub fn set_presence(&mut self, presence: BoardPresence) {
         self.presence = presence;
 
@@ -126,11 +136,18 @@ impl SensorTraceState {
                     .map(|history| history.points.iter().cloned().collect())
                     .unwrap_or_default();
 
+                let peak=board.traces.iter().filter_map(|(&sensor,history)|{
+                    history.points.iter().map(|p|
+                        p.bx_mt.abs().max(p.by_mt.abs()).max(p.bz_mt.abs())
+                    ).reduce(f64::max).map(|value|(sensor,value))
+                }).max_by(|a,b|a.1.total_cmp(&b.1));
                 BoardSensorTraceSummary {
                     board_id: *board_id,
                     available_sensors,
                     selected_sensor_index,
                     selected_trace,
+                    peak_component_mt:peak.map(|x|x.1),
+                    peak_sensor_index:peak.map(|x|x.0),
                 }
             })
             .collect()
@@ -165,6 +182,16 @@ impl SensorTraceState {
         };
 
         self.presence.sensor_masks[board_index] & (1u16 << sensor_index) != 0
+    }
+}
+
+/// Approximate margin against an OPERATOR-VERIFIED component full-scale;
+/// without a valid sensor range, a no-warning state is not evidence of safety.
+pub fn above_warning_margin(peak_mt: Option<f64>, limit_mt: Option<f64>) -> bool {
+    match (peak_mt,limit_mt) {
+        (Some(peak),Some(limit)) if peak.is_finite() && limit.is_finite() && limit>0.0 =>
+            peak>=0.9*limit,
+        _=>false,
     }
 }
 
