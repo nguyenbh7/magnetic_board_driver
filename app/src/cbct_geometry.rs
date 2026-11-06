@@ -1231,6 +1231,8 @@ mod tests {
     fn detector_selection_is_explicit_and_hybrid_requires_importer() {
         assert_eq!(CbctDetectorVariant::default(),CbctDetectorVariant::Optimized);
         assert_eq!(CbctDetectorVariant::ALL.len(),3);
+        let labels=CbctDetectorVariant::ALL.map(|method|method.to_string());
+        assert_eq!(labels,["Original","Hybrid","Optimized"]);
         assert!(CbctDetectorVariant::Optimized.python_args(None).unwrap().is_empty());
         let original=CbctDetectorVariant::Original.python_args(None).unwrap();
         assert_eq!(original.len(),2);
