@@ -250,6 +250,9 @@ pub struct RigidSummary {
     pub displacement_history: Vec<DisplacementPoint>,
     pub xyz_history: Vec<RigidXyzPoint>,
     pub rotation_history: Vec<DisplacementPoint>,
+    pub hdmm_history: Vec<DisplacementPoint>,
+    pub hdmm_current_mm: Option<f64>,
+    pub hdmm_point_ready: bool,
     pub busy: bool,
     pub completed: u64,
     pub last_duration_ms: Option<f64>,
@@ -275,6 +278,11 @@ pub struct RigidLiveFit {
     rejected: u64,
     result: Option<RigidFitResult>,
     zero_pose: Option<[f64; 6]>,
+    /// Previous accepted pose is only a seed, not a new registration.
+    reacquisition_seed: Option<[f64;6]>,
+    /// Manually CT-confirmed HDMM reflective sticker position in LPS mm.
+    hdmm_target_world: Option<[f64;3]>,
+    hdmm_history: VecDeque<DisplacementPoint>,
     displacement: VecDeque<DisplacementPoint>,
     xyz: VecDeque<RigidXyzPoint>,
     rotation: VecDeque<DisplacementPoint>,
@@ -286,6 +294,7 @@ impl RigidLiveFit {
     /// must not remain active when the geometry or magnetic field changes.
     pub fn invalidate_for_gk_calibration(&mut self) {
         self.profile = None;
+        self.hdmm_target_world=None;
         self.location_preset = None;
         self.enabled = false;
         self.background_raw = [None; 3];
@@ -299,6 +308,7 @@ impl RigidLiveFit {
         // override measured board/sensor geometry.
         self.location_preset = MagnetLocationPreset::identify_profile(&profile);
         self.profile = Some(profile);
+        self.hdmm_target_world = None;
         self.background_raw = [None;3];
         self.enabled = true;
         self.reset_stream();
@@ -379,13 +389,31 @@ impl RigidLiveFit {
         self.last_dispatched_us = None;
         self.first_time_us = None;
         self.zero_pose = None;
+        self.reacquisition_seed=None;
         self.result = None;
+        self.hdmm_history.clear();
         self.displacement.clear();
         self.xyz.clear();
         self.rotation.clear();
         self.completed = 0;
         self.rejected = 0;
         self.last_elapsed_ms = None;
+    }
+
+    /// Restart with an unchanged fixed-board CT calibration. Keep only a
+    /// previous absolute fit as a warm-start seed; the first accepted fit
+    /// establishes the NEW relative zero and history.
+    pub fn start_new_acquisition(&mut self) {
+        let old=self.result.as_ref().map(|r|r.pose);
+        self.reset_stream();
+        if self.enabled {
+            self.reacquisition_seed=old;
+            self.status=if old.is_some() {
+                "New stream: reusing previous absolute fit as optimizer seed; new zero follows first accepted fit (requires unchanged receiver mounting)".into()
+            } else {
+                "New stream: waiting for first accepted fit to establish zero".into()
+            };
+        }
     }
 
     /// Stop acquisition without discarding the completed measurement.
@@ -435,10 +463,32 @@ impl RigidLiveFit {
             self.displacement.clear();
             self.xyz.clear();
             self.rotation.clear();
+            self.hdmm_history.clear();
             self.status = "Tracking; rigid zero set to current pose".into();
         } else {
             self.status = "Cannot set rigid zero yet: wait for an accepted fit".into();
         }
+    }
+
+    /// The user must independently identify the reflective sticker in CT.
+    /// A detected glass BB cannot be silently equated with the HDMM marker.
+    pub fn set_hdmm_target_lps(&mut self, xyz:[f64;3]) -> Result<(),String> {
+        if xyz.iter().any(|v|!v.is_finite() || v.abs()>100_000.0) {
+            return Err("HDMM CT LPS coordinates must be finite millimetres".into());
+        }
+        if !self.profile.as_ref().is_some_and(|p|
+            p.coordinate_frame.as_deref()==Some("DICOM_LPS_mm")) {
+            return Err("HDMM projection requires enabled CT-based GK profile".into());
+        }
+        self.hdmm_target_world=Some(xyz);
+        self.hdmm_history.clear();
+        self.status="HDMM CT point selected: projected motion is derived from rigid fit, NOT an actual HDMM measurement".into();
+        Ok(())
+    }
+
+    pub fn clear_hdmm_target(&mut self) {
+        self.hdmm_target_world=None;
+        self.hdmm_history.clear();
     }
 
     pub fn summary(&self) -> RigidSummary {
@@ -472,6 +522,9 @@ impl RigidLiveFit {
             displacement_history: self.displacement.iter().cloned().collect(),
             xyz_history: self.xyz.iter().cloned().collect(),
             rotation_history: self.rotation.iter().cloned().collect(),
+            hdmm_history: self.hdmm_history.iter().cloned().collect(),
+            hdmm_current_mm: self.hdmm_history.back().map(|p|p.displacement_mm),
+            hdmm_point_ready: self.hdmm_target_world.is_some(),
             busy: self.busy,
             completed: self.completed,
             last_duration_ms: self.last_elapsed_ms,
@@ -564,7 +617,8 @@ impl RigidLiveFit {
             time_us: common_t,
             profile: profile.clone(),
             observations,
-            seed: self.result.as_ref().map(|r| r.pose).unwrap_or(profile.initial_pose),
+            seed: self.result.as_ref().map(|r|r.pose)
+                .or(self.reacquisition_seed).unwrap_or(profile.initial_pose),
             cold_start: self.result.is_none(),
         })
     }
@@ -589,6 +643,7 @@ impl RigidLiveFit {
             return;
         }
         let zero = *self.zero_pose.get_or_insert(result.pose);
+        self.reacquisition_seed=None;
         let initial_time = *self.first_time_us.get_or_insert(completion.time_us);
         let translation = [
             result.pose[0] - zero[0],
@@ -611,6 +666,15 @@ impl RigidLiveFit {
             dz_mm: translation[2],
         });
         self.rotation.push_back(DisplacementPoint {time_s, displacement_mm: angle_deg});
+        if let Some(point)=self.hdmm_target_world {
+            let now=rigid_point_at_pose(profile,result.pose,point);
+            let initial=rigid_point_at_pose(profile,zero,point);
+            let delta=sub(now,initial);
+            self.hdmm_history.push_back(DisplacementPoint {
+                time_s,displacement_mm:dot(delta,delta).sqrt(),
+            });
+            while self.hdmm_history.len()>HISTORY_LEN {self.hdmm_history.pop_front();}
+        }
         while self.displacement.len() > HISTORY_LEN { self.displacement.pop_front(); }
         while self.xyz.len() > HISTORY_LEN { self.xyz.pop_front(); }
         while self.rotation.len() > HISTORY_LEN { self.rotation.pop_front(); }
@@ -644,6 +708,12 @@ fn interpolate(queue: &VecDeque<BoardSnapshot>, time_us: u64) -> Option<[Option<
         }
     }
     Some(out)
+}
+
+fn rigid_point_at_pose(profile:&RigidProfile,pose:[f64;6],point:[f64;3]) -> [f64;3] {
+    add(add(profile.origin_mm,[pose[0],pose[1],pose[2]]),
+        mat_vec(rodrigues([pose[3],pose[4],pose[5]]),
+                sub(point,profile.origin_mm)))
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
