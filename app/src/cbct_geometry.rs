@@ -13,41 +13,45 @@ use std::time::Duration;
 /// The selected CT *detection algorithm*. This is never a calibration approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CbctDetectorVariant {
-    #[default]
     Original,
     Hybrid,
-    Colleague,
+    #[default]
+    Optimized,
 }
 impl CbctDetectorVariant {
-    pub const ALL: [Self; 3] = [Self::Original, Self::Hybrid, Self::Colleague];
+    pub const ALL: [Self; 3] = [Self::Original, Self::Hybrid, Self::Optimized];
     fn cli_value(self) -> &'static str {
-        match self { Self::Original => "original", Self::Hybrid => "hybrid", Self::Colleague => "colleague" }
+        match self { Self::Original => "original", Self::Hybrid => "hybrid", Self::Optimized => "optimized" }
     }
-    fn python_args(self, colleague_notebook: Option<&Path>) -> Result<Vec<std::ffi::OsString>, String> {
+    fn python_args(self, importer_notebook: Option<&Path>) -> Result<Vec<std::ffi::OsString>, String> {
         use std::ffi::OsString;
-        if self == Self::Original { return Ok(vec![]); } // Preserve old script compatibility.
-        let path=colleague_notebook.ok_or_else(|| format!(
-            "{} needs a trusted local colleague DICOM importer notebook. Use 'Select importer notebook' before importing.",
-            self
-        ))?;
-        if !path.is_file() || path.extension().and_then(|s|s.to_str())
-            .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
-            return Err(format!("Importer notebook does not exist or is not an .ipynb: {}",path.display()));
+        match self {
+            Self::Optimized => Ok(vec![]), // Current maintained detector default; compatible with existing scripts.
+            Self::Original => Ok(vec![
+                OsString::from("--detector-variant"),OsString::from("original"),
+            ]),
+            Self::Hybrid => {
+                let path=importer_notebook.ok_or_else(||
+                    "Hybrid requires a trusted importer notebook. Select importer notebook before importing.".to_string())?;
+                if !path.is_file() || path.extension().and_then(|s|s.to_str())
+                    .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
+                    return Err(format!("Importer notebook does not exist or is not an .ipynb: {}",path.display()));
+                }
+                Ok(vec![
+                    OsString::from("--detector-variant"),OsString::from("hybrid"),
+                    OsString::from("--importer-notebook"),path.as_os_str().to_os_string(),
+                ])
+            }
         }
-        Ok(vec![
-            OsString::from("--detector-variant"),OsString::from(self.cli_value()),
-            OsString::from("--colleague-notebook"),path.as_os_str().to_os_string(),
-        ])
     }
 }
 impl std::fmt::Display for CbctDetectorVariant {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label=match self {
-            Self::Original => "Original (production CT detector)",
-            Self::Hybrid => "Hybrid (optimized colleague PCB)",
-            Self::Colleague => "Your DICOM importer (full colleague PCB)",
-        };
-        f.write_str(label)
+        f.write_str(match self {
+            Self::Original => "Original",
+            Self::Hybrid => "Hybrid",
+            Self::Optimized => "Optimized",
+        })
     }
 }
 
@@ -73,7 +77,7 @@ pub struct CbctGeometry {
     /// Algorithm that created these detections, preserved across JSON loads/export.
     pub selected_detector_variant: String,
     /// Audit hash of trusted colleague importer notebook for experimental methods.
-    pub colleague_notebook_sha256: Option<String>,
+    pub importer_notebook_sha256: Option<String>,
     pub scan_path: PathBuf,
     pub qc_directory: PathBuf,
     pub frame_uid: String,
@@ -143,8 +147,8 @@ struct DetectorReport {
     coordinate_frame: String,
     #[serde(default)]
     selected_detector_variant: Option<String>,
-    #[serde(default)]
-    colleague_notebook_sha256: Option<String>,
+    #[serde(default, alias = "colleague_notebook_sha256")]
+    importer_notebook_sha256: Option<String>,
     frame_of_reference_uid: Option<String>,
     status: String,
     #[serde(default)]
@@ -319,16 +323,16 @@ impl CbctGeometry {
         }
         let detector_variant=report.selected_detector_variant.as_deref()
             .unwrap_or("original_legacy_unlabeled");
-        if !matches!(detector_variant,"original"|"hybrid"|"colleague"|"original_legacy_unlabeled") {
+        if !matches!(detector_variant,"original"|"hybrid"|"optimized"|"colleague"|"original_legacy_unlabeled") {
             return Err(format!("Unknown CBCT detector method: {detector_variant}"));
         }
         if matches!(detector_variant,"hybrid"|"colleague") &&
-            !report.colleague_notebook_sha256.as_deref()
+            !report.importer_notebook_sha256.as_deref()
                 .is_some_and(|h|h.len()==64 && h.bytes().all(|x|x.is_ascii_hexdigit())) {
             return Err("Experimental CT detector report must retain importer notebook SHA256".into());
         }
         let detector_variant=detector_variant.to_string();
-        let colleague_sha=report.colleague_notebook_sha256.clone();
+        let colleague_sha=report.importer_notebook_sha256.clone();
         // The glass BB is optional for magnet/board calibration. All
         // three magnets and all 48 sensors remain mandatory. Accept an
         // incomplete detector report ONLY when validation below proves
@@ -511,7 +515,7 @@ impl CbctGeometry {
         Ok(Self {
             scan_path, qc_directory,
             selected_detector_variant:detector_variant,
-            colleague_notebook_sha256:colleague_sha,
+            importer_notebook_sha256:colleague_sha,
             frame_uid: uid,
             rigid_origin_lps_mm: origin,
             rigid_axes_to_lps: axes,
@@ -936,7 +940,7 @@ impl CbctGeometry {
             format!("Selected detector: {} (all CT geometry requires independent review)",
                     self.selected_detector_variant),
             format!("Experimental detector notebook SHA256: {}",
-                    self.colleague_notebook_sha256.as_deref().unwrap_or("not applicable / legacy")),
+                    self.importer_notebook_sha256.as_deref().unwrap_or("not applicable / legacy")),
             format!("Source: {}", self.scan_path.display()),
             format!("DICOM LPS frame: {}", self.frame_uid),
             format!("Three-magnet rigid origin L/P/S: {:.3}, {:.3}, {:.3} mm",
@@ -1057,16 +1061,18 @@ fn validate_detector_report_source(
         .map_err(|e|format!("CT detector returned invalid JSON: {e}"))?;
     let actual=source.get("selected_detector_variant").and_then(|v|v.as_str());
     if actual.is_some_and(|value|value!=variant.cli_value())
-        || (variant!=CbctDetectorVariant::Original && actual!=Some(variant.cli_value())) {
+        || (variant!=CbctDetectorVariant::Optimized && actual!=Some(variant.cli_value())) {
         return Err(format!(
             "CT detector provenance mismatch: requested {}, got {:?}. No geometry imported.",
             variant.cli_value(),actual
         ));
     }
-    if variant!=CbctDetectorVariant::Original {
-        let hash=source.get("colleague_notebook_sha256").and_then(|v|v.as_str());
+    if variant==CbctDetectorVariant::Hybrid {
+        let hash=source.get("importer_notebook_sha256")
+            .or_else(||source.get("colleague_notebook_sha256"))
+            .and_then(|v|v.as_str());
         if !hash.is_some_and(|h|h.len()==64 && h.bytes().all(|v|v.is_ascii_hexdigit())) {
-            return Err("Experimental CT detector omitted the trusted notebook SHA256; no geometry imported.".into());
+            return Err("Hybrid CT detector omitted importer notebook SHA256; no geometry imported.".into());
         }
     }
     Ok(())
@@ -1081,10 +1087,10 @@ pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result
 pub fn import_dicom_with_variant(
     scan: &Path,
     variant: CbctDetectorVariant,
-    colleague_notebook: Option<&Path>,
+    importer_notebook: Option<&Path>,
     progress: Arc<Mutex<ImportProgress>>
 ) -> Result<CbctGeometry, String> {
-    let detector_args=variant.python_args(colleague_notebook)?;
+    let detector_args=variant.python_args(importer_notebook)?;
     if !scan.exists() {
         return Err(format!("DICOM series or ZIP not found: {}", scan.display()));
     }
@@ -1218,16 +1224,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detector_selection_is_explicit_and_experimental_requires_a_notebook() {
-        assert_eq!(CbctDetectorVariant::default(),CbctDetectorVariant::Original);
+    fn detector_selection_is_explicit_and_hybrid_requires_importer() {
+        assert_eq!(CbctDetectorVariant::default(),CbctDetectorVariant::Optimized);
         assert_eq!(CbctDetectorVariant::ALL.len(),3);
-        assert!(CbctDetectorVariant::Original.python_args(None).unwrap().is_empty());
-        for variant in [CbctDetectorVariant::Hybrid,CbctDetectorVariant::Colleague] {
-            let error=variant.python_args(None).unwrap_err();
-            assert!(error.contains("Select importer notebook"));
-            assert!(variant.python_args(Some(Path::new("does_not_exist.ipynb"))).is_err());
-            assert!(variant.python_args(Some(Path::new("does_not_exist.json"))).is_err());
-        }
+        assert!(CbctDetectorVariant::Optimized.python_args(None).unwrap().is_empty());
+        let original=CbctDetectorVariant::Original.python_args(None).unwrap();
+        assert_eq!(original.len(),2);
+        assert_eq!(original[1].to_string_lossy(),"original");
+        let error=CbctDetectorVariant::Hybrid.python_args(None).unwrap_err();
+        assert!(error.contains("Select importer notebook"));
+        assert!(CbctDetectorVariant::Hybrid.python_args(Some(Path::new("does_not_exist.ipynb"))).is_err());
+        assert!(CbctDetectorVariant::Hybrid.python_args(Some(Path::new("does_not_exist.json"))).is_err());
         let base=std::env::temp_dir().join(format!(
             "gk_importer_test_{}_{}.ipynb",std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -1237,46 +1244,45 @@ mod tests {
         let args=CbctDetectorVariant::Hybrid.python_args(Some(&base)).unwrap();
         assert_eq!(args[0].to_string_lossy(),"--detector-variant");
         assert_eq!(args[1].to_string_lossy(),"hybrid");
-        assert_eq!(args[2].to_string_lossy(),"--colleague-notebook");
+        assert_eq!(args[2].to_string_lossy(),"--importer-notebook");
         assert_eq!(args[3].as_os_str(),base.as_os_str());
-        let other=CbctDetectorVariant::Colleague.python_args(Some(&base)).unwrap();
-        assert_eq!(other[1].to_string_lossy(),"colleague");
         std::fs::remove_file(base).unwrap();
     }
 
     #[test]
     fn selected_detector_provenance_fails_closed() {
         let baseline=r#"{"format":"gk_cbct_detections_v1"}"#;
-        assert!(validate_detector_report_source(CbctDetectorVariant::Original,baseline).is_ok());
+        assert!(validate_detector_report_source(CbctDetectorVariant::Optimized,baseline).is_ok());
+        assert!(validate_detector_report_source(CbctDetectorVariant::Original,baseline).is_err());
         assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,baseline).is_err());
         let record=serde_json::json!({
             "selected_detector_variant":"hybrid",
-            "colleague_notebook_sha256":"a".repeat(64),
+            "importer_notebook_sha256":"a".repeat(64),
         }).to_string();
         assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,&record).is_ok());
-        assert!(validate_detector_report_source(CbctDetectorVariant::Colleague,&record).is_err());
         assert!(validate_detector_report_source(CbctDetectorVariant::Original,&record).is_err());
+        assert!(validate_detector_report_source(CbctDetectorVariant::Optimized,&record).is_err());
         let untrusted=serde_json::json!({
-            "selected_detector_variant":"colleague",
-            "colleague_notebook_sha256":"invalid"
+            "selected_detector_variant":"hybrid",
+            "importer_notebook_sha256":"invalid"
         }).to_string();
-        assert!(validate_detector_report_source(CbctDetectorVariant::Colleague,&untrusted).is_err());
+        assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,&untrusted).is_err());
     }
 
     #[test]
     fn imported_detector_method_is_visible_in_geometry_summary() {
         let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
         report["selected_detector_variant"]=serde_json::json!("hybrid");
-        report["colleague_notebook_sha256"]=serde_json::json!("b".repeat(64));
+        report["importer_notebook_sha256"]=serde_json::json!("b".repeat(64));
         let geometry=CbctGeometry::from_detector_json(
             &report.to_string(),"example.zip".into(),"qc".into()
         ).unwrap();
         assert_eq!(geometry.selected_detector_variant,"hybrid");
-        assert_eq!(geometry.colleague_notebook_sha256.as_deref(),
+        assert_eq!(geometry.importer_notebook_sha256.as_deref(),
                    Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         assert!(geometry.summary().contains("Selected detector: hybrid"));
         let mut invalid=report.clone();
-        invalid["colleague_notebook_sha256"]=serde_json::Value::Null;
+        invalid["importer_notebook_sha256"]=serde_json::Value::Null;
         assert!(CbctGeometry::from_detector_json(
             &invalid.to_string(),"example.zip".into(),"qc".into()
         ).is_err());
