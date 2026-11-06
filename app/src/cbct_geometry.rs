@@ -63,8 +63,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct CbctGeometry {
     /// Algorithm that created these detections, preserved across JSON loads/export.
     pub selected_detector_variant: String,
-    /// Source SHA256 for the reviewed alternate detector notebook.
-    pub importer_notebook_sha256: Option<String>,
+    /// SHA256 of vendored Hybrid Python function source; independent of Jupyter.
+    pub hybrid_source_sha256: Option<String>,
     pub scan_path: PathBuf,
     pub qc_directory: PathBuf,
     pub frame_uid: String,
@@ -134,8 +134,8 @@ struct DetectorReport {
     coordinate_frame: String,
     #[serde(default)]
     selected_detector_variant: Option<String>,
-    #[serde(default, alias = "colleague_notebook_sha256")]
-    importer_notebook_sha256: Option<String>,
+    #[serde(default, alias = "importer_notebook_sha256", alias = "colleague_notebook_sha256")]
+    hybrid_source_sha256: Option<String>,
     frame_of_reference_uid: Option<String>,
     status: String,
     #[serde(default)]
@@ -314,12 +314,12 @@ impl CbctGeometry {
             return Err(format!("Unknown CBCT detector method: {detector_variant}"));
         }
         if matches!(detector_variant,"hybrid"|"colleague") &&
-            !report.importer_notebook_sha256.as_deref()
+            !report.hybrid_source_sha256.as_deref()
                 .is_some_and(|h|h.len()==64 && h.bytes().all(|x|x.is_ascii_hexdigit())) {
-            return Err("Experimental CT detector report must retain importer notebook SHA256".into());
+            return Err("Hybrid CT detector report must retain vendored source SHA256".into());
         }
         let detector_variant=detector_variant.to_string();
-        let importer_sha=report.importer_notebook_sha256.clone();
+        let importer_sha=report.hybrid_source_sha256.clone();
         // The glass BB is optional for magnet/board calibration. All
         // three magnets and all 48 sensors remain mandatory. Accept an
         // incomplete detector report ONLY when validation below proves
@@ -502,7 +502,7 @@ impl CbctGeometry {
         Ok(Self {
             scan_path, qc_directory,
             selected_detector_variant:detector_variant,
-            importer_notebook_sha256:importer_sha,
+            hybrid_source_sha256:importer_sha,
             frame_uid: uid,
             rigid_origin_lps_mm: origin,
             rigid_axes_to_lps: axes,
@@ -930,8 +930,8 @@ impl CbctGeometry {
                         "original_legacy_unlabeled" => "Legacy unlabelled",
                         other => other,
                     }),
-            format!("Experimental detector notebook SHA256: {}",
-                    self.importer_notebook_sha256.as_deref().unwrap_or("not applicable / legacy")),
+            format!("Hybrid algorithm source SHA256: {}",
+                    self.hybrid_source_sha256.as_deref().unwrap_or("not applicable / legacy")),
             format!("Source: {}", self.scan_path.display()),
             format!("DICOM LPS frame: {}", self.frame_uid),
             format!("Three-magnet rigid origin L/P/S: {:.3}, {:.3}, {:.3} mm",
@@ -1059,11 +1059,12 @@ fn validate_detector_report_source(
         ));
     }
     if variant==CbctDetectorVariant::Hybrid {
-        let hash=source.get("importer_notebook_sha256")
+        let hash=source.get("hybrid_source_sha256")
+            .or_else(||source.get("importer_notebook_sha256"))
             .or_else(||source.get("colleague_notebook_sha256"))
             .and_then(|v|v.as_str());
         if !hash.is_some_and(|h|h.len()==64 && h.bytes().all(|v|v.is_ascii_hexdigit())) {
-            return Err("Hybrid CT detector omitted importer notebook SHA256; no geometry imported.".into());
+            return Err("Hybrid CT detector omitted vendored source SHA256; no geometry imported.".into());
         }
     }
     Ok(())
@@ -1239,14 +1240,14 @@ mod tests {
         assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,baseline).is_err());
         let record=serde_json::json!({
             "selected_detector_variant":"hybrid",
-            "importer_notebook_sha256":"a".repeat(64),
+            "hybrid_source_sha256":"a".repeat(64),
         }).to_string();
         assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,&record).is_ok());
         assert!(validate_detector_report_source(CbctDetectorVariant::Original,&record).is_err());
         assert!(validate_detector_report_source(CbctDetectorVariant::Optimized,&record).is_err());
         let untrusted=serde_json::json!({
             "selected_detector_variant":"hybrid",
-            "importer_notebook_sha256":"invalid"
+            "hybrid_source_sha256":"invalid"
         }).to_string();
         assert!(validate_detector_report_source(CbctDetectorVariant::Hybrid,&untrusted).is_err());
     }
@@ -1255,16 +1256,16 @@ mod tests {
     fn imported_detector_method_is_visible_in_geometry_summary() {
         let mut report:serde_json::Value=serde_json::from_str(&sample()).unwrap();
         report["selected_detector_variant"]=serde_json::json!("hybrid");
-        report["importer_notebook_sha256"]=serde_json::json!("b".repeat(64));
+        report["hybrid_source_sha256"]=serde_json::json!("b".repeat(64));
         let geometry=CbctGeometry::from_detector_json(
             &report.to_string(),"example.zip".into(),"qc".into()
         ).unwrap();
         assert_eq!(geometry.selected_detector_variant,"hybrid");
-        assert_eq!(geometry.importer_notebook_sha256.as_deref(),
+        assert_eq!(geometry.hybrid_source_sha256.as_deref(),
                    Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         assert!(geometry.summary().contains("Selected detector: hybrid"));
         let mut invalid=report.clone();
-        invalid["importer_notebook_sha256"]=serde_json::Value::Null;
+        invalid["hybrid_source_sha256"]=serde_json::Value::Null;
         assert!(CbctGeometry::from_detector_json(
             &invalid.to_string(),"example.zip".into(),"qc".into()
         ).is_err());
