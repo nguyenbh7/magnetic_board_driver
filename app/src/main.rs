@@ -22,6 +22,8 @@ use sensor_trace_plot::sensor_trace_plot;
 mod live_fit;
 mod rigid_fit;
 mod cbct_geometry;
+mod gk_background;
+use gk_background::GkBackgroundFile;
 mod stage_presets;
 use stage_presets::MagnetLocationPreset;
 use rigid_fit::{RigidFitCompletion, RigidFitJob, RigidLiveFit, RigidProfile, RigidSummary};
@@ -109,6 +111,11 @@ enum Message {
     CopyCadMappingDetails,
     CaptureRigidBackground,
     BeginGkBackground,
+    ExportGkBackground,
+    GkBackgroundExportPicked(Option<PathBuf>),
+    ImportGkBackground,
+    GkBackgroundImportPicked(Option<PathBuf>),
+    ConfirmImportedGkBackground,
     BeginGkReference,
     ReviewCadGkRegistration,
     ApproveCadGkRegistration,
@@ -225,6 +232,8 @@ impl SensorGridCollection {
 #[derive(Default)]
 struct GkCalibration {
     background: Option<[[[f64; 3]; 16]; 3]>,
+    /// Loaded files are NOT trusted for this setup until explicit confirmation.
+    pending_background: Option<[[[f64; 3]; 16]; 3]>,
     reference: Option<[[[f64; 3]; 16]; 3]>,
     capturing: Option<GkCapture>,
     calibrated_candidate: Option<(RigidProfile, f64)>,
@@ -250,7 +259,7 @@ impl GkCalibration {
             sum: [[[0.0; 3]; 16]; 3], counts: [[0; 16]; 3],
         });
         if reference { self.reference = None; }
-        else { self.background = None; self.reference = None; }
+        else { self.background = None; self.pending_background=None; self.reference = None; }
         self.status = if reference { "Capturing stationary magnet fields (3 seconds)..." }
             else { "Capturing no-magnet background (3 seconds)..." }.into();
     }
@@ -630,6 +639,27 @@ fn p_to_json(p: &RigidProfile) -> serde_json::Value {
         "initial_pose":p.initial_pose,"lower_bounds":p.lower_bounds,
         "upper_bounds":p.upper_bounds,"max_rmse_mt":p.max_rmse_mt
     })
+}
+
+fn save_gk_background_file(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Export NEW no-magnet GK background (48 raw sensor vectors)")
+        .set_file_name("gk_raw_hall_background.json")
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.save_file().await.map(|handle|handle.path().to_path_buf()) }
+}
+
+fn import_gk_background_file(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Import previously saved no-magnet GK background for the SAME setup")
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle|handle.path().to_path_buf()) }
 }
 
 fn save_gk_calibration_file(
@@ -1138,6 +1168,71 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::BeginGkBackground => {
             context.rigid_fit.invalidate_for_gk_calibration();
             context.gk_calibration.begin(false);
+            Task::none()
+        }
+        Message::ExportGkBackground => {
+            if context.gk_calibration.background.is_none() {
+                context.gk_calibration.status = "Capture a no-magnet background before exporting it.".into();
+                return Task::none();
+            }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id,save_gk_background_file))
+                .then(Task::future)
+                .map(Message::GkBackgroundExportPicked)
+        }
+        Message::GkBackgroundExportPicked(path) => {
+            if let Some(path)=path {
+                let saved = context.gk_calibration.background
+                    .ok_or_else(||"No GK no-magnet background was captured".to_string())
+                    .and_then(GkBackgroundFile::from_raw)
+                    .and_then(|file|file.to_bytes())
+                    .and_then(|bytes|{
+                        use std::io::Write as _;
+                        let mut writer=std::fs::OpenOptions::new()
+                            .write(true).create_new(true).open(&path)
+                            .map_err(|e|format!("Cannot create NEW file: {e}"))?;
+                        writer.write_all(&bytes).map_err(|e|e.to_string())
+                    });
+                context.gk_calibration.status=match saved {
+                    Ok(())=>format!("Standalone 48-sensor no-magnet background exported: {}",path.display()),
+                    Err(e)=>format!("Background export failed: {e}"),
+                };
+            }
+            Task::none()
+        }
+        Message::ImportGkBackground => {
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id,import_gk_background_file))
+                .then(Task::future)
+                .map(Message::GkBackgroundImportPicked)
+        }
+        Message::GkBackgroundImportPicked(path) => {
+            if let Some(path)=path {
+                let loaded=std::fs::read(&path).map_err(|e|e.to_string())
+                    .and_then(|raw|GkBackgroundFile::from_bytes(&raw));
+                match loaded {
+                    Ok(value)=>{
+                        context.gk_calibration.pending_background=Some(value.raw());
+                        context.gk_calibration.status=format!(
+                            "Background file validated: {}. NOT ACTIVE. Explicitly confirm that all boards, sensor settings, mounting and magnetic environment match before using.",
+                            path.display());
+                    }
+                    Err(e)=>{
+                        context.gk_calibration.pending_background=None;
+                        context.gk_calibration.status=format!("Background import rejected: {e}");
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::ConfirmImportedGkBackground => {
+            if let Some(raw)=context.gk_calibration.pending_background.take() {
+                context.rigid_fit.invalidate_for_gk_calibration();
+                context.gk_calibration.background=Some(raw);
+                context.gk_calibration.reference=None;
+                context.gk_calibration.calibrated_candidate=None;
+                context.gk_calibration.status="Imported 48-sensor background ACTIVATED for this explicitly confirmed unchanged physical setup; capture a new stationary reference before calibration.".into();
+            }
             Task::none()
         }
         Message::BeginGkReference => {
@@ -2236,10 +2331,21 @@ fn view(context: &Context) -> Element<'_, Message> {
                 button("Capture background").on_press(Message::BeginGkBackground)
             } else { button("Capture background") },
             text(if context.gk_calibration.background.is_some() {
-                "Background captured (48 sensors)."
+                "No-magnet background ready (48 sensors); reusable only for unchanged hardware."
             } else {
                 "No background captured. Optional; fitted offsets are less reliable."
             }),
+            row![
+                if context.gk_calibration.background.is_some() {
+                    button("Save background only").on_press(Message::ExportGkBackground)
+                } else { button("Save background only") },
+                button("Load background").on_press(Message::ImportGkBackground),
+            ].spacing(8),
+            if context.gk_calibration.pending_background.is_some() {
+                button("Confirm same setup and use background")
+                    .on_press(Message::ConfirmImportedGkBackground)
+            } else { button("Confirm same setup and use background") },
+            text("Background needs NO CT or stationary reference. Export before changing the setup. Import requires confirmation; never reuse after board/magnet mounting changes."),
             if context.gk_calibration.capturing.is_none() {
                 button("Capture stationary fields").on_press(Message::BeginGkReference)
             } else { button("Capture stationary fields") },
