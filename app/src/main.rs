@@ -90,8 +90,6 @@ enum Message {
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
     SelectCbctDetectorVariant(cbct_geometry::CbctDetectorVariant),
-    ChooseCbctImporterNotebook,
-    CbctImporterNotebookPicked(Option<PathBuf>),
     ImportCbctZip,
     ImportCbctFolder,
     LoadCbctDetectionsJson,
@@ -307,7 +305,6 @@ struct Context {
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
     cbct_detector_variant: cbct_geometry::CbctDetectorVariant,
-    cbct_importer_notebook: Option<PathBuf>,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -675,16 +672,6 @@ fn select_cbct_directory(
     async move { dialog.pick_folder().await.map(|handle| handle.path().to_path_buf()) }
 }
 
-fn select_cbct_importer_notebook(
-    window: &dyn iced::Window,
-) -> impl Future<Output = Option<PathBuf>> + use<> {
-    let dialog = rfd::AsyncFileDialog::new()
-        .set_title("Select TRUSTED full-outline DICOM importer notebook (.ipynb)")
-        .add_filter("Jupyter notebook", &["ipynb"])
-        .set_parent(&window);
-    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
-}
-
 fn select_cbct_detections_json(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Option<PathBuf>> + use<> {
@@ -698,13 +685,12 @@ fn select_cbct_detections_json(
 async fn run_cbct_import_off_thread(
     path: PathBuf,
     variant: cbct_geometry::CbctDetectorVariant,
-    notebook: Option<PathBuf>,
     progress: Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>,
 ) -> Result<cbct_geometry::CbctGeometry, String> {
-    // Snapshot method and notebook BEFORE launch; changing UI selection cannot
-    // retarget a running detector. Independent of live Hall streaming.
+    // Snapshot method BEFORE launch. Hybrid algorithm is maintained Python code,
+    // not an external notebook selected at run time.
     async_std::task::spawn_blocking(move || {
-        cbct_geometry::import_dicom_with_variant(&path,variant,notebook.as_deref(),progress)
+        cbct_geometry::import_dicom_with_variant(&path,variant,progress)
     }).await
 }
 
@@ -970,38 +956,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ChooseCbctImporterNotebook => {
-            if context.cbct_importing { return Task::none(); }
-            iced::window::oldest()
-                .and_then(|id|iced::window::run(id,select_cbct_importer_notebook))
-                .then(Task::future)
-                .map(Message::CbctImporterNotebookPicked)
-        }
-        Message::CbctImporterNotebookPicked(path) => {
-            if context.cbct_importing { return Task::none(); }
-            if let Some(path)=path {
-                if !path.is_file() || path.extension().and_then(|x|x.to_str())
-                    .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
-                    context.cbct_status = format!("Importer notebook must be an existing trusted .ipynb: {}",path.display());
-                    return Task::none();
-                }
-                if context.cbct_importer_notebook.as_ref()!=Some(&path) {
-                    context.cbct_importer_notebook=Some(path.clone());
-                    context.cbct_geometry=None;
-                    context.gk_calibration.calibrated_candidate=None;
-                    context.gk_calibration.cad_review_preview=None;
-                    context.gk_calibration.cad_review_summary=None;
-                    context.gk_calibration.cad_review_details_expanded=false;
-                    context.gk_calibration.cad_mapping_approved=false;
-                    context.rigid_fit.invalidate_for_gk_calibration();
-                    context.cbct_last_log.clear();
-                }
-                context.cbct_status=format!(
-                    "Trusted candidate notebook: {}. Import CT to run the selected detector (no calibration enabled).",
-                    path.display());
-            }
-            Task::none()
-        }
         Message::ImportCbctZip => {
             if context.cbct_importing { return Task::none(); }
             iced::window::oldest()
@@ -1028,9 +982,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 if context.cbct_importing { return Task::none(); }
                 context.cbct_importing = true;
                 let variant=context.cbct_detector_variant;
-                let importer_notebook=if variant==cbct_geometry::CbctDetectorVariant::Hybrid {
-                    context.cbct_importer_notebook.clone()
-                } else { None };
                 context.cbct_status = format!(
                     "{}: detecting magnets, 48 chips, and glass BB from {} (background task)...",
                     variant,path.display()
@@ -1048,7 +999,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.cbct_progress = Some(Arc::clone(&progress));
                 context.cbct_started = Some(std::time::Instant::now());
                 Task::perform(
-                    run_cbct_import_off_thread(path,variant,importer_notebook,progress),
+                    run_cbct_import_off_thread(path,variant,progress),
                     Message::CbctImportCompleted,
                 )
             } else {
@@ -2131,21 +2082,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                     Message::SelectCbctDetectorVariant,
                 ),
             ].spacing(8),
-            if context.cbct_detector_variant==cbct_geometry::CbctDetectorVariant::Hybrid {
-                row![
-                    if context.cbct_importing {
-                        button("Select importer notebook")
-                    } else {
-                        button("Select importer notebook").on_press(Message::ChooseCbctImporterNotebook)
-                    },
-                    text(context.cbct_importer_notebook.as_ref().map(|p|
-                        p.file_name().map(|f|f.to_string_lossy().into_owned())
-                            .unwrap_or_else(||p.display().to_string())
-                    ).unwrap_or_else(||"No importer notebook selected".into())),
-                ].spacing(8)
-            } else { row![].spacing(8) },
             text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
-            text("Hybrid requires a trusted importer notebook. Switching methods clears prior geometry approval; all modes require mapping review and calibration."),
+            text("All detectors run from maintained Python code. Switching methods clears prior geometry approval; all modes still require mapping review and calibration."),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
