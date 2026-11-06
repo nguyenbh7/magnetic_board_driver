@@ -976,6 +976,85 @@ impl CbctGeometry {
     }
 }
 
+/// Resolve the app-owned detector, including a portable lab bundle copied
+/// alongside app.exe. No checkout of a second research repository is needed.
+fn bundled_cbct_script() -> PathBuf {
+    let mut candidates=Vec::new();
+    if let Ok(exe)=std::env::current_exe() {
+        if let Some(folder)=exe.parent() {
+            candidates.push(folder.join("python_cbct").join("cbct_detect.py"));
+            candidates.push(folder.join("app").join("python_cbct").join("cbct_detect.py"));
+            candidates.push(folder.join("..").join("..").join("app")
+                .join("python_cbct").join("cbct_detect.py"));
+        }
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("python_cbct").join("cbct_detect.py"));
+    candidates.into_iter().find(|p|p.is_file()).unwrap_or_else(||
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("python_cbct").join("cbct_detect.py"))
+}
+
+fn configured_cbct_script() -> PathBuf {
+    std::env::var_os("CBCT_DETECT_SCRIPT")
+        .map(PathBuf::from).unwrap_or_else(bundled_cbct_script)
+}
+
+/// Copyable, environment-specific steps. Using the bundled script's directory
+/// guarantees the paths refer to this app, not an outdated sibling checkout.
+pub fn dicom_setup_instructions() -> String {
+    let script=configured_cbct_script();
+    let backend=script.parent().unwrap_or_else(||Path::new("."));
+    let root=backend.parent().unwrap_or_else(||Path::new("."));
+    let install_root=if root.file_name().is_some_and(|x|x=="app") {
+        root.parent().unwrap_or(root)
+    } else {root};
+    let requirements=backend.join("requirements.txt");
+    let venv=install_root.join(".venv");
+    let interpreter=venv.join(if cfg!(windows) {"Scripts/python.exe"}else{"bin/python"});
+    let setup=install_root.join("scripts").join("setup_dicom_windows.ps1");
+    format!(
+        "GK DICOM requirements: {}\\n         Use a dedicated Python 3.11 environment; the packages are NOT needed for Hall streaming or 6-DOF fitting.\\n         Windows PowerShell (recommended):\\n         powershell -ExecutionPolicy Bypass -File \\"{}\\"\\n         Manual Windows setup:\\n         py -3.11 -m venv \\"{}\\"\\n         & \\"{}\\" -m pip install -r \\"{}\\"\\n         & \\"{}\\" \\"{}\\"\\n         If you previously set CBCT_DETECT_SCRIPT to an old repo, remove that override.\\n         Current detector: {}\\n         Hybrid is not ready until its separately reviewed board algorithm is installed.",
+        requirements.display(),setup.display(),venv.display(),
+        interpreter.display(),requirements.display(),interpreter.display(),
+        backend.join("check_dicom_environment.py").display(),script.display()
+    )
+}
+
+/// Run from a background worker, never on the GUI event loop. Does not install
+/// packages or process private DICOM; returns actionable diagnostics.
+pub fn inspect_dicom_environment() -> Result<String,String> {
+    let script=configured_cbct_script();
+    if !script.is_file() {
+        return Err(format!(
+            "Bundled CBCT detector missing: {}\\n{}",
+            script.display(),dicom_setup_instructions()
+        ));
+    }
+    let (python,prefix,selected)=discover_cbct_python(&script)?;
+    let checker=script.with_file_name("check_dicom_environment.py");
+    if !checker.is_file() {
+        return Err(format!(
+            "DICOM checker missing: {}. Update the app's bundled Python source.\\n{}",
+            checker.display(),dicom_setup_instructions()
+        ));
+    }
+    let output=Command::new(&python).args(&prefix).arg(&checker)
+        .arg("--detector-script").arg(&script).output()
+        .map_err(|e|format!("Cannot launch DICOM setup check: {e}"))?;
+    let diagnostic=String::from_utf8_lossy(&output.stdout);
+    let errors=String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "DICOM environment is incomplete (Python: {selected}).\\n{diagnostic}\\n{errors}\\n{}",
+            dicom_setup_instructions()
+        ));
+    }
+    Ok(format!(
+        "{diagnostic}\\nAll Original/Optimized DICOM Python requirements verified in {selected}. No packages were installed."
+    ))
+}
+
 /// Resolve an interpreter that can run the CT detector on Windows and Unix.
 /// Prefer the detector's venv or an active venv, then Windows py launchers.
 /// A successful Python launch alone is insufficient: probe the image libraries
@@ -1018,7 +1097,7 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
         let label = format!("{} {}",program.to_string_lossy(),
             prefix.iter().map(|v|v.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" "));
         let result=Command::new(&program).args(&prefix).arg("-c")
-            .arg("import numpy, scipy, SimpleITK, matplotlib, pandas, torchio; import sys; print(sys.executable)")
+            .arg("import numpy, scipy, SimpleITK, matplotlib, pandas, torch, torchio, IPython, contourpy; import sys; print(sys.executable)")
             .output();
         match result {
             Ok(out) if out.status.success() => {
@@ -1035,12 +1114,10 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
         }
     }
     Err(format!(
-        "No Python interpreter with the DICOM detector dependencies was found. \
-         Install requirements using: py -3.11 -m pip install -r \"<hall-effect-motion-tracking>\\tools\\cbct_bridge\\requirements.txt\". \
-         Or set CBCT_PYTHON to the complete path of that environment's python.exe. \
-         Checked: {}",
-        diagnostics.join(" | ")
+        "No Python environment with all DICOM dependencies was found.\\n{}\\nChecked interpreters: {}",
+        dicom_setup_instructions(),diagnostics.join(" | ")
     ))
+
 }
 
 /// The result must be from the requested method, not from a previous import.
@@ -1131,15 +1208,10 @@ pub fn import_dicom_with_variant(
     if scan.is_file() && scan.extension().and_then(|x| x.to_str()).is_none_or(|ext| !ext.eq_ignore_ascii_case("zip")) {
         return Err("Select a DICOM series FOLDER or a ZIP containing the complete series, not a single .dcm image".into());
     }
-    let script = std::env::var_os("CBCT_DETECT_SCRIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("python_cbct").join("cbct_detect.py")
-        });
+    let script=configured_cbct_script();
     if !script.is_file() {
         return Err(format!(
-            "Bundled CBCT detector is missing: {}. Restore the app/python_cbct source directory in this repository or explicitly set CBCT_DETECT_SCRIPT.",
+            "Bundled CBCT detector is missing: {}. Copy app/python_cbct with the executable, or restore the app source files. Open Check DICOM setup for detailed installation instructions.",
             script.display()
         ));
     }
