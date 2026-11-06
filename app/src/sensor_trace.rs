@@ -15,6 +15,7 @@ pub struct SensorTraceState {
 struct BoardSensorTraceState {
     selected_sensor_index: Option<u8>,
     traces: BTreeMap<u8, SensorTraceHistory>,
+    invalid_samples: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -41,13 +42,17 @@ pub struct BoardSensorTraceSummary {
     /// not only the one currently plotted. No saturation claim is implied.
     pub peak_component_mt: Option<f64>,
     pub peak_sensor_index: Option<u8>,
+    pub invalid_samples: u64,
 }
 
 impl SensorTraceState {
     /// A fresh stream must not splice raw traces from a previous recording
     /// into new rigid-body time-zero plots. Preserve sensor choices.
     pub fn reset_histories(&mut self) {
-        for board in self.boards.values_mut() { board.traces.clear(); }
+        for board in self.boards.values_mut() {
+            board.traces.clear();
+            board.invalid_samples=0;
+        }
     }
 
     pub fn set_presence(&mut self, presence: BoardPresence) {
@@ -86,6 +91,7 @@ impl SensorTraceState {
         };
 
         let Some(point) = sensor_field_to_trace_point(field) else {
+            self.boards.entry(field.board_id).or_default().invalid_samples += 1;
             return;
         };
 
@@ -148,6 +154,7 @@ impl SensorTraceState {
                     selected_trace,
                     peak_component_mt:peak.map(|x|x.1),
                     peak_sensor_index:peak.map(|x|x.0),
+                    invalid_samples:board.invalid_samples,
                 }
             })
             .collect()
@@ -206,11 +213,15 @@ fn address_to_sensor_index(address: u8) -> Option<u8> {
 }
 
 fn sensor_field_to_trace_point(field: &SensorField) -> Option<SensorTracePoint> {
+    let components=[
+        field.field.x?.value() / UT_PER_MT,
+        field.field.y?.value() / UT_PER_MT,
+        field.field.z?.value() / UT_PER_MT,
+    ];
+    if components.iter().any(|v|!v.is_finite()) {return None;}
     Some(SensorTracePoint {
-        time_s: 0.0,
-        bx_mt: field.field.x?.value() / UT_PER_MT,
-        by_mt: field.field.y?.value() / UT_PER_MT,
-        bz_mt: field.field.z?.value() / UT_PER_MT,
+        time_s:0.0,
+        bx_mt:components[0],by_mt:components[1],bz_mt:components[2],
     })
 }
 #[cfg(test)]
