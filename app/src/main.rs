@@ -2464,6 +2464,9 @@ fn view(context: &Context) -> Element<'_, Message> {
             .push(rotation_plot(u16::MAX, rigid.rotation_history))
             .push(text("Rigid-fit predicted displacement at the manually confirmed HDMM marker (not actual HDMM):"))
             .push(hdmm_prediction_plot(rigid.hdmm_history));
+        // Live Tracking stacks raw traces below rigid XYZ; the Both tab puts
+        // the existing Sensor Traces panel alongside it without duplicates.
+        if context.dashboard_tab==DashboardTab::LiveTracking {
         // In the same scrollable live-tracking view, put raw selected-sensor
         // Bx/By/Bz traces next to the joint rigid-body displacement plots.
         // Each selected sensor can be changed without changing the fitter.
@@ -2505,6 +2508,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                 .push(text(peak_label))
                 .push(sensor_trace_plot(board_id,sensor_board.selected_sensor_index,
                                         sensor_board.selected_trace));
+        }
         }
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
