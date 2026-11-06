@@ -2131,17 +2131,19 @@ fn view(context: &Context) -> Element<'_, Message> {
                     Message::SelectCbctDetectorVariant,
                 ),
             ].spacing(8),
-            row![
-                if context.cbct_importing {
-                    button("Select importer notebook")
-                } else {
-                    button("Select importer notebook").on_press(Message::ChooseCbctImporterNotebook)
-                },
-                text(context.cbct_importer_notebook.as_ref().map(|p|
-                    p.file_name().map(|f|f.to_string_lossy().into_owned())
-                        .unwrap_or_else(||p.display().to_string())
-                ).unwrap_or_else(||"No importer notebook selected".into())),
-            ].spacing(8),
+            if context.cbct_detector_variant==cbct_geometry::CbctDetectorVariant::Hybrid {
+                row![
+                    if context.cbct_importing {
+                        button("Select importer notebook")
+                    } else {
+                        button("Select importer notebook").on_press(Message::ChooseCbctImporterNotebook)
+                    },
+                    text(context.cbct_importer_notebook.as_ref().map(|p|
+                        p.file_name().map(|f|f.to_string_lossy().into_owned())
+                            .unwrap_or_else(||p.display().to_string())
+                    ).unwrap_or_else(||"No importer notebook selected".into())),
+                ].spacing(8)
+            } else { row![].spacing(8) },
             text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
             text("Hybrid requires a trusted importer notebook. Switching methods clears prior geometry approval; all modes require mapping review and calibration."),
             row![
