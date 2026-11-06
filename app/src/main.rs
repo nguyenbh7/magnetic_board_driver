@@ -1123,9 +1123,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             match result {
                 Ok(geometry) => {
                     context.cbct_status = if geometry.markers.is_empty() {
-                        "DICOM import: 3 magnets and 48 chips detected; NO glass BB. Geometry ready for review; HDMM marker unavailable.".into()
+                        format!("{}: 3 magnets and 48 chips detected; NO glass BB. Geometry ready for review; HDMM marker unavailable.",context.cbct_detector_variant)
                     } else {
-                        "DICOM import complete; initial geometry ready for review (no magnetic calibration activated).".into()
+                        format!("{}: initial geometry ready for review (no magnetic calibration activated).",context.cbct_detector_variant)
                     };
                     context.cbct_geometry = Some(geometry);
                 context.gk_calibration.calibrated_candidate = None;
@@ -1142,7 +1142,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CopyCbctStatus => {
-            iced::clipboard::write(format!("DICOM import status: {}\nCT registration: {}",
+            iced::clipboard::write(format!("DICOM import status: {}\nSelected import method: {}\nCT registration: {}",
+                context.cbct_detector_variant,
                 context.cbct_status,
                 context.cbct_geometry.as_ref().map(|g|g.registration_preview_v2())
                     .unwrap_or_else(|| "No geometry imported.".into())))
@@ -1361,10 +1362,14 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                             "sensor_fields_order": "raw_firmware_index_0_to_15",
                             "geometry_sensor_order": "CT_detector_order_with_v2_JST_candidate",
                             "frame_of_reference_uid": geometry.frame_uid,
+                            "selected_detector_variant":geometry.selected_detector_variant,
+                            "colleague_notebook_sha256":geometry.colleague_notebook_sha256,
                             "detector_replay": {
                                 "format": "gk_cbct_detections_v1",
                                 "coordinate_frame": "DICOM_LPS_mm",
                                 "frame_of_reference_uid": geometry.frame_uid,
+                                "selected_detector_variant": geometry.selected_detector_variant,
+                                "colleague_notebook_sha256": geometry.colleague_notebook_sha256,
                                 "status": "unreviewed",
                                 "requires_review": true,
                                 "objects": geometry.magnets.iter().map(|m|serde_json::json!({
