@@ -32,3 +32,21 @@ The existing Rust desktop application must directly import the selected DICOM ZI
 - No imported CT geometry automatically enables or approves live magnetic tracking.
 
 **Do not mark this action item complete merely because the existing Python detector is callable from Rust or because a source `.py` file is packaged with the executable.**
+
+## 2026-11-06 — Observed Hybrid error: old detector CLI (exit 2)
+
+The user reported: `cbct_detect.py: error: unrecognized arguments: --detector-variant hybrid`. The Python CLI usage line only exposed `scan --output [--no-qc]`, so the live GUI launched an **outdated detector script before DICOM was processed**. The Rust app still uses Python via `CBCT_DETECT_SCRIPT` when set, otherwise by resolving `../../hall-effect-motion-tracking/tools/cbct_bridge/cbct_detect.py` from `app/CARGO_MANIFEST_DIR`.
+
+Commit `87c8ab3` now logs the exact script path and checks `--help` for `--detector-variant` before processing CT. It also fails explicitly if `hybrid_board_detector.py` does not exist (the reviewed five-method source still has not been brought into the repo). Thus updating an old Python checkout **only repairs the version-mismatch failure**, not the missing Hybrid algorithm or the original request for a fully native Rust importer. No silent fallback.
+
+For immediate diagnosis on the user's Windows desktop:
+```powershell
+$script = if ($env:CBCT_DETECT_SCRIPT) { $env:CBCT_DETECT_SCRIPT } else { "F:\GitHub\hall-effect-motion-tracking\tools\cbct_bridge\cbct_detect.py" }
+Write-Host "Selected detector: $script"
+Get-Item $script | Select-Object FullName, LastWriteTime, Length
+python $script --help
+git -C F:\GitHub\hall-effect-motion-tracking status -sb
+```
+
+**Native Rust Hybrid remains not implemented.** Do not conflate this diagnostic fix with completing the native image-processing port.
+
