@@ -89,6 +89,9 @@ enum Message {
     SelectMagnetLocations(MagnetLocationPreset),
     LoadRigidProfile,
     RigidProfilePicked(Option<PathBuf>),
+    SelectCbctDetectorVariant(cbct_geometry::CbctDetectorVariant),
+    ChooseCbctColleagueNotebook,
+    CbctColleagueNotebookPicked(Option<PathBuf>),
     ImportCbctZip,
     ImportCbctFolder,
     LoadCbctDetectionsJson,
@@ -303,6 +306,8 @@ struct Context {
     live_fits: BoardLiveFits,
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
+    cbct_detector_variant: cbct_geometry::CbctDetectorVariant,
+    cbct_colleague_notebook: Option<PathBuf>,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -670,6 +675,16 @@ fn select_cbct_directory(
     async move { dialog.pick_folder().await.map(|handle| handle.path().to_path_buf()) }
 }
 
+fn select_cbct_colleague_notebook(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select TRUSTED full-outline DICOM importer notebook (.ipynb)")
+        .add_filter("Jupyter notebook", &["ipynb"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
+}
+
 fn select_cbct_detections_json(
     window: &dyn iced::Window,
 ) -> impl Future<Output = Option<PathBuf>> + use<> {
@@ -680,10 +695,17 @@ fn select_cbct_detections_json(
     async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
-async fn run_cbct_import_off_thread(path: PathBuf, progress: Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>) -> Result<cbct_geometry::CbctGeometry, String> {
-    // Run SimpleITK/Python out of the UI event loop, independently of
-    // live Hall streaming and six-DOF fit jobs.
-    async_std::task::spawn_blocking(move || cbct_geometry::import_dicom(&path, progress)).await
+async fn run_cbct_import_off_thread(
+    path: PathBuf,
+    variant: cbct_geometry::CbctDetectorVariant,
+    notebook: Option<PathBuf>,
+    progress: Arc<std::sync::Mutex<cbct_geometry::ImportProgress>>,
+) -> Result<cbct_geometry::CbctGeometry, String> {
+    // Snapshot method and notebook BEFORE launch; changing UI selection cannot
+    // retarget a running detector. Independent of live Hall streaming.
+    async_std::task::spawn_blocking(move || {
+        cbct_geometry::import_dicom_with_variant(&path,variant,notebook.as_deref(),progress)
+    }).await
 }
 
 fn open_file(
@@ -927,6 +949,59 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SelectCbctDetectorVariant(variant) => {
+            if context.cbct_importing { return Task::none(); }
+            if context.cbct_detector_variant != variant {
+                context.cbct_detector_variant = variant;
+                // A different detector is a different unreviewed geometry source.
+                // Never carry forward a prior CT-to-firmware approval or fit.
+                context.cbct_geometry = None;
+                context.gk_calibration.calibrated_candidate = None;
+                context.gk_calibration.cad_review_preview = None;
+                context.gk_calibration.cad_review_summary = None;
+                context.gk_calibration.cad_review_details_expanded = false;
+                context.gk_calibration.cad_mapping_approved = false;
+                context.rigid_fit.invalidate_for_gk_calibration();
+                context.cbct_status = format!(
+                    "Selected {}. Re-import CT; previous geometry and mapping approval cleared.",
+                    variant
+                );
+                context.cbct_last_log.clear();
+            }
+            Task::none()
+        }
+        Message::ChooseCbctColleagueNotebook => {
+            if context.cbct_importing { return Task::none(); }
+            iced::window::oldest()
+                .and_then(|id|iced::window::run(id,select_cbct_colleague_notebook))
+                .then(Task::future)
+                .map(Message::CbctColleagueNotebookPicked)
+        }
+        Message::CbctColleagueNotebookPicked(path) => {
+            if context.cbct_importing { return Task::none(); }
+            if let Some(path)=path {
+                if !path.is_file() || path.extension().and_then(|x|x.to_str())
+                    .is_none_or(|ext|!ext.eq_ignore_ascii_case("ipynb")) {
+                    context.cbct_status = format!("Importer notebook must be an existing trusted .ipynb: {}",path.display());
+                    return Task::none();
+                }
+                if context.cbct_colleague_notebook.as_ref()!=Some(&path) {
+                    context.cbct_colleague_notebook=Some(path.clone());
+                    context.cbct_geometry=None;
+                    context.gk_calibration.calibrated_candidate=None;
+                    context.gk_calibration.cad_review_preview=None;
+                    context.gk_calibration.cad_review_summary=None;
+                    context.gk_calibration.cad_review_details_expanded=false;
+                    context.gk_calibration.cad_mapping_approved=false;
+                    context.rigid_fit.invalidate_for_gk_calibration();
+                    context.cbct_last_log.clear();
+                }
+                context.cbct_status=format!(
+                    "Trusted candidate notebook: {}. Import CT to run the selected detector (no calibration enabled).",
+                    path.display());
+            }
+            Task::none()
+        }
         Message::ImportCbctZip => {
             if context.cbct_importing { return Task::none(); }
             iced::window::oldest()
@@ -952,9 +1027,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             if let Some(path) = path {
                 if context.cbct_importing { return Task::none(); }
                 context.cbct_importing = true;
+                let variant=context.cbct_detector_variant;
+                let colleague_notebook=if variant==cbct_geometry::CbctDetectorVariant::Original {
+                    None
+                } else { context.cbct_colleague_notebook.clone() };
                 context.cbct_status = format!(
-                    "Detecting initial magnets, 48 chips, and glass BB from {} (background task)...",
-                    path.display()
+                    "{}: detecting magnets, 48 chips, and glass BB from {} (background task)...",
+                    variant,path.display()
                 );
                 context.cbct_geometry = None;
                 context.gk_calibration.calibrated_candidate = None;
@@ -968,7 +1047,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
                 context.cbct_progress = Some(Arc::clone(&progress));
                 context.cbct_started = Some(std::time::Instant::now());
-                Task::perform(run_cbct_import_off_thread(path, progress), Message::CbctImportCompleted)
+                Task::perform(
+                    run_cbct_import_off_thread(path,variant,colleague_notebook,progress),
+                    Message::CbctImportCompleted,
+                )
             } else {
                 Task::none()
             }
@@ -2036,6 +2118,27 @@ fn view(context: &Context) -> Element<'_, Message> {
             .unwrap_or_else(|| "Relative rotation: awaiting fit".into());
         let dicom_panel = container(column![
             text("DICOM Geometry — CT preview"),
+            row![
+                text("Detector:"),
+                pick_list(
+                    cbct_geometry::CbctDetectorVariant::ALL,
+                    Some(context.cbct_detector_variant),
+                    Message::SelectCbctDetectorVariant,
+                ),
+            ].spacing(8),
+            row![
+                if context.cbct_importing {
+                    button("Select importer notebook")
+                } else {
+                    button("Select importer notebook").on_press(Message::ChooseCbctColleagueNotebook)
+                },
+                text(context.cbct_colleague_notebook.as_ref().map(|p|
+                    p.file_name().map(|f|f.to_string_lossy().into_owned())
+                        .unwrap_or_else(||p.display().to_string())
+                ).unwrap_or_else(||"No colleague notebook selected".into())),
+            ].spacing(8),
+            text("Original: maintained CT detector. Hybrid: optimized reslice + colleague PCB. Your importer: full colleague PCB. Experimental methods require a trusted .ipynb."),
+            text("Detector choice only changes CT detection; every result still requires mapping review, stationary calibration, and explicit enablement."),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
