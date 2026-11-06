@@ -2232,7 +2232,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 ),
             ].spacing(8),
             text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
-            text("All detectors run from maintained Python code. Switching methods clears prior geometry approval; all modes still require mapping review and calibration."),
+            text("Original and Optimized use scripts shipped inside this app repo (Python runtime still needed). Hybrid is experimental and unavailable until its reviewed detector source is installed."),
+            text("Changing detector revokes mapping approval. A successful CT import never enables magnetic tracking."),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
