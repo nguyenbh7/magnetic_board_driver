@@ -989,7 +989,7 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
     } else {
         let exe = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
         if let Some(dir) = script.parent() {
-            for base in [Some(dir), dir.parent().and_then(Path::parent)] {
+            for base in [Some(dir), dir.parent(), dir.parent().and_then(Path::parent)] {
                 if let Some(base) = base {
                     let venv = base.join(".venv").join(exe);
                     if venv.is_file() { candidates.push((venv.into_os_string(),vec![])); }
@@ -1094,7 +1094,7 @@ fn check_cbct_detector_compatibility(
     let help=String::from_utf8_lossy(&output.stdout);
     if !help.contains("--detector-variant") {
         return Err(format!(
-            "DICOM detector version mismatch: the live app selected {}, but the script at {}              does not support --detector-variant. Update hall-effect-motion-tracking              (a1-vgm-validation), verify CBCT_DETECT_SCRIPT isn't pointing to an older copy,              and restart the app. No DICOM was processed.",
+            "DICOM detector version mismatch: the live app selected {}, but the script at {} does not support --detector-variant. Use this app repository's bundled app/python_cbct/cbct_detect.py or unset CBCT_DETECT_SCRIPT if it points to an older copy. No DICOM processed.",
             variant,script.display()
         ));
     }
@@ -1135,12 +1135,11 @@ pub fn import_dicom_with_variant(
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..").join("..").join("hall-effect-motion-tracking")
-                .join("tools").join("cbct_bridge").join("cbct_detect.py")
+                .join("python_cbct").join("cbct_detect.py")
         });
     if !script.is_file() {
         return Err(format!(
-            "CBCT detector not found: {}. Clone hall-effect-motion-tracking beside magnetic_board_driver or set CBCT_DETECT_SCRIPT.",
+            "Bundled CBCT detector is missing: {}. Restore the app/python_cbct source directory in this repository or explicitly set CBCT_DETECT_SCRIPT.",
             script.display()
         ));
     }
@@ -1263,6 +1262,16 @@ pub fn import_dicom_with_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_detector_is_shipped_with_the_app_repository() {
+        let path=PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("python_cbct").join("cbct_detect.py");
+        assert!(path.is_file(),"Bundled source absent: {}",path.display());
+        let source=std::fs::read_to_string(&path).unwrap();
+        assert!(source.contains("--detector-variant"));
+        assert!(source.contains("optimized"));
+    }
 
     #[test]
     fn detector_version_preflight_rejects_old_cli_without_scanning() {
