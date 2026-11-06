@@ -1,3 +1,7 @@
+## 2026-11-06 app-local source consolidation (intermediate milestone, not native Rust)
+
+The app now vendors the maintained CBCT Python source and auxiliary modules into `app/python_cbct/` and by default runs `app/python_cbct/cbct_detect.py`. It no longer needs a neighboring `hall-effect-motion-tracking` checkout to run Original/Optimized; optional `CBCT_DETECT_SCRIPT` remains an explicit diagnostic override. The dependency on a compatible Python interpreter and scientific packages **remains**. Hybrid is unavailable until the missing reviewed alternative board detector is implemented and validated. The six Rust-native implementation units and acceptance criteria below still apply. Do **not** describe this milestone as completing the truly native DICOM importer.
+
 # Native in-app GK CBCT detection — implementation contract
 
 Status: **NOT IMPLEMENTED** as of 2026-11-06. This document records the user's requirement so a Python module or packaged Python worker is not presented as a "native app" completion.
