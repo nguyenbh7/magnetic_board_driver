@@ -213,3 +213,37 @@ fn sensor_field_to_trace_point(field: &SensorField) -> Option<SensorTracePoint> 
         bz_mt: field.field.z?.value() / UT_PER_MT,
     })
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn warning_requires_verified_full_scale_and_uses_ninety_percent() {
+        assert!(!above_warning_margin(Some(25.0),None));
+        assert!(!above_warning_margin(Some(8.9),Some(10.0)));
+        assert!(above_warning_margin(Some(9.1),Some(10.0)));
+        assert!(!above_warning_margin(Some(999.0),Some(-10.0)));
+    }
+
+    #[test]
+    fn all_sensor_peak_not_just_selected_sensor_and_new_epoch_clears_history() {
+        let mut trace=SensorTraceState::default();
+        trace.set_presence(BoardPresence{
+            board_mask:0b001,sensor_masks:[0xffff,0,0],
+        });
+        let board=trace.boards.get_mut(&0).unwrap();
+        board.selected_sensor_index=Some(0);
+        board.traces.entry(0).or_default().points.push_back(
+            SensorTracePoint{time_s:0.0,bx_mt:0.1,by_mt:0.0,bz_mt:0.0});
+        board.traces.entry(15).or_default().points.push_back(
+            SensorTracePoint{time_s:0.0,bx_mt:-22.0,by_mt:0.0,bz_mt:0.0});
+        let summary=trace.board_summaries();
+        assert_eq!(summary[0].selected_sensor_index,Some(0));
+        assert_eq!(summary[0].peak_component_mt,Some(22.0));
+        assert_eq!(summary[0].peak_sensor_index,Some(15));
+        assert!(above_warning_margin(summary[0].peak_component_mt,Some(24.0)));
+        trace.reset_histories();
+        let reset=trace.board_summaries();
+        assert_eq!(reset[0].selected_sensor_index,Some(0));
+        assert!(reset[0].peak_component_mt.is_none());
+    }
+}
