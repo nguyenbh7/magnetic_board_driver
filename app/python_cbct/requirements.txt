@@ -1,0 +1,9 @@
+numpy
+scipy
+matplotlib
+pandas
+SimpleITK
+torch
+torchio
+IPython
+contourpy
