@@ -12,7 +12,7 @@ use postcard_rpc::standard_icd::WireError;
 use ratatui::{text::Text, widgets::Row, Frame};
 mod sensor_monitor;
 mod displacement_plot;
-use displacement_plot::{displacement_plot, rotation_plot};
+use displacement_plot::{displacement_plot, rotation_plot, hdmm_prediction_plot};
 mod rigid_xyz_plot;
 use rigid_xyz_plot::rigid_xyz_plot;
 mod sensor_trace;
@@ -126,6 +126,9 @@ enum Message {
     GkCalibrationExportPicked(Option<PathBuf>),
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
+    UpdateHdmmMarkerCoordinates(String),
+    ApplyHdmmMarkerCoordinates,
+    ClearHdmmMarkerCoordinates,
     CopyRigidStatus,
     ReceivedBoardPresence(BoardPresence),
     ResetBoardDisplacement(u16),
@@ -314,6 +317,7 @@ struct Context {
     rigid_fit: RigidLiveFit,
     cbct_geometry: Option<cbct_geometry::CbctGeometry>,
     cbct_detector_variant: cbct_geometry::CbctDetectorVariant,
+    hdmm_marker_coordinate_input: String,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -1545,6 +1549,29 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.reset_zero();
             Task::none()
         }
+        Message::UpdateHdmmMarkerCoordinates(value) => {
+            context.hdmm_marker_coordinate_input=value;
+            Task::none()
+        }
+        Message::ApplyHdmmMarkerCoordinates => {
+            // Only a measured reflective sticker point, not a generic CT
+            // glass BB. This point is not supplied by the automatic detector.
+            let values=context.hdmm_marker_coordinate_input
+                .split(',').map(str::trim).map(str::parse::<f64>)
+                .collect::<Result<Vec<_>,_>>();
+            let result=match values {
+                Ok(ref v) if v.len()==3 =>
+                    context.rigid_fit.set_hdmm_target_lps([v[0],v[1],v[2]]),
+                _=>Err("Enter exactly three CT LPS coordinates in millimetres, e.g. 100.2,-75.0,28.4".into())
+            };
+            if let Err(e)=result {context.rigid_fit.set_status(format!("HDMM point rejected: {e}"));}
+            Task::none()
+        }
+        Message::ClearHdmmMarkerCoordinates => {
+            context.rigid_fit.clear_hdmm_target();
+            context.hdmm_marker_coordinate_input.clear();
+            Task::none()
+        }
         Message::CaptureRigidBackground => {
             match context.rigid_fit.capture_a1_background() {
                 Ok(raw) => context.live_fits.apply_background_snapshot(&raw),
@@ -1628,7 +1655,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
-            context.rigid_fit.reset_stream();
+            context.rigid_fit.start_new_acquisition();
             context.gk_calibration.capturing = None;
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
@@ -2382,6 +2409,19 @@ fn view(context: &Context) -> Element<'_, Message> {
             ].spacing(8),
             text(position_line),
             text(rotation_line),
+            text("HDMM comparison (predicted from rigid pose — NOT measured HDMM):"),
+            text("Enter the actual HDMM reflective sticker's independently confirmed CT LPS X,Y,Z (mm). A CT glass BB is NOT automatically the sticker."),
+            row![
+                text_input("CT LPS X,Y,Z (mm)",&context.hdmm_marker_coordinate_input)
+                    .on_input(Message::UpdateHdmmMarkerCoordinates),
+                button("Set HDMM point").on_press(Message::ApplyHdmmMarkerCoordinates),
+                button("Clear").on_press(Message::ClearHdmmMarkerCoordinates),
+            ].spacing(8),
+            text(if rigid.hdmm_point_ready {
+                rigid.hdmm_current_mm.map(|mm|
+                    format!("Predicted HDMM point displacement: {mm:.3} mm; compare with the external HDMM display at the same zero/time.")
+                ).unwrap_or_else(||"HDMM point selected; awaiting accepted fit after zero.".into())
+            } else {"No measured HDMM marker coordinates entered; prediction intentionally disabled.".into()}),
             text(format!("Tracking status: {}", rigid.status)),
             text(fit_quality),
         ].spacing(9))
@@ -2395,7 +2435,9 @@ fn view(context: &Context) -> Element<'_, Message> {
         // "Waiting..." rather than making the whole tracking view disappear.
         rigid_content = rigid_content
             .push(rigid_xyz_plot(rigid.xyz_history))
-            .push(rotation_plot(u16::MAX, rigid.rotation_history));
+            .push(rotation_plot(u16::MAX, rigid.rotation_history))
+            .push(text("Rigid-fit predicted displacement at the manually confirmed HDMM marker (not actual HDMM):"))
+            .push(hdmm_prediction_plot(rigid.hdmm_history));
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
             text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
