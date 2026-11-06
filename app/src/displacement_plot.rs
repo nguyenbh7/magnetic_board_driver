@@ -10,13 +10,14 @@ pub struct DisplacementPlot {
     board_id: u16,
     points: Vec<DisplacementPoint>,
     angular: bool,
+    hdmm_projection: bool,
 }
 
 pub fn displacement_plot<Message: 'static>(
     board_id: u16,
     points: Vec<DisplacementPoint>,
 ) -> Element<'static, Message> {
-    canvas(DisplacementPlot { board_id, points, angular: false })
+    canvas(DisplacementPlot { board_id, points, angular: false, hdmm_projection: false })
         .width(Length::Fill)
         .height(Length::Fixed(PLOT_HEIGHT))
         .into()
@@ -26,10 +27,23 @@ pub fn rotation_plot<Message: 'static>(
     board_id: u16,
     points: Vec<DisplacementPoint>,
 ) -> Element<'static, Message> {
-    canvas(DisplacementPlot { board_id, points, angular: true })
+    canvas(DisplacementPlot { board_id, points, angular: true, hdmm_projection: false })
         .width(Length::Fill)
         .height(Length::Fixed(PLOT_HEIGHT))
         .into()
+}
+
+/// This is a model projection at a manually identified reflector, never
+/// measurements from the GK HDMM camera.
+pub fn hdmm_prediction_plot<Message: 'static>(
+    points: Vec<DisplacementPoint>,
+) -> Element<'static, Message> {
+    canvas(DisplacementPlot {
+        board_id:u16::MAX,points,angular:false,hdmm_projection:true,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(PLOT_HEIGHT))
+    .into()
 }
 
 impl<Message> canvas::Program<Message> for DisplacementPlot {
@@ -67,7 +81,9 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
 
         draw_label(
             &mut frame,
-            if self.angular { "Rotation (deg)" } else { "Displacement (mm)" },
+            if self.angular { "Rotation (deg)" } else if self.hdmm_projection {
+                "Predicted HDMM point (mm)"
+            } else { "Displacement (mm)" },
             Point::new(plot_left, 2.0),
             11.0,
             label_color,
@@ -106,7 +122,9 @@ impl<Message> canvas::Program<Message> for DisplacementPlot {
         if self.points.len() < 2 {
             draw_label(
                 &mut frame,
-                "Waiting for displacement history",
+                if self.hdmm_projection {
+                    "Enter confirmed CT sticker coordinates; awaiting new fit"
+                } else { "Waiting for displacement history" },
                 Point::new(plot_left + 12.0, plot_top + 24.0),
                 12.0,
                 label_color,
