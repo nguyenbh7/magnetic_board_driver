@@ -1031,7 +1031,6 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
             script.display(),dicom_setup_instructions()
         ));
     }
-    let (python,prefix,selected)=discover_cbct_python(&script)?;
     let checker=script.with_file_name("check_dicom_environment.py");
     if !checker.is_file() {
         return Err(format!(
@@ -1039,27 +1038,49 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
             checker.display(),dicom_setup_instructions()
         ));
     }
-    let output=Command::new(&python).args(&prefix).arg(&checker)
-        .arg("--detector-script").arg(&script).output()
-        .map_err(|e|format!("Cannot launch DICOM setup check: {e}"))?;
-    let diagnostic=String::from_utf8_lossy(&output.stdout);
-    let errors=String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        return Err(format!(
-            "DICOM environment is incomplete (Python: {selected}).\n{diagnostic}\n{errors}\n{}",
-            dicom_setup_instructions()
-        ));
+
+    // Prefer a fully working environment, but when none is ready, run the
+    // standard-library-only checker under the first available interpreter.
+    // This gives the user an exact list of missing packages instead of just
+    // saying "Python not found."
+    let detected=discover_cbct_python(&script);
+    let mut attempts=Vec::new();
+    if let Ok((python,prefix,_))=&detected {
+        attempts.push((python.clone(),prefix.clone()));
+    } else {
+        attempts.extend(cbct_python_candidates(&script));
     }
-    Ok(format!(
-        "{diagnostic}\nAll Original/Optimized DICOM Python requirements verified in {selected}. No packages were installed."
+    let mut diagnostics=Vec::new();
+    for (python,prefix) in attempts {
+        match Command::new(&python).args(&prefix).arg(&checker)
+            .arg("--detector-script").arg(&script).output() {
+            Ok(output) => {
+                let diagnostic=String::from_utf8_lossy(&output.stdout);
+                let errors=String::from_utf8_lossy(&output.stderr);
+                if !output.status.success() {
+                    return Err(format!(
+                        "DICOM setup needs attention (Python: {}).\n{diagnostic}\n{errors}\n{}",
+                        python.to_string_lossy(),dicom_setup_instructions()
+                    ));
+                }
+                return Ok(format!(
+                    "{diagnostic}\nDICOM requirements verified in {}. No packages were installed.",
+                    python.to_string_lossy()
+                ));
+            }
+            Err(e)=>diagnostics.push(format!("{}: {e}",python.to_string_lossy())),
+        }
+    }
+    Err(format!(
+        "Could not launch any Python interpreter for the DICOM package checker.\n{}\n{}",
+        diagnostics.join(" | "),dicom_setup_instructions()
     ))
+
 }
 
-/// Resolve an interpreter that can run the CT detector on Windows and Unix.
-/// Prefer the detector's venv or an active venv, then Windows py launchers.
-/// A successful Python launch alone is insufficient: probe the image libraries
-/// before selecting a candidate so the Windows Store python alias is rejected.
-fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::ffi::OsString>, String), String> {
+/// Enumerate Python interpreters without requiring the image libraries.
+/// The GUI package checker uses this to report missing imports too.
+fn cbct_python_candidates(script:&Path)->Vec<(std::ffi::OsString,Vec<std::ffi::OsString>)> {
     use std::ffi::OsString;
     let mut candidates: Vec<(OsString, Vec<OsString>)> = Vec::new();
     let explicit = std::env::var_os("CBCT_PYTHON");
@@ -1092,6 +1113,15 @@ fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::f
         candidates.push((OsString::from("python"),vec![]));
         candidates.push((OsString::from("python3"),vec![]));
     }
+    candidates
+}
+
+/// Resolve an interpreter that can run the CT detector on Windows and Unix.
+/// Prefer the detector's venv or an active venv, then Windows py launchers.
+/// A successful Python launch alone is insufficient: probe the image libraries
+/// before selecting a candidate so the Windows Store python alias is rejected.
+fn discover_cbct_python(script: &Path) -> Result<(std::ffi::OsString, Vec<std::ffi::OsString>, String), String> {
+    let candidates=cbct_python_candidates(script);
     let mut diagnostics=Vec::new();
     for (program, prefix) in candidates {
         let label = format!("{} {}",program.to_string_lossy(),
