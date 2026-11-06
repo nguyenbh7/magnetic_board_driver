@@ -45,3 +45,39 @@ Then perform a short, stationary and moving **offline-reproducible** 3-board tes
 - Original/Optimized DICOM imports using only app-local Python script, and failure of Hybrid is explicit. All CT geometry remains review-only; never automatically enable tracking.
 
 **Validation status:** GitHub source commits and Rust unit tests have been written, but Windows `cargo test`, real CBCT detection, sensor saturation metrology, and HDMM comparison have **not been executed by the assistant**.
+
+## Lab laptop dependencies and built-in diagnostics (2026-11-06)
+
+The DICOM Python dependency manifest was **already** bundled under
+`app/python_cbct/requirements.txt`: NumPy, SciPy, Matplotlib, pandas,
+SimpleITK, PyTorch, TorchIO, IPython, and contourpy. No Python is needed for
+Hall logging or the native Rust six-DOF solver.
+
+A new one-time `scripts/setup_dicom_windows.ps1` creates an isolated `.venv`,
+installs exactly that requirements file, and executes the standard-library-only
+`app/python_cbct/check_dicom_environment.py`. It reports each dependency,
+the selected interpreter, DICOM CLI compatibility and stale environment
+overrides. The app's **DICOM Geometry** panel also has a nonblocking
+**Check DICOM packages**, **Copy setup commands**, and **Copy package report**.
+No GUI action automatically installs software or alters an environment.
+
+A Windows developer can prepare a portable source+binaries ZIP via
+`scripts/package_lab_laptop.ps1` (includes `app.exe`, `app/python_cbct/`,
+the requirements, one-time installer, and lab usage instructions; **does not**
+bundle the downloaded Python wheels or experimental/patient data). The app can
+find Python detector code beside the portable executable; no other Git
+checkout is needed. Python still must be installed on the laptop once.
+
+```powershell
+# Lab laptop, inside extracted app folder or this repo:
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_dicom_windows.ps1
+# No-install recheck:
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_dicom_windows.ps1 -CheckOnly
+# Dev PC: package app + Python sources for the laptop:
+powershell -ExecutionPolicy Bypass -File .\scripts\package_lab_laptop.ps1
+```
+
+The detector remains *Python-backed* despite repo-local source. Hybrid's
+actual reviewed variant has not been ported into the app and must not be
+reported as available merely because its Python dependencies pass.
+
