@@ -1006,7 +1006,7 @@ pub fn dicom_setup_instructions() -> String {
     let script=configured_cbct_script();
     let backend=script.parent().unwrap_or_else(||Path::new("."));
     let root=backend.parent().unwrap_or_else(||Path::new("."));
-    let install_root=if root.file_name().is_some_and(|x|x=="app") {
+    let install_root=if root.file_name().and_then(|x|x.to_str())==Some("app") {
         root.parent().unwrap_or(root)
     } else {root};
     let requirements=backend.join("requirements.txt");
@@ -1058,6 +1058,14 @@ pub fn inspect_dicom_environment() -> Result<String,String> {
                 let diagnostic=String::from_utf8_lossy(&output.stdout);
                 let errors=String::from_utf8_lossy(&output.stderr);
                 if !output.status.success() {
+                    if !diagnostic.contains("GK DICOM importer dependency check") {
+                        // E.g. py -3.11 launcher exists, but Python 3.11 itself
+                        // is not installed. Try another interpreter instead.
+                        diagnostics.push(format!(
+                            "{}: {}",
+                            python.to_string_lossy(),errors.trim()));
+                        continue;
+                    }
                     return Err(format!(
                         "DICOM setup needs attention (Python: {}).\n{diagnostic}\n{errors}\n{}",
                         python.to_string_lossy(),dicom_setup_instructions()
