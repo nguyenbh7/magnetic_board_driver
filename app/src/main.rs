@@ -2142,8 +2142,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                         .unwrap_or_else(||p.display().to_string())
                 ).unwrap_or_else(||"No colleague notebook selected".into())),
             ].spacing(8),
-            text("Original: maintained CT detector. Hybrid: optimized reslice + colleague PCB. Your importer: full colleague PCB. Experimental methods require a trusted .ipynb."),
-            text("Detector choice only changes CT detection; every result still requires mapping review, stationary calibration, and explicit enablement."),
+            text("Original: maintained detector. Hybrid: optimized board outlines. Your importer: full colleague board detector."),
+            text("Hybrid and your importer need a trusted .ipynb. Every imported geometry needs a new mapping review and calibration."),
             row![
                 button("Import ZIP").on_press(Message::ImportCbctZip),
                 button("Import folder").on_press(Message::ImportCbctFolder),
