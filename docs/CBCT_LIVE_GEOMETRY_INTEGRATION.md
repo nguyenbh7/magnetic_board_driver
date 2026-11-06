@@ -1,3 +1,34 @@
+## 2026-11-06 — Final operator names: Original / Hybrid / Optimized (supersedes the preceding 3-way naming)
+
+The DICOM detector dropdown now contains **Original**, **Hybrid**, and **Optimized** (default). There are **no collaborator names in the GUI**. These are *three actual algorithm configurations*, not aliases of the same mode:
+
+| UI choice | Algorithm | Notebook needed? |
+| --- | --- | --- |
+| **Original** | Maintained magnet/board detector with the seven independently screened speed optimizations switched **off** (legacy baseline). Existing chip-first recovery remains allowed. | No |
+| **Hybrid** | Alternative reviewed 5-function PCB-footprint detector, backed by the maintained optimized core (fast ordinary reslices + specialized alternate side-layer reslices). Does not automatically run chip-first board rescue. | **Yes** — select a trusted importer notebook |
+| **Optimized** (**default**) | Maintained production detector_core with validated acceleration flags **on**: reused magnet EDT, cached reslice minima, guarded exclusion EDT, hull-vertex solidity, affine reslice, cropped magnet-outline EDT and magnet-core EDT. Unvalidated batch reslice stays off; unchanged detection thresholds. | No |
+
+Selecting **Hybrid** reveals the notebook-picker control. Switching methods invalidates imported CT geometry, CT-to-firmware mapping review/approval, and active experimental fit state, without deleting captured Hall reference/background fields. No automatic fallback, threshold relaxation, or live-calibration activation occurs. When Hybrid fails, explicitly choose another method and import the same scan again. Detector method and any trusted importer source hash are retained in saved detector JSON, geometry review and calibration exports. Historical analysis JSON can still be read through backward-compatible internal tags, but **old names are not shown in the app UI**.
+
+**Important limitation:** Original is now the *unaccelerated baseline algorithm*, whereas Optimized is the accelerated implementation that used to be the default under an older method label. Both use the maintained implementation with different frozen speed switches; this is not a second unmaintained copy of the detector. Optimizations have passed selected paired geometry checks, not proof of CT chip active-center accuracy.
+
+**Windows checks before a new GK experiment** (not run remotely):
+```powershell
+cd F:\GitHub\hall-effect-motion-tracking
+git switch a1-vgm-validation
+git pull --ff-only
+cd tools\cbct_bridge
+python -m unittest -v test_cbct_detector_variant_selector.py
+
+cd F:\GitHub\magnetic_board_driver
+git switch feature/live-rigid-body-fit
+git pull --ff-only
+cargo test -p app --release
+cargo run -p app --release
+```
+
+**Manual check:** import the same CT series with all three variants, observe the selector labels, geometry/QC independently, log provenance, and confirm switching clears any prior mapping approval. **The source change is committed, but Windows Rust compilation and real-image GUI validation are still pending.**
+
 ## 2026-11-06 — User-selectable CBCT detector in the live application (research geometry only)
 
 **Implemented on `feature/live-rigid-body-fit` (Rust) + `a1-vgm-validation` (Python); Windows build and real-scan GUI validation still pending.** The DICOM Geometry panel now provides a **Detector** dropdown:
