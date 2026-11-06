@@ -76,7 +76,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct CbctGeometry {
     /// Algorithm that created these detections, preserved across JSON loads/export.
     pub selected_detector_variant: String,
-    /// Audit hash of trusted colleague importer notebook for experimental methods.
+    /// Source SHA256 for the reviewed alternate detector notebook.
     pub importer_notebook_sha256: Option<String>,
     pub scan_path: PathBuf,
     pub qc_directory: PathBuf,
@@ -332,7 +332,7 @@ impl CbctGeometry {
             return Err("Experimental CT detector report must retain importer notebook SHA256".into());
         }
         let detector_variant=detector_variant.to_string();
-        let colleague_sha=report.importer_notebook_sha256.clone();
+        let importer_sha=report.importer_notebook_sha256.clone();
         // The glass BB is optional for magnet/board calibration. All
         // three magnets and all 48 sensors remain mandatory. Accept an
         // incomplete detector report ONLY when validation below proves
@@ -515,7 +515,7 @@ impl CbctGeometry {
         Ok(Self {
             scan_path, qc_directory,
             selected_detector_variant:detector_variant,
-            importer_notebook_sha256:colleague_sha,
+            importer_notebook_sha256:importer_sha,
             frame_uid: uid,
             rigid_origin_lps_mm: origin,
             rigid_axes_to_lps: axes,
@@ -938,7 +938,11 @@ impl CbctGeometry {
         let mut lines = vec![
             "CBCT INITIAL GEOMETRY — UNREVIEWED (not a magnetic fit profile)".to_string(),
             format!("Selected detector: {} (all CT geometry requires independent review)",
-                    self.selected_detector_variant),
+                    match self.selected_detector_variant.as_str() {
+                        "colleague" => "Legacy alternate importer",
+                        "original_legacy_unlabeled" => "Legacy unlabelled",
+                        other => other,
+                    }),
             format!("Experimental detector notebook SHA256: {}",
                     self.importer_notebook_sha256.as_deref().unwrap_or("not applicable / legacy")),
             format!("Source: {}", self.scan_path.display()),
@@ -1081,7 +1085,7 @@ fn validate_detector_report_source(
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
-    import_dicom_with_variant(scan,CbctDetectorVariant::Original,None,progress)
+    import_dicom_with_variant(scan,CbctDetectorVariant::Optimized,None,progress)
 }
 
 pub fn import_dicom_with_variant(
