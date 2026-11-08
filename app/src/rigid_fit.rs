@@ -1561,6 +1561,8 @@ mod tests {
             calibration_stationary_raw_mt:[[[f64;3];16];3],
             calibration_background_raw_mt:Option<[[[f64;3];16];3]>,
             endpoint_masks:Vec<Mask>,
+            #[serde(default)]
+            endpoint_range_guard: Option<serde_json::Value>,
             ct_reference:Truth,ct_bb_reference:BbReference,
             frames:Vec<Frame>,
         }
@@ -1628,6 +1630,8 @@ mod tests {
             } else {"UNMEASURED_board_constant_offsets_only"},
             "global_wrap_exclusions_deliberately_not_reused":true,
             "endpoint_sensor_masks":masks,
+            "range_guard":data.endpoint_range_guard,
+            "calibration_and_fit_use_identical_endpoint_masks":true,
             "ct_reference":{
                 "head_rotation_deg":data.ct_reference.angle_deg,
                 "magnet_centroid_displacement_mm":data.ct_reference.centroid_displacement_mm,
@@ -1648,13 +1652,17 @@ mod tests {
                 summary["reason"]=serde_json::json!(reason);
             }
             Ok(mut profile)=>{
+                // Apply the SAME externally prespecified endpoint mask
+                // to stationary remanence calibration and each pose fit.
+                // Excluded near-range sensors must not silently influence
+                // nuisance board offsets or fitted remanences.
                 let calibrate=if let Some(bg)=data.calibration_background_raw_mt.as_ref(){
-                    fit_magnet_strengths(
-                        &profile,bg,&data.calibration_stationary_raw_mt)
+                    fit_magnet_strengths_masked(
+                        &profile,bg,&data.calibration_stationary_raw_mt,masks)
                         .map(|(rem,rmse)|(rem,[[0.0;3];3],rmse))
                 } else {
-                    fit_strengths_with_board_offsets(
-                        &profile,&data.calibration_stationary_raw_mt)
+                    fit_strengths_with_board_offsets_masked(
+                        &profile,&data.calibration_stationary_raw_mt,masks)
                 };
                 match calibrate {
                     Err(reason)=>{
