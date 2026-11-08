@@ -444,9 +444,9 @@ fn live_hall_range_status(context: &Context) -> String {
     match worst {
         Some((ratio, board, sensor, axis, measured)) => {
             let axis_name = ["Bx", "By", "Bz"][axis];
-            let action = if ratio >= .80 || jump_count > 0 {
+            let action = if ratio >= 0.80 || jump_count > 0 {
                 "BACK OFF MAGNET / REVIEW DATA - range or raw step warning"
-            } else if ratio >= .65 {
+            } else if ratio >= 0.65 {
                 "CAUTION - approaching readout range"
             } else {
                 "Below early warning margin (NOT proof against wrapping)"
