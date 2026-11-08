@@ -1898,17 +1898,29 @@ mod tests {
                                         }).collect::<Vec<_>>();
                                         let mut sums=[[0.0_f64;3];3];
                                         let mut counts=[[0_usize;3];3];
+                                        // Firmware sensor index, by raw board and
+                                        // LPS magnetic vector component. This is
+                                        // diagnostic field-model residual only.
+                                        let mut sensor_ss=[[[0.0_f64;3];16];3];
+                                        let mut sensor_signed=[[[0.0_f64;3];16];3];
+                                        let mut sensor_n=[[[0_usize;3];16];3];
                                         for frame in samples {
                                             for obs in frame {
                                                 let board=profile.boards.iter()
                                                     .find(|b|b.sensors_mm.contains(&obs.sensor_mm))
                                                     .expect("Original observed Hall site is absent from profile");
                                                 let id=board.raw_board_id as usize;
+                                                let channel=board.sensors_mm.iter()
+                                                    .position(|x|*x==obs.sensor_mm)
+                                                    .expect("Original sensor index missing in board");
                                                 let pred=predict(obs.sensor_mm,&sources);
                                                 for axis in 0..3 {
                                                     let diff=pred[axis]-obs.measured_mt[axis];
                                                     sums[id][axis]+=diff*diff;
                                                     counts[id][axis]+=1;
+                                                    sensor_ss[id][channel][axis]+=diff*diff;
+                                                    sensor_signed[id][channel][axis]+=diff;
+                                                    sensor_n[id][channel][axis]+=1;
                                                 }
                                             }
                                         }
@@ -1918,6 +1930,27 @@ mod tests {
                                             let bs=sums[id].iter().sum::<f64>();
                                             let bn=counts[id].iter().sum::<usize>();
                                             ss+=bs;nn+=bn;
+                                            let per_sensor=(0..16).map(|index|{
+                                                let n=sensor_n[id][index].iter().sum::<usize>();
+                                                let ss=sensor_ss[id][index].iter().sum::<f64>();
+                                                serde_json::json!({
+                                                    "firmware_sensor_index":index,
+                                                    "component_count":n,
+                                                    "rmse_mt":if n>0 {Some((ss/n as f64).sqrt())} else {None},
+                                                    "axis_rmse_mt_LPS":(0..3).map(|axis|{
+                                                        if sensor_n[id][index][axis]>0 {
+                                                            Some((sensor_ss[id][index][axis]/
+                                                                sensor_n[id][index][axis] as f64).sqrt())
+                                                        } else {None}
+                                                    }).collect::<Vec<_>>(),
+                                                    "mean_model_minus_observed_mt_LPS":(0..3).map(|axis|{
+                                                        if sensor_n[id][index][axis]>0 {
+                                                            Some(sensor_signed[id][index][axis]/
+                                                                sensor_n[id][index][axis] as f64)
+                                                        } else {None}
+                                                    }).collect::<Vec<_>>(),
+                                                })
+                                            }).collect::<Vec<_>>();
                                             per_board.push(serde_json::json!({
                                                 "raw_board_id":id,
                                                 "sensor_component_count":bn,
@@ -1927,6 +1960,8 @@ mod tests {
                                                         Some((sums[id][axis]/counts[id][axis] as f64).sqrt())
                                                     } else {None}
                                                 }).collect::<Vec<_>>(),
+                                                "per_firmware_sensor_original_masked":per_sensor,
+                                                "axis_convention":"CT DICOM LPS; NOT raw sensor Bx/By/Bz",
                                             }));
                                         }
                                         serde_json::json!({
@@ -2202,7 +2237,7 @@ mod tests {
                                         })
                                     } else {serde_json::Value::Null};
                                     let outcome=serde_json::json!({
-                                        "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v2",
+                                        "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v3",
                                         "status":"DIAGNOSTIC_ONLY_NOT_RIGID_POSE_VALIDATION",
                                         "source_fit_summary_path":summary_path,
                                         "pre_accepted_snapshots":pressure_pre.len(),
