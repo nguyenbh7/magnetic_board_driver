@@ -1943,8 +1943,94 @@ mod tests {
                                         [a[0],a[1],a[2]],
                                         data.ct_reference.centroid_translation_lps_mm,
                                     );
+                                    // CONTROLLED SIDE-RECEIVERS-ONLY diagnostic.
+                                    // Keep ALL original PRE-calibrated magnetic
+                                    // strengths, per-board offsets, CT geometry
+                                    // and masks unchanged; remove raw0 ONLY
+                                    // from the endpoint pose optimization.
+                                    // Refit both PRE and POST using the same
+                                    // accepted snapshot selection; withheld
+                                    // superior observations are scored afterward.
+                                    // Absolutely no CT pose is used as a seed.
+                                    fn side_only_poses(
+                                        profile:&RigidProfile,
+                                        snapshots:&[Vec<Observation>],
+                                        full_control_seed:[f64;6],
+                                    )->Vec<[f64;6]> {
+                                        let superior=&profile.boards.iter()
+                                            .find(|b|b.raw_board_id==0)
+                                            .expect("Missing GK superior receiver")
+                                            .sensors_mm;
+                                        let mut accepted=Vec::new();
+                                        for frame in snapshots {
+                                            let side_obs=frame.iter()
+                                                .filter(|o|!superior.contains(&o.sensor_mm))
+                                                .cloned().collect::<Vec<_>>();
+                                            if side_obs.len()<16 { continue; }
+                                            let mut best:Option<RigidFitResult>=None;
+                                            for seed in [full_control_seed,profile.initial_pose] {
+                                                if let Some(result)=optimize_pose(profile,&side_obs,seed) {
+                                                    if best.as_ref().is_none_or(
+                                                        |old|result.rmse_mt<old.rmse_mt)
+                                                    {
+                                                        best=Some(result);
+                                                    }
+                                                }
+                                            }
+                                            if let Some(result)=best {
+                                                if result.rmse_mt<=profile.max_rmse_mt {
+                                                    accepted.push(result.pose);
+                                                }
+                                            }
+                                        }
+                                        accepted
+                                    }
+                                    let side_pre=side_only_poses(profile,&pressure_pre,a);
+                                    let side_post=side_only_poses(profile,&pressure_post,b);
+                                    let side_comparison=if side_pre.len()>=3 && side_post.len()>=3 {
+                                        let sa=median(&side_pre);
+                                        let sb=median(&side_post);
+                                        let sa_rot=rodrigues([sa[3],sa[4],sa[5]]);
+                                        let sb_rot=rodrigues([sb[3],sb[4],sb[5]]);
+                                        let srel=mul_matrix(sb_rot,transpose(sa_rot));
+                                        let srot_diff=mul_matrix(srel,transpose(ct_rot));
+                                        let sgeodesic=(((srot_diff[0][0]+srot_diff[1][1]+
+                                            srot_diff[2][2]-1.0)/2.0).clamp(-1.,1.))
+                                            .acos()*RAD_TO_DEG;
+                                        let st=sub([sb[0],sb[1],sb[2]],
+                                            [sa[0],sa[1],sa[2]]);
+                                        let sshift_error=sub(st,
+                                            data.ct_reference.centroid_translation_lps_mm);
+                                        let bb=data.ct_bb_reference.bb_pre_lps_mm;
+                                        let bb_pre=add(add(origin,[sa[0],sa[1],sa[2]]),
+                                            mat_vec(sa_rot,sub(bb,origin)));
+                                        let bb_post=add(add(origin,[sb[0],sb[1],sb[2]]),
+                                            mat_vec(sb_rot,sub(bb,origin)));
+                                        let bb_delta=sub(bb_post,bb_pre);
+                                        let bb_delta_error=sub(bb_delta,
+                                            data.ct_bb_reference.bb_delta_pre_lps_mm);
+                                        Some(serde_json::json!({
+                                            "accepted_PRE_side_only":side_pre.len(),
+                                            "accepted_POST_side_only":side_post.len(),
+                                            "pose_change_relative_to_CT_translation_vector_error_mm":
+                                                dot(sshift_error,sshift_error).sqrt(),
+                                            "pose_change_relative_to_CT_rotation_geodesic_deg":sgeodesic,
+                                            "pose_change_relative_to_CT_BB_vector_error_mm":
+                                                dot(bb_delta_error,bb_delta_error).sqrt(),
+                                            "PRE_side_only_median_pose_xyzmm_rotvec_rad":sa,
+                                            "POST_side_only_median_pose_xyzmm_rotvec_rad":sb,
+                                            "PRE_side_only_fitted_pose_scored_on_ALL_receivers":
+                                                score(profile,&pressure_pre,sa_rot,[sa[0],sa[1],sa[2]]),
+                                            "POST_side_only_fitted_pose_scored_on_ALL_receivers":
+                                                score(profile,&pressure_post,sb_rot,[sb[0],sb[1],sb[2]]),
+                                            "no_CT_used_for_pose_optimization":true,
+                                            "calibration_remains_all_board_PRE_baseline":true,
+                                            "side_only_pose_identifiability_NOT_established":true,
+                                            "score_on_raw0_is_HELD_OUT_not_optimized":true,
+                                        }))
+                                    } else {None};
                                     let outcome=serde_json::json!({
-                                        "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v1",
+                                        "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v2",
                                         "status":"DIAGNOSTIC_ONLY_NOT_RIGID_POSE_VALIDATION",
                                         "source_fit_summary_path":summary_path,
                                         "pre_accepted_snapshots":pressure_pre.len(),
@@ -1964,6 +2050,13 @@ mod tests {
                                         "CT_to_Hall_held_pose_equivalence_verified":false,
                                         "boardwise_field_cost_cannot_prove_true_sensor_mapping":true,
                                         "ct_field_cost_cannot_be_tuned_to_reconstruct_accuracy":true,
+                                        "side_only_endpoint_pose_ablation_fixed_calibration":side_comparison,
+                                        "control_all_board_centroid_translation_error_mm":
+                                            dot(trans_err,trans_err).sqrt(),
+                                        "control_all_board_rotation_geodesic_deg":rot_err,
+                                        "control_all_board_bb_vector_error_mm":
+                                            dot(bb_err,bb_err).sqrt(),
+                                        "side_only_is_DIAGNOSTIC_not_better_calibration":true,
                                     });
                                     let dest=Path::new(path);
                                     if let Some(parent)=dest.parent() {
