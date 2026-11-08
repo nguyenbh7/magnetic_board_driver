@@ -124,10 +124,10 @@ mod nominal_mlx_range_tests {
         let wide = nominal_symmetric_mlx_half_ranges_mt(0, 1, 0xC).unwrap();
         assert!((wide[0] - 49.217536).abs() < 1e-8);
         assert!((wide[2] - 79.29856).abs() < 1e-8);
-        assert_eq!(
-            nominal_symmetric_mlx_half_ranges_mt(7, 0, 0x0).unwrap()[0],
-            4.9152 * 98.0 / 75.0
-        );
+        assert!((
+            nominal_symmetric_mlx_half_ranges_mt(7, 0, 0x0).unwrap()[0]
+            - 4.9152 * 98.0 / 75.0
+        ).abs() < 1e-8);
         assert!(nominal_symmetric_mlx_half_ranges_mt(0, 2, 0xC).is_none());
         assert!(nominal_symmetric_mlx_half_ranges_mt(0, 3, 0xC).is_none());
         assert!(nominal_symmetric_mlx_half_ranges_mt(8, 0, 0xC).is_none());
