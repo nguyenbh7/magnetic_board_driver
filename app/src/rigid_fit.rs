@@ -819,7 +819,21 @@ pub fn fit_magnet_strengths(
     background: &[[[f64; 3]; 16]; 3],
     stationary: &[[[f64; 3]; 16]; 3],
 ) -> Result<([f64; 3], f64), String> {
+    fit_magnet_strengths_masked(profile,background,stationary,[0xffff;3])
+}
+
+/// Research endpoint screening: masked channels NEVER enter calibration.
+/// Default production/legacy callers still use all sensors via the wrapper.
+pub fn fit_magnet_strengths_masked(
+    profile: &RigidProfile,
+    background: &[[[f64; 3]; 16]; 3],
+    stationary: &[[[f64; 3]; 16]; 3],
+    masks: [u16;3],
+) -> Result<([f64; 3], f64), String> {
     profile.validate()?;
+    if masks.iter().any(|m|m.count_ones()<8) {
+        return Err("Fewer than 8 calibration sensors per board".into());
+    }
     let sources: Vec<_> = profile.magnets.iter().map(|magnet| {
         let mut m = magnet.clone();
         m.remanence_mt = 1.0;
@@ -830,6 +844,7 @@ pub fn fit_magnet_strengths(
     for board in &profile.boards {
         let id = board.raw_board_id as usize;
         for i in 0..16 {
+            if masks[id] & (1u16<<i) == 0 { continue; }
             let gain = board.sensor_gains.as_ref().map(|g| g[i]).unwrap_or(1.0);
             let observed = sub(
                 scale(mat_vec(board.raw_to_world,
@@ -884,7 +899,20 @@ pub fn fit_strengths_with_board_offsets(
     profile: &RigidProfile,
     stationary: &[[[f64;3];16];3],
 ) -> Result<([f64;3], [[f64;3];3], f64), String> {
+    fit_strengths_with_board_offsets_masked(profile,stationary,[0xffff;3])
+}
+
+/// Same board-constant offset model as baseline, but only valid selected
+/// sensor channels contribute to EACH board mean and design row.
+pub fn fit_strengths_with_board_offsets_masked(
+    profile: &RigidProfile,
+    stationary: &[[[f64;3];16];3],
+    masks: [u16;3],
+) -> Result<([f64;3], [[f64;3];3], f64), String> {
     profile.validate()?;
+    if masks.iter().any(|m|m.count_ones()<8) {
+        return Err("Fewer than 8 calibration sensors per board".into());
+    }
     let sources: Vec<_>=profile.magnets.iter().map(|m|{
         let mut unit=m.clone();
         unit.remanence_mt=1.0;
@@ -896,9 +924,11 @@ pub fn fit_strengths_with_board_offsets(
     let mut board_values=Vec::with_capacity(3);
     for board in &profile.boards {
         let id=board.raw_board_id as usize;
+        let n= f64::from(masks[id].count_ones());
         let mut predictions=[[[0.0_f64;3];3];16];
         let mut measured=[[0.0_f64;3];16];
         for i in 0..16 {
+            if masks[id] & (1u16<<i) == 0 { continue; }
             let gain=board.sensor_gains.as_ref().map(|g|g[i]).unwrap_or(1.0);
             measured[i]=scale(mat_vec(board.raw_to_world,stationary[id][i]),1.0/gain);
             if measured[i].iter().any(|v|!v.is_finite()) {
@@ -908,9 +938,9 @@ pub fn fit_strengths_with_board_offsets(
                 predictions[i][j]=predict(board.sensors_mm[i],std::slice::from_ref(&sources[j]));
             }
             for axis in 0..3 {
-                observed_means[id][axis]+=measured[i][axis]/16.0;
+                observed_means[id][axis]+=measured[i][axis]/n;
                 for j in 0..3 {
-                    model_board_means[id][j][axis]+=predictions[i][j][axis]/16.0;
+                    model_board_means[id][j][axis]+=predictions[i][j][axis]/n;
                 }
             }
         }
@@ -919,6 +949,7 @@ pub fn fit_strengths_with_board_offsets(
     let mut matrix=[[0.0_f64;4];3];
     for (id,predictions,measured) in &board_values {
         for i in 0..16 {
+            if masks[*id] & (1u16<<i) == 0 { continue; }
             for axis in 0..3 {
                 let row=std::array::from_fn::<_,3,_>(|j|
                     predictions[i][j][axis]-model_board_means[*id][j][axis]);
