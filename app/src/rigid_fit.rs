@@ -1563,6 +1563,8 @@ mod tests {
             endpoint_masks:Vec<Mask>,
             #[serde(default)]
             endpoint_range_guard: Option<serde_json::Value>,
+            #[serde(default)]
+            full_record_qc:Option<serde_json::Value>,
             ct_reference:Truth,ct_bb_reference:BbReference,
             frames:Vec<Frame>,
         }
@@ -1575,8 +1577,22 @@ mod tests {
         let data:Data=serde_json::from_str(
             &std::fs::read_to_string(&source).expect("Read PRIVATE Nov06 plateau replay")
         ).expect("Parse Nov06 plateau replay");
-        assert_eq!(data.format,"gk_nov06_private_endpoint_replay_v1");
-        assert_eq!(data.status,"RESEARCH_ONLY_PRELIMINARY_ENDPOINT_FIT");
+        let is_motion=data.format=="gk_nov06_private_motion_replay_v1";
+        if is_motion {
+            assert_eq!(data.status,"RESEARCH_ONLY_DYNAMIC_MASK_NOT_VALIDATED_FIELD_BRANCH");
+            assert!(data.full_record_qc.is_some(),"Full-motion mask provenance required");
+            assert!(data.frame_count>1000,"Expected original full-run frames");
+        } else {
+            assert_eq!(data.format,"gk_nov06_private_endpoint_replay_v1");
+            assert_eq!(data.status,"RESEARCH_ONLY_PRELIMINARY_ENDPOINT_FIT");
+            assert!(data.full_record_qc.is_none());
+        }
+        let motion_path=if is_motion {
+            let path=std::env::var("GK_NOV06_MOTION_POSES_OUT")
+                .expect("For full-motion replay, set a NEW private GK_NOV06_MOTION_POSES_OUT file");
+            assert!(!Path::new(&path).exists(),"Refusing to overwrite fitted private motion poses");
+            Some(path)
+        } else {None};
         assert_eq!(data.frames.len(),data.frame_count);
         assert_eq!(data.frame_counts_by_board.iter().sum::<usize>(),data.frame_count);
         assert_eq!(data.endpoint_masks.len(),3);
@@ -1601,10 +1617,16 @@ mod tests {
         }
         for frame in &data.frames {
             let t=frame.base_time_us as f64/1e6;
-            assert!(t<=data.stationary_window_s[1]+0.1 ||
+            assert!(is_motion || t<=data.stationary_window_s[1]+0.1 ||
                     t>=data.time_duration_s-data.final_window_last_s-0.1,
-                "Mid-motion (possibly aliased) frames must NEVER enter the endpoint solver");
-            assert_eq!(frame.sensor_mask,0xffff);
+                "Mid-motion frames forbidden in unchanged endpoint baseline");
+            if is_motion {
+                assert!((frame.board_id as usize)<3);
+                assert_eq!(frame.sensor_mask & !masks[frame.board_id as usize],0,
+                    "Per-frame mask cannot reinstate a baseline-excluded channel");
+            } else {
+                assert_eq!(frame.sensor_mask,0xffff);
+            }
         }
         let geom=crate::cbct_geometry::CbctGeometry::from_detector_json(
             &std::fs::read_to_string(&pre_path).expect("Read Nov06 A detector JSON"),
@@ -1616,7 +1638,9 @@ mod tests {
         // to a differently mapped geometry.
         let profile=geom.experimental_candidate_profile_with_reviewed_cad();
         let mut summary=serde_json::json!({
-            "format":"gk_nov06_finite_cylinder_endpoint_preliminary_v1",
+            "format":if is_motion {
+                "gk_nov06_finite_cylinder_motion_diagnostic_v1"
+            } else {"gk_nov06_finite_cylinder_endpoint_preliminary_v1"},
             "status":"RESEARCH_ONLY_NOT_VALIDATED_LIVE_GK_TRACKING",
             "experiment":"GK_20261106",
             "window_source":"PRE 1.0..4.5 s and POST final 8 s only; middle frames omitted",
@@ -1631,6 +1655,8 @@ mod tests {
             "global_wrap_exclusions_deliberately_not_reused":true,
             "endpoint_sensor_masks":masks,
             "range_guard":data.endpoint_range_guard,
+            "full_record_frame_mask_qc":data.full_record_qc,
+            "full_motion_replay":is_motion,
             "calibration_and_fit_use_identical_endpoint_masks":true,
             "ct_reference":{
                 "head_rotation_deg":data.ct_reference.angle_deg,
@@ -1638,7 +1664,7 @@ mod tests {
                 "bb_displacement_mm":data.ct_bb_reference.bb_displacement_mm
             },
             "warnings":[
-                "Not a full motion trajectory. Board0 sensor wrapping was observed in excluded middle frames.",
+                "Experimental input may be full motion. Board0 sensor wrapping still makes physical branch unverified.",
                 "A stable post-wrap alias may evade local plateau jump screening.",
                 "Detector-derived CT and superior KiCad/JST geometry are NOT independently reviewed.",
                 "Final Hall plateau is not yet independently matched to CBCT1106B acquisition.",
@@ -1696,6 +1722,7 @@ mod tests {
                             let mut pre=Vec::<[f64;6]>::new();
                             let mut post=Vec::<[f64;6]>::new();
                             let mut errors=Vec::<f64>::new();
+                            let mut motion_poses=Vec::<serde_json::Value>::new();
                             let mut failed=0_usize;
                             let mut attempts=0_usize;
                             for src in &data.frames {
@@ -1726,6 +1753,14 @@ mod tests {
                                 }
                                 if let (Some(p),Some(e))=(pose,rmse){
                                     errors.push(e);
+                                    if is_motion {
+                                        motion_poses.push(serde_json::json!({
+                                            "t_s":time,
+                                            "pose_mm_rad":p,
+                                            "field_rmse_mt":e,
+                                            "fitted":true,
+                                        }));
+                                    }
                                     if time<=data.stationary_window_s[1]+0.1 {
                                         pre.push(p)
                                     } else if time>=data.time_duration_s-
@@ -1735,6 +1770,32 @@ mod tests {
                                 }
                             }
                             summary["fit_attempts"]=serde_json::json!(attempts);
+                            summary["full_motion_accepted_poses"]=serde_json::json!(motion_poses.len());
+                            if let Some(path)=motion_path.as_ref() {
+                                let payload=serde_json::json!({
+                                    "format":"gk_nov06_motion_masked_poses_v1",
+                                    "status":"RESEARCH_ONLY_CANDIDATE_TRAJECTORY_NOT_VALIDATED",
+                                    "source_replay_format":data.format,
+                                    "candidate_gain7_setting_unverified":true,
+                                    "timestamps_are_relative_to_original_device_clock":true,
+                                    "mask_and_synthetic_gap_interpolation":false,
+                                    "ct_A_pose_correspondence_verified":false,
+                                    "hdmm_clock_zero_verified":false,
+                                    "bb_pre_lps_mm":data.ct_bb_reference.bb_pre_lps_mm,
+                                    "initial_magnet_centroid_pre_lps_mm":origin,
+                                    "framewise_mask_qc":data.full_record_qc,
+                                    "poses":motion_poses,
+                                });
+                                let target=Path::new(path);
+                                if let Some(parent)=target.parent() {
+                                    std::fs::create_dir_all(parent)
+                                        .expect("Create private motion output directory");
+                                }
+                                std::fs::write(target,
+                                    serde_json::to_string(&payload).unwrap()+"\n")
+                                    .expect("Write private full-motion fitted poses");
+                                summary["private_motion_pose_path"]=serde_json::json!(path);
+                            }
                             summary["fit_rejected"]=serde_json::json!(failed);
                             summary["pre_accepted"]=serde_json::json!(pre.len());
                             summary["post_accepted"]=serde_json::json!(post.len());
@@ -1807,7 +1868,9 @@ mod tests {
         }
         std::fs::write(target,serde_json::to_string_pretty(&summary).unwrap()+"\n")
             .expect("Write Nov06 scalar research summary");
-        println!("NOV06 ENDPOINT RESEARCH REPLAY: {}",summary_path);
+        println!("NOV06 RESEARCH REPLAY {}: {}",if is_motion {
+            "TIME-RESOLVED DYNAMIC MASK"
+        } else {"STATIONARY ENDPOINT"},summary_path);
         println!("{}",serde_json::to_string_pretty(&summary).unwrap());
     }
 
