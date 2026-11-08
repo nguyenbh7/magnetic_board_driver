@@ -398,6 +398,11 @@ fn live_hall_range_status(context: &Context) -> String {
     // obtains a credible setting, use it as a conservative visual warning,
     // NEVER as an assumption that the actual sensor registers equal gain7.
     let limits = configured.unwrap_or([4.9152, 4.9152, 7.929856]);
+    // Melexis Rev012 lists standard IMC onset ~50mT but thin-IMC
+    // (-111) onset ~25mT. The installed variant has not been independently
+    // authenticated: use a conservative *25mT advisory cap*. This is NOT
+    // a replacement for an instrument-specific calibration/field check.
+    let advisory_limits = limits.map(|digital| digital.min(25.0));
     let provenance = if configured.is_some() {
         "CACHED MLX setting (not chip register verification)"
     } else {
@@ -409,7 +414,7 @@ fn live_hall_range_status(context: &Context) -> String {
         invalid += board.invalid_samples;
         for (axis, peak) in board.latest_axis_peaks_mt.iter().enumerate() {
             if let Some((sensor, magnitude)) = peak {
-                let fraction = magnitude / limits[axis];
+                let fraction = magnitude / advisory_limits[axis];
                 if worst.as_ref().is_none_or(|old| fraction > old.0) {
                     worst = Some((fraction, board.board_id, *sensor, axis, *magnitude));
                 }
@@ -417,13 +422,14 @@ fn live_hall_range_status(context: &Context) -> String {
         }
     }
     let source = format!(
-        "Nominal axis limits X/Y/Z +/-{:.2}/{:.2}/{:.2} mT ({provenance})",
-        limits[0], limits[1], limits[2]);
+        "Digital X/Y/Z +/-{:.2}/{:.2}/{:.2} mT; advisory X/Y/Z +/-{:.2}/{:.2}/{:.2} mT (25mT analog guard until option code verified; {provenance})",
+        limits[0], limits[1], limits[2],
+        advisory_limits[0], advisory_limits[1], advisory_limits[2]);
     match worst {
         Some((ratio, board, sensor, axis, measured)) => {
             let axis_name = ["Bx", "By", "Bz"][axis];
             let action = if ratio >= .80 {
-                "BACK OFF MAGNET - range margin <=20%"
+                "BACK OFF MAGNET - advisory range margin <=20%"
             } else if ratio >= .65 {
                 "CAUTION - approaching readout range"
             } else {
@@ -431,7 +437,7 @@ fn live_hall_range_status(context: &Context) -> String {
             };
             format!(
                 "{action} | raw board{board} sensor{sensor} {axis_name} latest |B|={measured:.3} mT / nominal {:.3} mT ({:.0}%) | {source}{}",
-                limits[axis], ratio * 100.,
+                advisory_limits[axis], ratio * 100.,
                 if invalid > 0 { " | INVALID OR MISSING TRACE SAMPLES" } else { "" }
             )
         }
@@ -2297,7 +2303,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             )),
             text(board_presence_text(&context.board_presence)),
             text(live_hall_range_status(context)),
-            text("Range warning scans the latest Bx/By/Bz of ALL sensors; 80% BACK OFF, 65% caution. Returned digital values can already be wrapped. Stop the stream before changing settings."),
+            text("Range warning scans latest Bx/By/Bz of ALL sensors; BACK OFF at 80%, caution at 65% of the lower of digital range and conservative 25mT analog guard. Values can already be wrapped. Stop streaming before changing settings."),
             button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
         ]
         .spacing(10),
