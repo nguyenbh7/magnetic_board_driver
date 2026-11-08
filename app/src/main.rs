@@ -410,8 +410,14 @@ fn live_hall_range_status(context: &Context) -> String {
     };
     let mut worst: Option<(f64, u16, u8, usize, f64)> = None;
     let mut invalid = 0u64;
+    let mut jump_count = 0u64;
+    let mut last_jump: Option<(u16, u8, usize, f64)> = None;
     for board in context.sensor_traces.board_summaries() {
         invalid += board.invalid_samples;
+        jump_count = jump_count.saturating_add(board.sudden_jump_count);
+        if let Some((sensor, axis, magnitude)) = board.last_sudden_jump {
+            last_jump = Some((board.board_id, sensor, axis, magnitude));
+        }
         for (axis, peak) in board.latest_axis_peaks_mt.iter().enumerate() {
             if let Some((sensor, magnitude)) = peak {
                 let fraction = magnitude / advisory_limits[axis];
@@ -425,23 +431,33 @@ fn live_hall_range_status(context: &Context) -> String {
         "Digital X/Y/Z +/-{:.2}/{:.2}/{:.2} mT; advisory X/Y/Z +/-{:.2}/{:.2}/{:.2} mT (25mT analog guard until option code verified; {provenance})",
         limits[0], limits[1], limits[2],
         advisory_limits[0], advisory_limits[1], advisory_limits[2]);
+    let jump_warning = if let Some((board, sensor, axis, magnitude)) = last_jump {
+        format!(
+            "RAW STEP WARNING: {jump_count} >8mT sudden step(s) this stream; "
+        ) + &format!(
+            "most recent board{board} sensor{sensor} {} {:.2}mT. ",
+            ["Bx","By","Bz"][axis], magnitude
+        )
+    } else {
+        String::new()
+    };
     match worst {
         Some((ratio, board, sensor, axis, measured)) => {
             let axis_name = ["Bx", "By", "Bz"][axis];
-            let action = if ratio >= .80 {
-                "BACK OFF MAGNET - advisory range margin <=20%"
+            let action = if ratio >= .80 || jump_count > 0 {
+                "BACK OFF MAGNET / REVIEW DATA - range or raw step warning"
             } else if ratio >= .65 {
                 "CAUTION - approaching readout range"
             } else {
                 "Below early warning margin (NOT proof against wrapping)"
             };
             format!(
-                "{action} | raw board{board} sensor{sensor} {axis_name} latest |B|={measured:.3} mT / nominal {:.3} mT ({:.0}%) | {source}{}",
+                "{action} | {jump_warning}raw board{board} sensor{sensor} {axis_name} latest |B|={measured:.3} mT / advisory {:.3} mT ({:.0}%) | {source}{}",
                 advisory_limits[axis], ratio * 100.,
                 if invalid > 0 { " | INVALID OR MISSING TRACE SAMPLES" } else { "" }
             )
         }
-        None => format!("Hall range: awaiting all-sensor trace samples. {source}"),
+        None => format!("Hall range: awaiting all-sensor trace samples. {jump_warning}{source}"),
     }
 }
 
@@ -2303,7 +2319,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             )),
             text(board_presence_text(&context.board_presence)),
             text(live_hall_range_status(context)),
-            text("Range warning scans latest Bx/By/Bz of ALL sensors; BACK OFF at 80%, caution at 65% of the lower of digital range and conservative 25mT analog guard. Values can already be wrapped. Stop streaming before changing settings."),
+            text("Range warning scans latest Bx/By/Bz of ALL sensors; BACK OFF at 80%, caution at 65% of the lower of digital range and conservative 25mT analog guard. A sudden >8mT step also latches a review warning for this stream. Values may already be aliased. Stop streaming before changing settings."),
             button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
         ]
         .spacing(10),
