@@ -124,6 +124,31 @@ histories, not per-axis digital ranges. This was too easy to miss.
    after checking/calibrating again. Capture independent
    CT/HDMM endpoints and clocks for scientific accuracy.
 
+## First Windows compile attempt and syntax correction (2026-11-08)
+
+The user ran the original Windows command batch after pulling through
+commit `f9234c3`. `cargo test -p data_transfer nominal_mlx_range_tests`
+**PASSED 2/2**. Each of the `app` test and check commands then failed
+**at compile time** on two newly introduced Rust syntax errors in
+`app/src/main.rs`:
+
+- `ratio >= .80` (Rust requires `0.80`).
+- `ratio >= .65` (Rust requires `0.65`).
+
+Those two errors were fixed and committed as `9659b1d9` on
+`feature/live-rigid-body-fit`. The earlier warnings for non-camel-case
+`uT`, unused imports, unused `pose_label`, etc. were *warnings*,
+not the blocking compile errors. **No current app test or cargo check
+pass is yet confirmed** after the syntax fix. Re-pull and rerun:
+
+~~~powershell
+cd F:\GitHub\magnetic_board_driver
+git pull --ff-only origin feature/live-rigid-body-fit
+cargo test -p app sensor_trace
+cargo test -p app tracking_mode_ui_tests
+cargo check -p app
+~~~
+
 ## Local build/tests (NOT YET EXECUTED by assistant)
 
 ~~~powershell
