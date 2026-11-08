@@ -46,7 +46,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use data_transfer::{
     self,
-    conversions::{MagneticField, MagneticValue, TempValue},
+    conversions::{MagneticField, MagneticValue, TempValue, nominal_symmetric_mlx_half_ranges_mt},
     messaging::MessageReader,
     rpc::{
         SensorField,
@@ -164,6 +164,7 @@ enum Message {
     UpdateMlxGain(String),
     UpdateMlxResolution(String),
     UpdateMlxHallConf(String),
+    SelectWideMlxRangePreset,
     GetMlxSensitivity,
     SetMlxSensitivity,
     ReceivedMlxSensitivity(MlxSensitivityStatus),
@@ -381,6 +382,60 @@ fn hall_conf_value_to_label(value: u8) -> &'static str {
         0x0 => MLX_HALL_CONF_FAST_LABEL,
         0xC => MLX_HALL_CONF_DEFAULT_LABEL,
         _ => MLX_HALL_CONF_DEFAULT_LABEL,
+    }
+}
+
+/// Safety-oriented readout warning on the CURRENT frame of EVERY sensor,
+/// not just the manually selected trace. No claim about actual saturation:
+/// the GetMlxSensitivity RPC exposes a cached configuration, not 48-chip
+/// acquisition-time register readbacks.
+fn live_hall_range_status(context: &Context) -> String {
+    let configured = context.mlx_status.as_ref().filter(|s| s.ok)
+        .and_then(|s| nominal_symmetric_mlx_half_ranges_mt(
+            s.gain, s.resolution, s.hall_conf));
+    // Gain7 / RES0 / four-phase is the smallest nominal symmetric digital
+    // readout range in the existing sensitivity table. Until the operator
+    // obtains a credible setting, use it as a conservative visual warning,
+    // NEVER as an assumption that the actual sensor registers equal gain7.
+    let limits = configured.unwrap_or([4.9152, 4.9152, 7.929856]);
+    let provenance = if configured.is_some() {
+        "CACHED MLX setting (not chip register verification)"
+    } else {
+        "UNVERIFIED: conservative gain7/res0 reference only"
+    };
+    let mut worst: Option<(f64, u16, u8, usize, f64)> = None;
+    let mut invalid = 0u64;
+    for board in context.sensor_traces.board_summaries() {
+        invalid += board.invalid_samples;
+        for (axis, peak) in board.latest_axis_peaks_mt.iter().enumerate() {
+            if let Some((sensor, magnitude)) = peak {
+                let fraction = magnitude / limits[axis];
+                if worst.as_ref().is_none_or(|old| fraction > old.0) {
+                    worst = Some((fraction, board.board_id, *sensor, axis, *magnitude));
+                }
+            }
+        }
+    }
+    let source = format!(
+        "Nominal axis limits X/Y/Z +/-{:.2}/{:.2}/{:.2} mT ({provenance})",
+        limits[0], limits[1], limits[2]);
+    match worst {
+        Some((ratio, board, sensor, axis, measured)) => {
+            let axis_name = ["Bx", "By", "Bz"][axis];
+            let action = if ratio >= .80 {
+                "BACK OFF MAGNET - range margin <=20%"
+            } else if ratio >= .65 {
+                "CAUTION - approaching readout range"
+            } else {
+                "Below early warning margin (NOT proof against wrapping)"
+            };
+            format!(
+                "{action} | raw board{board} sensor{sensor} {axis_name} latest |B|={measured:.3} mT / nominal {:.3} mT ({:.0}%) | {source}{}",
+                limits[axis], ratio * 100.,
+                if invalid > 0 { " | INVALID OR MISSING TRACE SAMPLES" } else { "" }
+            )
+        }
+        None => format!("Hall range: awaiting all-sensor trace samples. {source}"),
     }
 }
 
@@ -909,6 +964,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
             context.sensor_component_full_scale_mt.clear();
+            context.mlx_status = None; // old port's cached settings are not this device's
             context.hdmm_marker_coordinate_input.clear();
             context.dashboard_tab = DashboardTab::LiveTracking;
             context.tracking_mode = TrackingMode::Rigid6Dof;
@@ -1968,6 +2024,18 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::SelectWideMlxRangePreset => {
+            // Preset only; never write hardware behind the operator's back.
+            // RES=1 is the widest symmetric digital 16-bit mode supported
+            // whether or not the existing chip has TCMP enabled.
+            // RES=2/3 require independently checking TCMP and include an
+            // asymmetric output encoding at RES=3.
+            context.mlx_gain = "0".to_string();
+            context.mlx_resolution = "1".to_string();
+            context.mlx_hall_conf = MLX_HALL_CONF_DEFAULT_LABEL.to_string();
+            Task::none()
+        }
+
         Message::GetMlxSensitivity => {
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
@@ -1987,6 +2055,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SetMlxSensitivity => {
+            // Changing sensitivity mid-stream changes the physical field
+            // conversion and invalidates any stationary calibration.
+            if context.stream_status != "idle" || context.file_writer.is_some() {
+                return Task::none();
+            }
             if let Some(sw) = &context.sensor_watcher {
                 let gain = context.mlx_gain.parse::<u8>().unwrap_or(255);
                 let resolution = context.mlx_resolution.parse::<u8>().unwrap_or(255);
@@ -2024,7 +2097,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.mlx_status = Some(status);
             // Changing gain/resolution can change full-scale, but merely
             // rereading unchanged settings should preserve the user range.
-            if changed { context.sensor_component_full_scale_mt.clear(); }
+            if changed {
+                context.sensor_component_full_scale_mt.clear();
+                // No old GK stationary model may be silently reused after
+                // an observed conversion-configuration change.
+                context.rigid_fit.invalidate_for_gk_calibration();
+                context.gk_calibration.calibrated_candidate = None;
+            }
             Task::none()
         }
 
@@ -2217,6 +2296,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 context.received_stream_frames,
             )),
             text(board_presence_text(&context.board_presence)),
+            text(live_hall_range_status(context)),
+            text("Range warning scans the latest Bx/By/Bz of ALL sensors; 80% BACK OFF, 65% caution. Returned digital values can already be wrapped. Stop the stream before changing settings."),
             button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
         ]
         .spacing(10),
@@ -2798,7 +2879,13 @@ fn view(context: &Context) -> Element<'_, Message> {
             ]
             .spacing(16),
 
-            text("Changes are applied to the detected sensor boards."),
+            text("The displayed range is digital readout range, NOT analog saturation or verified 48-chip settings. Stop streaming and logging before changing sensitivity; recalibrate after any change."),
+            row![
+                button("Select wider symmetric range (gain 0, res 1)")
+                    .on_press(Message::SelectWideMlxRangePreset),
+                text("Preset only: gain 0 / RES 1 / four-phase. Click Apply manually while stopped."),
+            ].spacing(8),
+            text("RES 2/3 can provide larger digital counts with TCMP disabled, but TCMP state must be read back and RES 3 is asymmetric; this preset avoids claiming unverified maximum physical range."),
 
             row![
                 column![
@@ -2878,9 +2965,9 @@ fn view(context: &Context) -> Element<'_, Message> {
     ].spacing(12);
     // Keep advanced board/timing settings accessible when the independent
     // tracking mode is selected, without adding a fourth dashboard tab.
-    if context.dashboard_tab == DashboardTab::LiveTracking
-        && context.tracking_mode == TrackingMode::Independent
-    {
+    // Sensitivity and range controls must remain accessible with rigid 6DOF.
+    // Changing settings is disabled by the handler while streaming/logging.
+    if context.dashboard_tab == DashboardTab::LiveTracking {
         dashboard_sections = dashboard_sections.push(mlx_widget);
     }
     let dashboard_content = container(dashboard_sections).width(Length::Fill);
@@ -2979,6 +3066,44 @@ mod tracking_mode_ui_tests {
         assert!(context.gk_calibration.pending_background.is_none());
         assert!(context.gk_calibration.reference.is_none());
         assert!(!context.rigid_fit.enabled());
+    }
+
+    #[test]
+    fn rigid_live_range_warning_catches_all_sensors_and_uses_axis_limits() {
+        let mut context = Context::default();
+        context.board_presence = BoardPresence {
+            board_mask: 0b001, sensor_masks: [0xffff, 0, 0],
+        };
+        context.sensor_traces.set_presence(context.board_presence.clone());
+        let mut frame = BoardFrame::default();
+        frame.board_id = 0;
+        frame.sensor_mask = 0xffff;
+        for (idx, sample) in frame.samples.iter_mut().enumerate() {
+            sample.bx_ut = if idx == 15 { 4350.0 } else { 300.0 };
+            sample.by_ut = 0.0;
+            sample.bz_ut = if idx == 9 { 7300.0 } else { 0.0 };
+        }
+        let _=update(&mut context,Message::ReceivedStreamFrame(frame));
+        let status = live_hall_range_status(&context);
+        assert!(status.contains("BACK OFF MAGNET"));
+        assert!(status.contains("UNVERIFIED"));
+        // 7.3mT Z is a 92% warning; X 4.35mT is 89%.
+        assert!(status.contains("sensor9 Bz"));
+        assert!(status.contains("7.300 mT"));
+    }
+
+    #[test]
+    fn wide_range_preset_requires_explicit_apply_and_does_not_change_tracking_mode() {
+        let mut context = Context::default();
+        let initial_mode = context.tracking_mode;
+        let _=update(&mut context,Message::SelectWideMlxRangePreset);
+        assert_eq!(context.mlx_gain,"0");
+        assert_eq!(context.mlx_resolution,"1");
+        assert_eq!(context.mlx_hall_conf,MLX_HALL_CONF_DEFAULT_LABEL);
+        assert_eq!(context.tracking_mode, initial_mode);
+        context.stream_status="receiving".into();
+        let _=update(&mut context,Message::SetMlxSensitivity);
+        assert_eq!(context.stream_status,"receiving");
     }
 
     #[test]
