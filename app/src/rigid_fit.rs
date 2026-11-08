@@ -2029,6 +2029,178 @@ mod tests {
                                             "score_on_raw0_is_HELD_OUT_not_optimized":true,
                                         }))
                                     } else {None};
+                                    // A low side-only field RMSE can coexist
+                                    // with an ill-conditioned six-parameter
+                                    // response or distinct optimizer basins.
+                                    // Compute the LOCAL Jacobian at existing
+                                    // poses only. Rotations are scaled so
+                                    // 0.01 rad corresponds to 1 mm at 100 mm.
+                                    // No new pose optimization is performed.
+                                    fn local_pose_jacobian(
+                                        profile:&RigidProfile,
+                                        all:&[Observation],
+                                        pose:[f64;6],
+                                        side_only:bool,
+                                    )->serde_json::Value {
+                                        let superior=&profile.boards.iter()
+                                            .find(|b|b.raw_board_id==0)
+                                            .expect("GK raw0 receiver is required")
+                                            .sensors_mm;
+                                        let obs=all.iter()
+                                            .filter(|o|!side_only || !superior.contains(&o.sensor_mm))
+                                            .cloned().collect::<Vec<_>>();
+                                        if obs.len()<6 {return serde_json::Value::Null;}
+                                        let Some(base)=residual(profile,&obs,pose) else {
+                                            return serde_json::Value::Null
+                                        };
+                                        let mut columns=Vec::<Vec<f64>>::with_capacity(6);
+                                        for j in 0..6 {
+                                            let h=if j<3 {0.02} else {0.0002};
+                                            let mut shifted=pose;
+                                            shifted[j]=if pose[j]+h<=profile.upper_bounds[j] {
+                                                pose[j]+h
+                                            } else if pose[j]-h>=profile.lower_bounds[j] {
+                                                pose[j]-h
+                                            } else {return serde_json::Value::Null};
+                                            let delta=shifted[j]-pose[j];
+                                            let Some(new_r)=residual(profile,&obs,shifted) else {
+                                                return serde_json::Value::Null
+                                            };
+                                            let physical_unit=if j<3 {1.0} else {0.01};
+                                            columns.push(new_r.iter().zip(&base)
+                                                .map(|(v,b)|(v-b)/delta*physical_unit)
+                                                .collect());
+                                        }
+                                        let mut a=[[0.0_f64;6];6];
+                                        for j in 0..6 {
+                                            for k in j..6 {
+                                                let v=columns[j].iter().zip(&columns[k])
+                                                    .map(|(x,y)|x*y).sum::<f64>()
+                                                    /base.len() as f64;
+                                                a[j][k]=v;a[k][j]=v;
+                                            }
+                                        }
+                                        // Standard symmetric Jacobi eigenvalue
+                                        // iteration on J^T J. Report singular
+                                        // values, not marginal parameter errors.
+                                        for _ in 0..128 {
+                                            let (mut p,mut q,mut largest)=(0_usize,1_usize,0.0);
+                                            for j in 0..6 {
+                                                for k in j+1..6 {
+                                                    if a[j][k].abs()>largest {
+                                                        (p,q,largest)=(j,k,a[j][k].abs());
+                                                    }
+                                                }
+                                            }
+                                            let maxdiag=(0..6).map(|j|a[j][j].abs())
+                                                .fold(0.0_f64,f64::max);
+                                            if largest <= 1e-14*maxdiag.max(1e-20) {break;}
+                                            let app=a[p][p];let aqq=a[q][q];let apq=a[p][q];
+                                            let tau=(aqq-app)/(2.0*apq);
+                                            let sign=if tau>=0.0 {1.0} else {-1.0};
+                                            let tangent=sign/(tau.abs()+(1.0+tau*tau).sqrt());
+                                            let c=1.0/(1.0+tangent*tangent).sqrt();
+                                            let sn=tangent*c;
+                                            a[p][p]=app-tangent*apq;
+                                            a[q][q]=aqq+tangent*apq;
+                                            a[p][q]=0.0;a[q][p]=0.0;
+                                            for k in 0..6 {
+                                                if k==p || k==q {continue;}
+                                                let x=a[k][p];let y=a[k][q];
+                                                a[k][p]=c*x-sn*y;
+                                                a[p][k]=a[k][p];
+                                                a[k][q]=sn*x+c*y;
+                                                a[q][k]=a[k][q];
+                                            }
+                                        }
+                                        let mut singular=(0..6)
+                                            .map(|i|a[i][i].max(0.0).sqrt())
+                                            .collect::<Vec<_>>();
+                                        singular.sort_by(f64::total_cmp);
+                                        let largest=singular[5];
+                                        serde_json::json!({
+                                            "receiver_selection":if side_only {
+                                                "raw1_plus_raw2_only"
+                                            } else {"all_raw0_raw1_raw2"},
+                                            "observation_count":obs.len(),
+                                            "singular_values_mt_per_scaled_1mm":singular,
+                                            "rotation_parameter_scale_rad_per_1mm":0.01,
+                                            "translation_parameter_scale_mm":1.0,
+                                            "condition_number_scaled":
+                                                if singular[0]>0.0 {
+                                                    Some(largest/singular[0])
+                                                } else {None},
+                                            "singular_value_ratio_min_over_max":
+                                                if largest>0.0 {
+                                                    Some(singular[0]/largest)
+                                                } else {None},
+                                            "rank_at_relative_1e_minus_3":
+                                                singular.iter().filter(|v|**v>largest*0.001).count(),
+                                            "LOCAL_Jacobian_only_not_global_uniqueness":true,
+                                        })
+                                    }
+                                    fn side_fit_bounds(
+                                        profile:&RigidProfile,
+                                        poses:&[[f64;6]],
+                                    )->serde_json::Value {
+                                        let mut rot_hits=0_usize;
+                                        let mut xyz_hits=0_usize;
+                                        let mut max_component=0.0_f64;
+                                        for p in poses {
+                                            if (3..6).any(|j|
+                                                (p[j]-profile.lower_bounds[j]).abs()<0.00174533 ||
+                                                (p[j]-profile.upper_bounds[j]).abs()<0.00174533
+                                            ) {rot_hits+=1;}
+                                            if (0..3).any(|j|
+                                                (p[j]-profile.lower_bounds[j]).abs()<0.2 ||
+                                                (p[j]-profile.upper_bounds[j]).abs()<0.2
+                                            ) {xyz_hits+=1;}
+                                            for j in 3..6 {
+                                                max_component=max_component.max(p[j].abs()*RAD_TO_DEG);
+                                            }
+                                        }
+                                        serde_json::json!({
+                                            "number_of_accepted_poses":poses.len(),
+                                            "poses_with_rotation_coordinate_within_0p1deg_of_bound":rot_hits,
+                                            "poses_with_translation_coordinate_within_0p2mm_of_bound":xyz_hits,
+                                            "max_abs_rotvec_coordinate_deg":max_component,
+                                            "rotvec_components_bounded_individually_NOT_total_angle":true,
+                                        })
+                                    }
+                                    let local_sensitivity=if let (
+                                        Some(pre_obs),Some(post_obs)
+                                    )=(pressure_pre.first(),pressure_post.first()) {
+                                        serde_json::json!({
+                                            "PRE_all_board_Hall_median_at_all_receivers":
+                                                local_pose_jacobian(profile,pre_obs,a,false),
+                                            "PRE_all_board_Hall_median_at_sides_only":
+                                                local_pose_jacobian(profile,pre_obs,a,true),
+                                            "POST_all_board_Hall_median_at_all_receivers":
+                                                local_pose_jacobian(profile,post_obs,b,false),
+                                            "POST_all_board_Hall_median_at_sides_only":
+                                                local_pose_jacobian(profile,post_obs,b,true),
+                                            "PRE_side_only_result_at_side_receivers":
+                                                if side_pre.len()>=3 {
+                                                    local_pose_jacobian(
+                                                        profile,pre_obs,median(&side_pre),true
+                                                    )
+                                                } else {serde_json::Value::Null},
+                                            "POST_side_only_result_at_side_receivers":
+                                                if side_post.len()>=3 {
+                                                    local_pose_jacobian(
+                                                        profile,post_obs,median(&side_post),true
+                                                    )
+                                                } else {serde_json::Value::Null},
+                                            "PRE_side_only_fit_bounds":
+                                                side_fit_bounds(profile,&side_pre),
+                                            "POST_side_only_fit_bounds":
+                                                side_fit_bounds(profile,&side_post),
+                                            "profile_rotation_component_bound_degrees":
+                                                profile.upper_bounds[3]*RAD_TO_DEG,
+                                            "all_probes_are_original_CALIBRATED_model_NO_refit":true,
+                                            "no_accurate_pose_assertion_from_condition_numbers":true,
+                                        })
+                                    } else {serde_json::Value::Null};
                                     let outcome=serde_json::json!({
                                         "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v2",
                                         "status":"DIAGNOSTIC_ONLY_NOT_RIGID_POSE_VALIDATION",
@@ -2051,6 +2223,8 @@ mod tests {
                                         "boardwise_field_cost_cannot_prove_true_sensor_mapping":true,
                                         "ct_field_cost_cannot_be_tuned_to_reconstruct_accuracy":true,
                                         "side_only_endpoint_pose_ablation_fixed_calibration":side_comparison,
+                                        "local_six_DOF_Jacobian_sensitivity_and_bound_audit":
+                                            local_sensitivity,
                                         "control_all_board_centroid_translation_error_mm":
                                             dot(trans_err,trans_err).sqrt(),
                                         "control_all_board_rotation_geodesic_deg":rot_err,
