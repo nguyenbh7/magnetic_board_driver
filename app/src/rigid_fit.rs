@@ -1775,6 +1775,11 @@ mod tests {
                                     mat_vec(rot_b,sub(marker,origin)));
                                 let bb_delta=sub(bb_b,bb_a);
                                 let bb_err=sub(bb_delta,data.ct_bb_reference.bb_delta_pre_lps_mm);
+                                // PRIVATE local endpoint pose medians allow
+                                // later conditional same-marker HDMM checking.
+                                summary["pre_median_pose_xyzmm_rotvec_rad"]=serde_json::json!(a);
+                                summary["post_median_pose_xyzmm_rotvec_rad"]=serde_json::json!(b);
+                                summary["pre_ct_profile_origin_lps_mm"]=serde_json::json!(origin);
                                 summary["fit_status"]=serde_json::json!(
                                     "computed_preliminary_unreviewed_CT_and_stationary_windows");
                                 summary["finite_cylinder_pose"] = serde_json::json!({
@@ -1804,6 +1809,50 @@ mod tests {
             .expect("Write Nov06 scalar research summary");
         println!("NOV06 ENDPOINT RESEARCH REPLAY: {}",summary_path);
         println!("{}",serde_json::to_string_pretty(&summary).unwrap());
+    }
+
+    #[test]
+    fn masked_calibration_does_not_use_excluded_sensor_fields() {
+        let profile=RigidProfile::a1_reference().expect("A1 geometry profile");
+        let mut stationary=[[[0.0_f64;3];16];3];
+        let sources=profile.magnets.iter()
+            .map(|m|quadrature(m,m.center_mm,m.axis)).collect::<Vec<_>>();
+        for board in &profile.boards {
+            let id=board.raw_board_id as usize;
+            let world_to_raw=transpose(board.raw_to_world);
+            for i in 0..16 {
+                stationary[id][i]=mat_vec(
+                    world_to_raw,predict(board.sensors_mm[i],&sources));
+            }
+        }
+        let mut mask=[0xffff_u16;3];
+        mask[0]&=!(1u16<<2);
+        let clean=fit_strengths_with_board_offsets_masked(
+            &profile,&stationary,mask).expect("At least 8 sensors remain");
+        let full=fit_strengths_with_board_offsets(&profile,&stationary)
+            .expect("All-sensor baseline");
+        let all_mask=fit_strengths_with_board_offsets_masked(
+            &profile,&stationary,[0xffff;3]).expect("All-sensor masked equivalent");
+        for j in 0..3 {
+            assert!((full.0[j]-all_mask.0[j]).abs()<1e-9);
+        }
+        let mut corrupted=stationary;
+        corrupted[0][2]=[10000.0,-10000.0,10000.0];
+        let unchanged=fit_strengths_with_board_offsets_masked(
+            &profile,&corrupted,mask).expect("Excluded sensor cannot affect fit");
+        for j in 0..3 {
+            assert!((clean.0[j]-unchanged.0[j]).abs()<1e-9);
+            for axis in 0..3 {
+                assert!((clean.1[j][axis]-unchanged.1[j][axis]).abs()<1e-9);
+            }
+        }
+        assert!((clean.2-unchanged.2).abs()<1e-9);
+        mask[0]=0x007f;
+        assert!(fit_strengths_with_board_offsets_masked(
+            &profile,&stationary,mask).is_err());
+        let background=[[[0.0_f64;3];16];3];
+        assert!(fit_magnet_strengths_masked(
+            &profile,&background,&stationary,mask).is_err());
     }
 
     #[test]
