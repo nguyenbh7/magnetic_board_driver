@@ -2583,10 +2583,19 @@ fn view(context: &Context) -> Element<'_, Message> {
         // Put LIVE tracking and raw sensor traces together ABOVE long CT
         // detection/calibration details. A positioning operator should never
         // need to scroll through the DICOM setup just to see a range warning.
+        let live_range_message = live_hall_range_status(context);
+        let live_range_color = if live_range_message.contains("BACK OFF MAGNET") {
+            iced::Color::from_rgb8(190, 25, 25)
+        } else if live_range_message.contains("CAUTION") {
+            iced::Color::from_rgb8(180, 110, 0)
+        } else {
+            iced::Color::from_rgb8(70, 90, 110)
+        };
         let mut rigid_content = column![
-            text(live_hall_range_status(context))
-                .size(18),
-            tracking_panel,
+            text(live_range_message).size(18).color(live_range_color),
+            text(position_line.clone()).size(18),
+            text(rotation_line.clone()).size(17),
+            text(fit_quality.clone()),
         ].spacing(12);
         let rigid_plots = column![
             text("Joint rigid-body motion (experimental, not HDMM accuracy)"),
@@ -2648,7 +2657,10 @@ fn view(context: &Context) -> Element<'_, Message> {
         }
         // CT import/mapping remains available when needed, but does not
         // obstruct monitoring during an active 6DOF positioning experiment.
-        rigid_content = rigid_content.push(dicom_panel).push(cad_mapping_panel);
+        rigid_content = rigid_content
+            .push(tracking_panel)
+            .push(dicom_panel)
+            .push(cad_mapping_panel);
 
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
@@ -2801,9 +2813,10 @@ fn view(context: &Context) -> Element<'_, Message> {
         let mut trace_content = column![
             text("Sensor field traces"),
             text("Select one sensor per board to plot Bx, By, and Bz over time."),
-            text("Full-scale is configuration dependent. All-board raw peaks are checked; no firmware saturation flag is available."),
+            text(live_hall_range_status(context)),
+            text("Live back-off warning uses axis-specific nominal limits and latest samples from ALL sensors. This separate legacy panel's optional manual scalar applies only to its historical peak warning; no hardware saturation flag is available."),
             row![
-                text("Verified per-axis full-scale (mT):"),
+                text("Optional manual common full-scale for legacy peak history (mT):"),
                 text_input("Range for current gain/res", &context.sensor_component_full_scale_mt)
                     .on_input(Message::SetSensorComponentFullScale),
             ].spacing(8),
@@ -2941,7 +2954,13 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![
                 button("Read from board").on_press(Message::GetMlxSensitivity),
                 button("Read timing").on_press(Message::GetMlxTiming),
-                button("Apply to detected boards").on_press(Message::SetMlxSensitivity),
+                if (context.stream_status.is_empty() || context.stream_status == "idle")
+                    && context.file_writer.is_none()
+                {
+                    button("Apply to detected boards").on_press(Message::SetMlxSensitivity)
+                } else {
+                    button("Stop streaming/logging before Apply")
+                },
             ]
             .spacing(12),
         ]
