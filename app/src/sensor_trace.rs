@@ -42,6 +42,10 @@ pub struct BoardSensorTraceSummary {
     /// not only the one currently plotted. No saturation claim is implied.
     pub peak_component_mt: Option<f64>,
     pub peak_sensor_index: Option<u8>,
+    /// Latest available Bx/By/Bz magnitudes across ALL firmware sensors.
+    /// Each entry is (sensor_index, absolute mT); old window peaks do not
+    /// keep the move-away warning latched indefinitely.
+    pub latest_axis_peaks_mt: [Option<(u8, f64)>; 3],
     pub invalid_samples: u64,
 }
 
@@ -147,6 +151,21 @@ impl SensorTraceState {
                         p.bx_mt.abs().max(p.by_mt.abs()).max(p.bz_mt.abs())
                     ).reduce(f64::max).map(|value|(sensor,value))
                 }).max_by(|a,b|a.1.total_cmp(&b.1));
+                let mut latest_axis_peaks_mt: [Option<(u8, f64)>; 3] = [None, None, None];
+                for (&sensor, history) in &board.traces {
+                    if let Some(last) = history.points.back() {
+                        for (axis, value) in [last.bx_mt, last.by_mt, last.bz_mt]
+                            .into_iter().enumerate()
+                        {
+                            let magnitude = value.abs();
+                            if latest_axis_peaks_mt[axis]
+                                .is_none_or(|(_, current)| magnitude > current)
+                            {
+                                latest_axis_peaks_mt[axis] = Some((sensor, magnitude));
+                            }
+                        }
+                    }
+                }
                 BoardSensorTraceSummary {
                     board_id: *board_id,
                     available_sensors,
@@ -154,6 +173,7 @@ impl SensorTraceState {
                     selected_trace,
                     peak_component_mt:peak.map(|x|x.1),
                     peak_sensor_index:peak.map(|x|x.0),
+                    latest_axis_peaks_mt,
                     invalid_samples:board.invalid_samples,
                 }
             })
@@ -251,10 +271,13 @@ mod tests {
         assert_eq!(summary[0].selected_sensor_index,Some(0));
         assert_eq!(summary[0].peak_component_mt,Some(22.0));
         assert_eq!(summary[0].peak_sensor_index,Some(15));
+        assert_eq!(summary[0].latest_axis_peaks_mt[0],Some((15,22.0)));
+        assert_eq!(summary[0].latest_axis_peaks_mt[1],Some((0,0.0)));
         assert!(above_warning_margin(summary[0].peak_component_mt,Some(24.0)));
         trace.reset_histories();
         let reset=trace.board_summaries();
         assert_eq!(reset[0].selected_sensor_index,Some(0));
         assert!(reset[0].peak_component_mt.is_none());
+        assert_eq!(reset[0].latest_axis_peaks_mt,[None,None,None]);
     }
 }
