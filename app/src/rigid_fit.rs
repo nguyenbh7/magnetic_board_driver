@@ -1842,7 +1842,11 @@ mod tests {
                                 summary["post_median_pose_xyzmm_rotvec_rad"]=serde_json::json!(b);
                                 summary["pre_ct_profile_origin_lps_mm"]=serde_json::json!(origin);
                                 summary["fit_status"]=serde_json::json!(
-                                    "computed_preliminary_unreviewed_CT_and_stationary_windows");
+                                    if is_motion {
+                                        "computed_preliminary_unreviewed_full_motion_with_stationary_CT_endpoints"
+                                    } else {
+                                        "computed_preliminary_unreviewed_CT_and_stationary_windows"
+                                    });
                                 summary["finite_cylinder_pose"] = serde_json::json!({
                                     "head_rotation_deg":angle,
                                     "rotation_geodesic_error_vs_CT_deg":rot_err,
