@@ -2125,6 +2125,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 // an observed conversion-configuration change.
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.gk_calibration.calibrated_candidate = None;
+                context.gk_calibration.reference = None;
+                context.gk_calibration.background = None;
+                context.gk_calibration.pending_background = None;
+                context.gk_calibration.status =
+                    "MLX sensitivity changed or first read: prior Hall background/reference invalid. "
+                    .to_string()
+                    + "Retake no-magnet background and stationary calibration.";
             }
             Task::none()
         }
@@ -2974,7 +2981,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             .spacing(8),
 
             row![
-                button("Read from board").on_press(Message::GetMlxSensitivity),
+                button("Read firmware cached setting").on_press(Message::GetMlxSensitivity),
                 button("Read timing").on_press(Message::GetMlxTiming),
                 if (context.stream_status.is_empty() || context.stream_status == "idle")
                     && context.file_writer.is_none()
@@ -3143,6 +3150,31 @@ mod tracking_mode_ui_tests {
         // 7.3mT Z is a 92% warning; X 4.35mT is 89%.
         assert!(status.contains("sensor9 Bz"));
         assert!(status.contains("7.300 mT"));
+    }
+
+    #[test]
+    fn sudden_raw_step_latches_back_off_even_after_latest_value_returns() {
+        let mut context = Context::default();
+        context.sensor_traces.set_presence(BoardPresence {
+            board_mask: 1, sensor_masks: [0xffff,0,0],
+        });
+        let mut before = BoardFrame::default();
+        before.board_id=0;
+        before.sensor_mask=0xffff;
+        before.base_time_us=1_000_000;
+        before.samples[4].bx_ut=4850.0;
+        let mut after = before.clone();
+        after.base_time_us=1_030_000;
+        after.frame_id=1;
+        after.samples[4].bx_ut=-4850.0;
+        let _=update(&mut context, Message::ReceivedStreamFrame(before));
+        let _=update(&mut context, Message::ReceivedStreamFrame(after));
+        let summaries=context.sensor_traces.board_summaries();
+        assert!(summaries[0].sudden_jump_count>0);
+        assert!(live_hall_range_status(&context).contains("RAW STEP WARNING"));
+        assert!(live_hall_range_status(&context).contains("BACK OFF MAGNET"));
+        context.sensor_traces.reset_histories();
+        assert!(!live_hall_range_status(&context).contains("RAW STEP WARNING"));
     }
 
     #[test]
