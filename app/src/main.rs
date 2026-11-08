@@ -2580,64 +2580,76 @@ fn view(context: &Context) -> Element<'_, Message> {
         .width(Length::Fill)
         .style(iced::widget::container::bordered_box);
 
-        let mut rigid_content = column![dicom_panel, cad_mapping_panel, tracking_panel].spacing(12);
-        // Always show the charts, including before the first background
-        // capture or before any fitted pose exists. The canvases display
-        // "Waiting..." rather than making the whole tracking view disappear.
-        rigid_content = rigid_content
-            .push(rigid_xyz_plot(rigid.xyz_history))
-            .push(rotation_plot(u16::MAX, rigid.rotation_history))
-            .push(text("Rigid-fit predicted displacement at the manually confirmed HDMM marker (not actual HDMM):"))
-            .push(hdmm_prediction_plot(rigid.hdmm_history));
-        // Live Tracking stacks raw traces below rigid XYZ; the Both tab puts
-        // the existing Sensor Traces panel alongside it without duplicates.
-        if context.dashboard_tab==DashboardTab::LiveTracking {
-        // In the same scrollable live-tracking view, put raw selected-sensor
-        // Bx/By/Bz traces next to the joint rigid-body displacement plots.
-        // Each selected sensor can be changed without changing the fitter.
-        let full_scale=context.sensor_component_full_scale_mt.trim()
-            .parse::<f64>().ok().filter(|v|v.is_finite() && *v>0.0);
-        rigid_content=rigid_content
-            .push(text("Raw Hall sensor traces (mT) — displayed with rigid-body displacement; check for clipping/plateaus."))
-            .push(row![
-                text("Verified per-axis full-scale (mT):"),
-                text_input("Enter value for current gain/res", &context.sensor_component_full_scale_mt)
-                    .on_input(Message::SetSensorComponentFullScale),
-            ].spacing(8))
-            .push(text(if full_scale.is_some() {
-                "Warnings begin at 90% of your verified full-scale. This is a screening alert, not a hardware saturation flag."
-            } else {
-                "Full-scale not specified: saturation status UNKNOWN. Set the verified gain/resolution-dependent axis range."
-            }));
-        for sensor_board in context.sensor_traces.board_summaries() {
-            let board_id=sensor_board.board_id;
-            let alert=sensor_trace::above_warning_margin(
-                sensor_board.peak_component_mt,full_scale);
-            let peak_label=match (sensor_board.peak_component_mt, sensor_board.peak_sensor_index) {
-                (Some(peak),Some(sensor))=>format!(
-                    "Board {} peak |axis field| across all sensor histories: {:.3} mT (sensor {}). {}",
-                    board_id,peak,sensor,
-                    if alert {"WARNING: >=90% of configured full-scale; possible clipping"} else if full_scale.is_some() {
-                        "Below configured warning margin; saturation still not excluded"
-                    } else {"No validated full-scale margin"}
-                ),
-                _=>format!("Board {board_id}: awaiting raw Hall fields"),
-            };
-            rigid_content=rigid_content
-                .push(text(if sensor_board.invalid_samples>0 {
-                    format!("RAW DATA WARNING: board {board_id} has {} missing/nonfinite sample(s) in this trace epoch.",sensor_board.invalid_samples)
-                } else { "Raw component values received so far are finite (not proof against saturation).".into() }))
-                .push(row![
-                    text(format!("Board {} raw Bx/By/Bz",board_id)),
-                    pick_list(sensor_board.available_sensors,
-                              sensor_board.selected_sensor_index,
-                              move |sensor_index| Message::SelectSensorTrace {board_id,sensor_index}),
-                ].spacing(8))
-                .push(text(peak_label))
-                .push(sensor_trace_plot(board_id,sensor_board.selected_sensor_index,
-                                        sensor_board.selected_trace));
+        // Put LIVE tracking and raw sensor traces together ABOVE long CT
+        // detection/calibration details. A positioning operator should never
+        // need to scroll through the DICOM setup just to see a range warning.
+        let mut rigid_content = column![
+            text(live_hall_range_status(context))
+                .size(18),
+            tracking_panel,
+        ].spacing(12);
+        let rigid_plots = column![
+            text("Joint rigid-body motion (experimental, not HDMM accuracy)"),
+            rigid_xyz_plot(rigid.xyz_history),
+            rotation_plot(u16::MAX, rigid.rotation_history),
+            text("Rigid-fit prediction at independently confirmed HDMM marker (NOT HDMM measurement):"),
+            hdmm_prediction_plot(rigid.hdmm_history),
+        ].spacing(9);
+
+        if context.dashboard_tab == DashboardTab::LiveTracking {
+            let mut live_traces = column![
+                text("LIVE RAW HALL TRACES — keep visible while moving magnets")
+                    .size(17),
+                text("Selected Bx/By/Bz history; range warning checks latest X/Y/Z on EVERY sensor, including those not plotted."),
+            ].spacing(8);
+            for sensor_board in context.sensor_traces.board_summaries() {
+                let board_id = sensor_board.board_id;
+                let latest = sensor_board.latest_axis_peaks_mt;
+                let peak_labels = ["Bx", "By", "Bz"].into_iter()
+                    .enumerate()
+                    .map(|(axis, label)| match latest[axis] {
+                        Some((sensor, value)) =>
+                            format!("{label}: {value:.2} mT (sensor {sensor})"),
+                        None => format!("{label}: waiting"),
+                    }).collect::<Vec<_>>().join("  |  ");
+                live_traces = live_traces
+                    .push(row![
+                        text(format!("Board {board_id} — raw sensor")),
+                        pick_list(
+                            sensor_board.available_sensors,
+                            sensor_board.selected_sensor_index,
+                            move |sensor_index| Message::SelectSensorTrace {
+                                board_id, sensor_index
+                            },
+                        ),
+                    ].spacing(8))
+                    .push(text(format!("LATEST all-sensor peaks: {peak_labels}")))
+                    .push(text(if sensor_board.invalid_samples > 0 {
+                        format!("MISSING/INVALID DATA: {} fields", sensor_board.invalid_samples)
+                    } else {
+                        "Digital readout may already be wrapped even with no active warning.".to_string()
+                    }))
+                    .push(sensor_trace_plot(
+                        board_id,
+                        sensor_board.selected_sensor_index,
+                        sensor_board.selected_trace,
+                    ));
+            }
+            rigid_content = rigid_content.push(
+                row![
+                    container(rigid_plots).width(Length::FillPortion(1)),
+                    container(live_traces).width(Length::FillPortion(1)),
+                ].spacing(12)
+            );
+        } else {
+            // The Both tab already places the separate Sensor Traces panel
+            // alongside the rigid plot panel, without duplicating the charts.
+            rigid_content = rigid_content.push(rigid_plots);
         }
-        }
+        // CT import/mapping remains available when needed, but does not
+        // obstruct monitoring during an active 6DOF positioning experiment.
+        rigid_content = rigid_content.push(dicom_panel).push(cad_mapping_panel);
+
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
             text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
