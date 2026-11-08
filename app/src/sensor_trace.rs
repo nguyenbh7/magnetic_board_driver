@@ -16,6 +16,10 @@ struct BoardSensorTraceState {
     selected_sensor_index: Option<u8>,
     traces: BTreeMap<u8, SensorTraceHistory>,
     invalid_samples: u64,
+    /// Session-latched raw discontinuity warning, cleared only for a new
+    /// acquisition. This is NOT proof of sensor overflow.
+    sudden_jump_count: u64,
+    last_sudden_jump: Option<(u8, usize, f64)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,6 +50,8 @@ pub struct BoardSensorTraceSummary {
     /// Each entry is (sensor_index, absolute mT); old window peaks do not
     /// keep the move-away warning latched indefinitely.
     pub latest_axis_peaks_mt: [Option<(u8, f64)>; 3],
+    pub sudden_jump_count: u64,
+    pub last_sudden_jump: Option<(u8, usize, f64)>,
     pub invalid_samples: u64,
 }
 
@@ -56,6 +62,8 @@ impl SensorTraceState {
         for board in self.boards.values_mut() {
             board.traces.clear();
             board.invalid_samples=0;
+            board.sudden_jump_count=0;
+            board.last_sudden_jump=None;
         }
     }
 
@@ -111,10 +119,19 @@ impl SensorTraceState {
         let mut point = point;
         point.time_s = field.time.saturating_sub(start_time_us) as f64 / 1_000_000.0;
 
+        // Analyze ONLY temporally adjacent raw samples for the same chip.
+        // A >8mT step is a readout-discontinuity alert, not an automatic
+        // correction/unwrap or a universal digital-period threshold.
+        let sudden_jump = history.points.back()
+            .and_then(|previous| sudden_component_step(previous, &point));
         history.points.push_back(point);
 
         while history.points.len() > MAX_TRACE_POINTS {
             history.points.pop_front();
+        }
+        if let Some((axis, magnitude)) = sudden_jump {
+            board.sudden_jump_count = board.sudden_jump_count.saturating_add(1);
+            board.last_sudden_jump = Some((sensor_index, axis, magnitude));
         }
     }
 
@@ -174,6 +191,8 @@ impl SensorTraceState {
                     peak_component_mt:peak.map(|x|x.1),
                     peak_sensor_index:peak.map(|x|x.0),
                     latest_axis_peaks_mt,
+                    sudden_jump_count:board.sudden_jump_count,
+                    last_sudden_jump:board.last_sudden_jump,
                     invalid_samples:board.invalid_samples,
                 }
             })
@@ -210,6 +229,20 @@ impl SensorTraceState {
 
         self.presence.sensor_masks[board_index] & (1u16 << sensor_index) != 0
     }
+}
+
+/// Returns the strongest component step in an adjacent same-sensor
+/// sample pair. Detects an abrupt signal change; DOES NOT prove wrap.
+fn sudden_component_step(
+    prev: &SensorTracePoint, next: &SensorTracePoint,
+) -> Option<(usize, f64)> {
+    let dt = next.time_s - prev.time_s;
+    if !(dt > 0.0 && dt <= 0.25) { return None; }
+    [next.bx_mt-prev.bx_mt, next.by_mt-prev.by_mt, next.bz_mt-prev.bz_mt]
+        .into_iter().enumerate()
+        .map(|(axis, delta)| (axis, delta.abs()))
+        .filter(|(_, step)| *step > 8.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// Approximate margin against an OPERATOR-VERIFIED component full-scale;
@@ -256,6 +289,19 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_steps_are_latched_and_long_gaps_are_not_called_wrap() {
+        let p=SensorTracePoint{time_s:1.0,bx_mt:4.85,by_mt:0.0,bz_mt:7.6};
+        let q=SensorTracePoint{time_s:1.03,bx_mt:-4.85,by_mt:0.0,bz_mt:-7.6};
+        assert_eq!(sudden_component_step(&p,&q),Some((2,15.2)));
+        assert_eq!(sudden_component_step(&p,&SensorTracePoint{
+            time_s:3.0,..q.clone()
+        }),None);
+        assert_eq!(sudden_component_step(&p,&SensorTracePoint{
+            time_s:1.04,bx_mt:4.81,by_mt:0.1,bz_mt:7.5
+        }),None);
+    }
+
+    #[test]
     fn all_sensor_peak_not_just_selected_sensor_and_new_epoch_clears_history() {
         let mut trace=SensorTraceState::default();
         trace.set_presence(BoardPresence{
@@ -279,5 +325,6 @@ mod tests {
         assert_eq!(reset[0].selected_sensor_index,Some(0));
         assert!(reset[0].peak_component_mt.is_none());
         assert_eq!(reset[0].latest_axis_peaks_mt,[None,None,None]);
+        assert_eq!(reset[0].sudden_jump_count,0);
     }
 }
