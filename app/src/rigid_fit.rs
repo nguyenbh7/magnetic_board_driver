@@ -1492,6 +1492,281 @@ mod tests {
             out,serde_json::to_string_pretty(&summary).unwrap());
     }
 
+    /// Nov06 strictly offline stationary-pre / stationary-post experiment.
+    ///
+    /// Reuses exactly the magnetic finite-cylinder solver and fixed strength
+    /// calibration used in live fitting; intentionally receives NO middle
+    /// movement frames, because Nov06 board0 raw components wrap ~65–73s.
+    /// No live-tracking settings are changed; no result is clinical accuracy.
+    #[test]
+    fn experimental_gk_nov06_endpoint_only_finite_cylinder_replay() {
+        use serde::Deserialize;
+        use std::path::Path;
+        #[derive(Deserialize)]
+        struct Frame {
+            board_id:u16, frame_id:u32, base_time_us:u64, sensor_mask:u16,
+            offsets_us:[u16;16], fields_ut:[[f64;3];16],
+        }
+        #[derive(Deserialize)]
+        struct Mask {board_id:u16, valid_mask:u16, sensor_indices:Vec<usize>}
+        #[derive(Deserialize)]
+        struct Truth {
+            rotvec_rad:[f64;3], centroid_translation_lps_mm:[f64;3],
+            angle_deg:f64, centroid_displacement_mm:f64,
+        }
+        #[derive(Deserialize)]
+        struct BbReference {
+            bb_pre_lps_mm:[f64;3],bb_delta_pre_lps_mm:[f64;3],
+            bb_displacement_mm:f64, manual_review_completed:bool,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            format:String,status:String,frame_count:usize,
+            frame_counts_by_board:[usize;3],
+            source_frame_counts_by_board:[usize;3],
+            time_duration_s:f64,
+            stationary_window_s:[f64;2],
+            final_window_last_s:f64,
+            calibration_stationary_raw_mt:[[[f64;3];16];3],
+            calibration_background_raw_mt:Option<[[[f64;3];16];3]>,
+            endpoint_masks:Vec<Mask>,
+            ct_reference:Truth,ct_bb_reference:BbReference,
+            frames:Vec<Frame>,
+        }
+        let Ok(source)=std::env::var("GK_NOV06_ENDPOINT_REPLAY_IN") else {return};
+        let pre_path=std::env::var("GK_NOV06_PRE_CT")
+            .expect("GK_NOV06_PRE_CT must name the SAME Nov06 A detector JSON");
+        let summary_path=std::env::var("GK_NOV06_ENDPOINT_SUMMARY_OUT")
+            .expect("GK_NOV06_ENDPOINT_SUMMARY_OUT must be a NEW local private analysis report");
+        assert!(!Path::new(&summary_path).exists(),"Refusing to overwrite Nov06 endpoint report");
+        let data:Data=serde_json::from_str(
+            &std::fs::read_to_string(&source).expect("Read PRIVATE Nov06 plateau replay")
+        ).expect("Parse Nov06 plateau replay");
+        assert_eq!(data.format,"gk_nov06_private_endpoint_replay_v1");
+        assert_eq!(data.status,"RESEARCH_ONLY_PRELIMINARY_ENDPOINT_FIT");
+        assert_eq!(data.frames.len(),data.frame_count);
+        assert_eq!(data.frame_counts_by_board.iter().sum::<usize>(),data.frame_count);
+        assert_eq!(data.endpoint_masks.len(),3);
+        assert_eq!(data.stationary_window_s,[1.0,4.5],
+            "Do not tune pre plateau to the measured CT endpoint");
+        assert_eq!(data.final_window_last_s,8.0,
+            "Do not change final plateau to optimize agreement");
+        assert!(data.time_duration_s>20.0 && data.time_duration_s<3600.0);
+        assert!(data.source_frame_counts_by_board.iter().all(|n|*n>100));
+        assert!(!data.ct_bb_reference.manual_review_completed,
+            "Source CT is detector-derived: never claim automatic visual approval");
+        assert!((0.05..20.0).contains(&data.ct_reference.centroid_displacement_mm));
+        assert!((0.05..15.0).contains(&data.ct_reference.angle_deg));
+        let mut masks=[0_u16;3];
+        for (idx,m) in data.endpoint_masks.iter().enumerate() {
+            assert_eq!(m.board_id as usize,idx);
+            assert!(m.valid_mask.count_ones()>=8);
+            for &sensor in &m.sensor_indices {
+                assert!(sensor<16 && m.valid_mask&(1<<sensor)==0);
+            }
+            masks[idx]=m.valid_mask;
+        }
+        for frame in &data.frames {
+            let t=frame.base_time_us as f64/1e6;
+            assert!(t<=data.stationary_window_s[1]+0.1 ||
+                    t>=data.time_duration_s-data.final_window_last_s-0.1,
+                "Mid-motion (possibly aliased) frames must NEVER enter the endpoint solver");
+            assert_eq!(frame.sensor_mask,0xffff);
+        }
+        let geom=crate::cbct_geometry::CbctGeometry::from_detector_json(
+            &std::fs::read_to_string(&pre_path).expect("Read Nov06 A detector JSON"),
+            "GK Nov06 A".into(),"pre-CT review".into()
+        ).expect("Parse Nov06 source CT geometry (not approved)");
+        // Prefer the same physically constrained board orientation/JST prior
+        // used for the successful Oct30 experimental A arm. If its provenance
+        // or CT-to-firmware checks fail, report that blockage, not a fallback
+        // to a differently mapped geometry.
+        let profile=geom.experimental_candidate_profile_with_reviewed_cad();
+        let mut summary=serde_json::json!({
+            "format":"gk_nov06_finite_cylinder_endpoint_preliminary_v1",
+            "status":"RESEARCH_ONLY_NOT_VALIDATED_LIVE_GK_TRACKING",
+            "experiment":"GK_20261106",
+            "window_source":"PRE 1.0..4.5 s and POST final 8 s only; middle frames omitted",
+            "source_frame_count":data.source_frame_counts_by_board,
+            "endpoint_frame_count":data.frame_counts_by_board,
+            "source_detector_approved":false,
+            "physical_post_ct_matches_final_plateau":false,
+            "hdmm_clock_and_zero_verified":false,
+            "background_source":if data.calibration_background_raw_mt.is_some() {
+                "EXPLICITLY_OPERATOR_CONFIRMED_same_session_no_magnet"
+            } else {"UNMEASURED_board_constant_offsets_only"},
+            "global_wrap_exclusions_deliberately_not_reused":true,
+            "endpoint_sensor_masks":masks,
+            "ct_reference":{
+                "head_rotation_deg":data.ct_reference.angle_deg,
+                "magnet_centroid_displacement_mm":data.ct_reference.centroid_displacement_mm,
+                "bb_displacement_mm":data.ct_bb_reference.bb_displacement_mm
+            },
+            "warnings":[
+                "Not a full motion trajectory. Board0 sensor wrapping was observed in excluded middle frames.",
+                "A stable post-wrap alias may evade local plateau jump screening.",
+                "Detector-derived CT and superior KiCad/JST geometry are NOT independently reviewed.",
+                "Final Hall plateau is not yet independently matched to CBCT1106B acquisition.",
+                "Not a validated HDMM comparison or authorized live tracker.",
+                "CT POST and BB coordinates are used only for evaluation, NEVER magnetic optimization."
+            ]
+        });
+        match profile {
+            Err(reason)=>{
+                summary["fit_status"]=serde_json::json!("CT_to_firmware_KiCad_registration_blocked");
+                summary["reason"]=serde_json::json!(reason);
+            }
+            Ok(mut profile)=>{
+                let calibrate=if let Some(bg)=data.calibration_background_raw_mt.as_ref(){
+                    fit_magnet_strengths(
+                        &profile,bg,&data.calibration_stationary_raw_mt)
+                        .map(|(rem,rmse)|(rem,[[0.0;3];3],rmse))
+                } else {
+                    fit_strengths_with_board_offsets(
+                        &profile,&data.calibration_stationary_raw_mt)
+                };
+                match calibrate {
+                    Err(reason)=>{
+                        summary["fit_status"]=serde_json::json!("stationary_calibration_failed");
+                        summary["reason"]=serde_json::json!(reason);
+                    }
+                    Ok((strengths,offsets,calibration_rmse))=>{
+                        let plausible=strengths.iter()
+                            .all(|v|v.abs()>=300.0 && v.abs()<=2200.0);
+                        let gate=calibration_rmse<=profile.max_rmse_mt && plausible;
+                        summary["signed_remanences_mt"]=serde_json::json!(strengths);
+                        summary["stationary_calibration_rmse_mt"]=serde_json::json!(calibration_rmse);
+                        summary["stationary_calibration_QC_pass"]=serde_json::json!(gate);
+                        if !gate {
+                            summary["fit_status"]=serde_json::json!(
+                                "calibration_QC_FAILED_pose_fit_not_run");
+                        } else {
+                            for (m,value) in profile.magnets.iter_mut().zip(strengths) {
+                                m.remanence_mt=value;
+                            }
+                            for b in &mut profile.boards {
+                                b.background_mt=offsets[b.raw_board_id as usize];
+                            }
+                            let origin=profile.origin_mm;
+                            let mut live=RigidLiveFit::default();
+                            live.set_experimental_gk_profile(
+                                profile,data.calibration_background_raw_mt);
+                            live.set_presence(BoardPresence {
+                                board_mask:0b111,sensor_masks:masks
+                            });
+                            let mut pre=Vec::<[f64;6]>::new();
+                            let mut post=Vec::<[f64;6]>::new();
+                            let mut errors=Vec::<f64>::new();
+                            let mut failed=0_usize;
+                            let mut attempts=0_usize;
+                            for src in &data.frames {
+                                let mut frame=BoardFrame::default();
+                                frame.board_id=src.board_id;
+                                frame.frame_id=src.frame_id;
+                                frame.base_time_us=src.base_time_us;
+                                frame.sensor_mask=src.sensor_mask;
+                                for i in 0..16 {
+                                    frame.samples[i].bx_ut=src.fields_ut[i][0] as f32;
+                                    frame.samples[i].by_ut=src.fields_ut[i][1] as f32;
+                                    frame.samples[i].bz_ut=src.fields_ut[i][2] as f32;
+                                    frame.samples[i].time_offset_us=src.offsets_us[i];
+                                }
+                                // Fixed 10-frame stride, based on original
+                                // frame IDs, cannot be tuned against CT.
+                                let Some(job)=live.receive_frame(
+                                    &frame,src.frame_id%10==0) else {continue};
+                                attempts+=1;
+                                let completed=job.run();
+                                let pose=completed.result.as_ref().map(|x|x.pose);
+                                let rmse=completed.result.as_ref().map(|x|x.rmse_mt);
+                                let was_rejected=live.summary().rejected;
+                                let time=completed.time_us as f64/1e6;
+                                live.apply_completion(completed);
+                                if live.summary().rejected!=was_rejected {
+                                    failed+=1;continue;
+                                }
+                                if let (Some(p),Some(e))=(pose,rmse){
+                                    errors.push(e);
+                                    if time<=data.stationary_window_s[1]+0.1 {
+                                        pre.push(p)
+                                    } else if time>=data.time_duration_s-
+                                        data.final_window_last_s-0.1 {
+                                        post.push(p)
+                                    }
+                                }
+                            }
+                            summary["fit_attempts"]=serde_json::json!(attempts);
+                            summary["fit_rejected"]=serde_json::json!(failed);
+                            summary["pre_accepted"]=serde_json::json!(pre.len());
+                            summary["post_accepted"]=serde_json::json!(post.len());
+                            summary["mean_pose_field_rmse_mt"]=serde_json::json!(
+                                if errors.is_empty(){None}else{
+                                    Some(errors.iter().sum::<f64>()/errors.len() as f64)
+                                });
+                            if pre.len()<3 || post.len()<3 {
+                                summary["fit_status"]=serde_json::json!(
+                                    "insufficient_accepted_stationary_endpoint_poses");
+                            } else {
+                                fn median(v:&[[f64;6]])->[f64;6]{
+                                    std::array::from_fn(|i|{
+                                        let mut x=v.iter().map(|p|p[i]).collect::<Vec<_>>();
+                                        x.sort_by(f64::total_cmp);
+                                        let n=x.len();
+                                        if n%2==0 {(x[n/2-1]+x[n/2])*0.5}else{x[n/2]}
+                                    })
+                                }
+                                let a=median(&pre);
+                                let b=median(&post);
+                                let shift=sub([b[0],b[1],b[2]],[a[0],a[1],a[2]]);
+                                let rot_a=rodrigues([a[3],a[4],a[5]]);
+                                let rot_b=rodrigues([b[3],b[4],b[5]]);
+                                let rel=mul_matrix(rot_b,transpose(rot_a));
+                                let ct_rot=rodrigues(data.ct_reference.rotvec_rad);
+                                let d_rot=mul_matrix(rel,transpose(ct_rot));
+                                let angle=(((rel[0][0]+rel[1][1]+rel[2][2]-1.0)/2.0)
+                                    .clamp(-1.0,1.0)).acos()*RAD_TO_DEG;
+                                let rot_err=(((d_rot[0][0]+d_rot[1][1]+d_rot[2][2]-1.0)/2.0)
+                                    .clamp(-1.0,1.0)).acos()*RAD_TO_DEG;
+                                let trans_err=sub(shift,data.ct_reference.centroid_translation_lps_mm);
+                                // Same physical BB in the PRE CT receiver frame.
+                                let marker=data.ct_bb_reference.bb_pre_lps_mm;
+                                let bb_a=add(add(origin,[a[0],a[1],a[2]]),
+                                    mat_vec(rot_a,sub(marker,origin)));
+                                let bb_b=add(add(origin,[b[0],b[1],b[2]]),
+                                    mat_vec(rot_b,sub(marker,origin)));
+                                let bb_delta=sub(bb_b,bb_a);
+                                let bb_err=sub(bb_delta,data.ct_bb_reference.bb_delta_pre_lps_mm);
+                                summary["fit_status"]=serde_json::json!(
+                                    "computed_preliminary_unreviewed_CT_and_stationary_windows");
+                                summary["finite_cylinder_pose"] = serde_json::json!({
+                                    "head_rotation_deg":angle,
+                                    "rotation_geodesic_error_vs_CT_deg":rot_err,
+                                    "magnet_centroid_translation_lps_mm":shift,
+                                    "magnet_centroid_translation_vector_error_vs_CT_mm":
+                                        dot(trans_err,trans_err).sqrt(),
+                                    "bb_delta_lps_mm":bb_delta,
+                                    "bb_displacement_mm":dot(bb_delta,bb_delta).sqrt(),
+                                    "bb_vector_error_vs_CT_mm":dot(bb_err,bb_err).sqrt(),
+                                    "bb_displacement_magnitude_error_vs_CT_mm":
+                                        (dot(bb_delta,bb_delta).sqrt()-
+                                        data.ct_bb_reference.bb_displacement_mm).abs()
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let target=Path::new(&summary_path);
+        if let Some(parent)=target.parent(){
+            std::fs::create_dir_all(parent).expect("Create private summary folder");
+        }
+        std::fs::write(target,serde_json::to_string_pretty(&summary).unwrap()+"\n")
+            .expect("Write Nov06 scalar research summary");
+        println!("NOV06 ENDPOINT RESEARCH REPLAY: {}",summary_path);
+        println!("{}",serde_json::to_string_pretty(&summary).unwrap());
+    }
+
     #[test]
     fn profile_is_valid() { RigidProfile::a1_reference().unwrap(); }
 
