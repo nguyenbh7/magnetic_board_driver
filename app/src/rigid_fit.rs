@@ -2236,6 +2236,97 @@ mod tests {
                                             "no_accurate_pose_assertion_from_condition_numbers":true,
                                         })
                                     } else {serde_json::Value::Null};
+                                    // PROBE FULL 3-BOARD LOCAL OPTIMIZER BASINS.
+                                    // Local J^T J conditioning does not imply
+                                    // global uniqueness. Use fixed calibration
+                                    // and a single actual PRE/POST accepted
+                                    // stationary observation snapshot each.
+                                    // No CT pose or residual enters the fit.
+                                    fn full_receiver_multistart(
+                                        profile:&RigidProfile,
+                                        observation:&[Observation],
+                                        hall_pose:[f64;6],
+                                    )->serde_json::Value {
+                                        let offsets=[
+                                            [0.0;6],
+                                            [4.0,-4.0,3.0,0.0,0.0,0.0],
+                                            [-4.0,4.0,-3.0,0.0,0.0,0.0],
+                                            [0.0,0.0,0.0,0.20,-0.15,0.10],
+                                            [0.0,0.0,0.0,-0.20,0.15,-0.10],
+                                        ];
+                                        let mut seeds=Vec::new();
+                                        seeds.push(("hall_endpoint_median",hall_pose));
+                                        seeds.push(("zero",profile.initial_pose));
+                                        for (i,offset) in offsets.iter().enumerate().skip(1) {
+                                            let mut v=hall_pose;
+                                            for j in 0..6 {v[j]+=offset[j];}
+                                            seeds.push((match i {
+                                                1=>"translation_plus",
+                                                2=>"translation_minus",
+                                                3=>"rotation_plus",
+                                                _=>"rotation_minus",
+                                            },v));
+                                        }
+                                        let baseline=optimize_pose(profile,observation,hall_pose);
+                                        let runs=seeds.iter().map(|(name,seed)|{
+                                            let result=optimize_pose(profile,observation,*seed);
+                                            match result {
+                                                None=>serde_json::json!({
+                                                    "seed":name,"fit_returned":false,
+                                                }),
+                                                Some(r)=>{
+                                                    let r_ref=baseline.as_ref()
+                                                        .map(|x|x.pose).unwrap_or(hall_pose);
+                                                    let trans=sub(
+                                                        [r.pose[0],r.pose[1],r.pose[2]],
+                                                        [r_ref[0],r_ref[1],r_ref[2]]
+                                                    );
+                                                    let rel=mul_matrix(
+                                                        rodrigues([r.pose[3],r.pose[4],r.pose[5]]),
+                                                        transpose(rodrigues([
+                                                            r_ref[3],r_ref[4],r_ref[5]
+                                                        ]))
+                                                    );
+                                                    let rotation_disagreement=(((rel[0][0]+
+                                                        rel[1][1]+rel[2][2]-1.0)/2.0)
+                                                        .clamp(-1.0,1.0)).acos()*RAD_TO_DEG;
+                                                    serde_json::json!({
+                                                        "seed":name,
+                                                        "fit_returned":true,
+                                                        "rmse_mt":r.rmse_mt,
+                                                        "passes_original_gate":
+                                                            r.rmse_mt<=profile.max_rmse_mt,
+                                                        "translation_distance_to_hall_seed_solution_mm":
+                                                            dot(trans,trans).sqrt(),
+                                                        "rotation_geodesic_to_hall_seed_solution_deg":
+                                                            rotation_disagreement,
+                                                        "rotation_coordinate_bound_contact":
+                                                            (3..6).any(|j|
+                                                                (r.pose[j]-profile.lower_bounds[j]).abs()<0.00174533 ||
+                                                                (r.pose[j]-profile.upper_bounds[j]).abs()<0.00174533),
+                                                        "pose_xyzmm_rotvec_rad":r.pose,
+                                                    })
+                                                }
+                                            }
+                                        }).collect::<Vec<_>>();
+                                        serde_json::json!({
+                                            "scored_stationary_snapshot_count":1,
+                                            "input_observation_count":observation.len(),
+                                            "starts":runs,
+                                            "calibration_fixed":true,
+                                            "CT_NOT_used_to_seed_optimize_or_select":true,
+                                            "finite_seeds_cannot_prove_global_uniqueness":true,
+                                        })
+                                    }
+                                    let multistart=if !pressure_pre.is_empty() && !pressure_post.is_empty() {
+                                        serde_json::json!({
+                                            "PRE_original_accepted_snapshot":full_receiver_multistart(
+                                                profile,&pressure_pre[pressure_pre.len()/2],a),
+                                            "POST_original_accepted_snapshot":full_receiver_multistart(
+                                                profile,&pressure_post[pressure_post.len()/2],b),
+                                            "sample_selection":"middle accepted snapshot in fixed 1-4.5s and final8s, not selected for CT agreement",
+                                        })
+                                    } else {serde_json::Value::Null};
                                     let outcome=serde_json::json!({
                                         "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v3",
                                         "status":"DIAGNOSTIC_ONLY_NOT_RIGID_POSE_VALIDATION",
@@ -2260,6 +2351,8 @@ mod tests {
                                         "side_only_endpoint_pose_ablation_fixed_calibration":side_comparison,
                                         "local_six_DOF_Jacobian_sensitivity_and_bound_audit":
                                             local_sensitivity,
+                                        "full_three_board_fixed_calibration_multistart_endpoint_probe":
+                                            multistart,
                                         "control_all_board_centroid_translation_error_mm":
                                             dot(trans_err,trans_err).sqrt(),
                                         "control_all_board_rotation_geodesic_deg":rot_err,
