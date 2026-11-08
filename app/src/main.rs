@@ -2325,7 +2325,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                 context.received_stream_frames,
             )),
             text(board_presence_text(&context.board_presence)),
-            text(live_hall_range_status(context)),
+            text(live_hall_range_status(context))
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text("Range warning scans latest Bx/By/Bz of ALL sensors; BACK OFF at 80%, caution at 65% of the lower of digital range and conservative 25mT analog guard. A sudden >8mT step also latches a review warning for this stream. Values may already be aliased. Stop streaming before changing settings."),
             button("Copy all diagnostics").on_press(Message::CopyAllDiagnostics),
         ]
@@ -2621,7 +2623,11 @@ fn view(context: &Context) -> Element<'_, Message> {
             iced::Color::from_rgb8(70, 90, 110)
         };
         let mut rigid_content = column![
-            text(live_range_message).size(18).color(live_range_color),
+            text(live_range_message)
+                .size(18)
+                .color(live_range_color)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text(position_line.clone()).size(18),
             text(rotation_line.clone()).size(17),
             text(fit_quality.clone()),
@@ -2842,7 +2848,9 @@ fn view(context: &Context) -> Element<'_, Message> {
         let mut trace_content = column![
             text("Sensor field traces"),
             text("Select one sensor per board to plot Bx, By, and Bz over time."),
-            text(live_hall_range_status(context)),
+            text(live_hall_range_status(context))
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text("Live back-off warning uses axis-specific nominal limits and latest samples from ALL sensors. This separate legacy panel's optional manual scalar applies only to its historical peak warning; no hardware saturation flag is available."),
             row![
                 text("Optional manual common full-scale for legacy peak history (mT):"),
