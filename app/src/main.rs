@@ -2580,8 +2580,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 } else { button("Set zero") },
                 text(if rigid.zero_ready { "Reference set" } else { "Reference not set" }),
             ].spacing(8),
-            text(position_line),
-            text(rotation_line),
+            text(position_line.clone()),
+            text(rotation_line.clone()),
             text("HDMM comparison (predicted from rigid pose — NOT measured HDMM):"),
             text("Enter the actual HDMM reflective sticker's independently confirmed CT LPS X,Y,Z (mm). A CT glass BB is NOT automatically the sticker."),
             row![
@@ -2596,7 +2596,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                 ).unwrap_or_else(||"HDMM point selected; awaiting accepted fit after zero.".into())
             } else {"No measured HDMM marker coordinates entered; prediction intentionally disabled.".into()}),
             text(format!("Tracking status: {}", rigid.status)),
-            text(fit_quality),
+            text(fit_quality.clone()),
         ].spacing(9))
         .padding(12)
         .width(Length::Fill)
