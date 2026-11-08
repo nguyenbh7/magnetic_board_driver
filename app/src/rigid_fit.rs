@@ -1587,6 +1587,15 @@ mod tests {
             assert_eq!(data.status,"RESEARCH_ONLY_PRELIMINARY_ENDPOINT_FIT");
             assert!(data.full_record_qc.is_none());
         }
+        // Optional read-only boardwise field residual audit. It reports
+        // the field cost of an independently CT-imposed rigid endpoint
+        // against the exact same calibrated Hall measurements and model.
+        // No CT pose is used as a solver seed or fitting target.
+        let pressure_path=std::env::var("GK_NOV06_BOARD_PRESSURE_OUT").ok();
+        if let Some(path)=pressure_path.as_ref() {
+            assert!(!Path::new(path).exists(),
+                "Refuse overwrite of Nov06 private board-pressure diagnostic");
+        }
         let motion_path=if is_motion {
             let path=std::env::var("GK_NOV06_MOTION_POSES_OUT")
                 .expect("For full-motion replay, set a NEW private GK_NOV06_MOTION_POSES_OUT file");
@@ -1713,6 +1722,9 @@ mod tests {
                                 b.background_mt=offsets[b.raw_board_id as usize];
                             }
                             let origin=profile.origin_mm;
+                            let pressure_profile=if pressure_path.is_some() {
+                                Some(profile.clone())
+                            } else {None};
                             let mut live=RigidLiveFit::default();
                             live.set_experimental_gk_profile(
                                 profile,data.calibration_background_raw_mt);
@@ -1723,6 +1735,8 @@ mod tests {
                             let mut post=Vec::<[f64;6]>::new();
                             let mut errors=Vec::<f64>::new();
                             let mut motion_poses=Vec::<serde_json::Value>::new();
+                            let mut pressure_pre=Vec::<Vec<Observation>>::new();
+                            let mut pressure_post=Vec::<Vec<Observation>>::new();
                             let mut failed=0_usize;
                             let mut attempts=0_usize;
                             for src in &data.frames {
@@ -1742,6 +1756,9 @@ mod tests {
                                 let Some(job)=live.receive_frame(
                                     &frame,src.frame_id%10==0) else {continue};
                                 attempts+=1;
+                                let snapshot=if pressure_path.is_some() {
+                                    Some(job.observations.clone())
+                                } else {None};
                                 let completed=job.run();
                                 let pose=completed.result.as_ref().map(|x|x.pose);
                                 let rmse=completed.result.as_ref().map(|x|x.rmse_mt);
@@ -1762,9 +1779,17 @@ mod tests {
                                         }));
                                     }
                                     if time<=data.stationary_window_s[1]+0.1 {
+                                        if time>=data.stationary_window_s[0] {
+                                            if let Some(obs)=snapshot {
+                                                pressure_pre.push(obs);
+                                            }
+                                        }
                                         pre.push(p)
                                     } else if time>=data.time_duration_s-
                                         data.final_window_last_s-0.1 {
+                                        if let Some(obs)=snapshot {
+                                            pressure_post.push(obs);
+                                        }
                                         post.push(p)
                                     }
                                 }
@@ -1847,6 +1872,108 @@ mod tests {
                                     } else {
                                         "computed_preliminary_unreviewed_CT_and_stationary_windows"
                                     });
+                                // Compare the ORIGINAL model's residuals at
+                                // the fitted Hall POST pose and a hypothetical
+                                // CT-imposed POST pose. The latter is defined by
+                                // applying the independent CT relative motion to
+                                // the fitted Hall PRE pose (not fitting to CT).
+                                // Do not use these scores to choose sensor masks,
+                                // remanence, magnet axes or a better CT offset.
+                                if let (Some(path),Some(profile))=(
+                                    pressure_path.as_ref(),pressure_profile.as_ref()
+                                ) {
+                                    fn score(
+                                        profile:&RigidProfile,
+                                        samples:&[Vec<Observation>],
+                                        rotation:[[f64;3];3],
+                                        translation:[f64;3],
+                                    )->serde_json::Value {
+                                        let sources=profile.magnets.iter().map(|magnet|{
+                                            let center=add(
+                                                add(profile.origin_mm,translation),
+                                                mat_vec(rotation,sub(magnet.center_mm,profile.origin_mm))
+                                            );
+                                            let axis=mat_vec(rotation,magnet.axis);
+                                            quadrature(magnet,center,axis)
+                                        }).collect::<Vec<_>>();
+                                        let mut sums=[[0.0_f64;3];3];
+                                        let mut counts=[[0_usize;3];3];
+                                        for frame in samples {
+                                            for obs in frame {
+                                                let board=profile.boards.iter()
+                                                    .find(|b|b.sensors_mm.contains(&obs.sensor_mm))
+                                                    .expect("Original observed Hall site is absent from profile");
+                                                let id=board.raw_board_id as usize;
+                                                let pred=predict(obs.sensor_mm,&sources);
+                                                for axis in 0..3 {
+                                                    let diff=pred[axis]-obs.measured_mt[axis];
+                                                    sums[id][axis]+=diff*diff;
+                                                    counts[id][axis]+=1;
+                                                }
+                                            }
+                                        }
+                                        let mut per_board=Vec::new();
+                                        let (mut ss,mut nn)=(0.0_f64,0_usize);
+                                        for id in 0..3 {
+                                            let bs=sums[id].iter().sum::<f64>();
+                                            let bn=counts[id].iter().sum::<usize>();
+                                            ss+=bs;nn+=bn;
+                                            per_board.push(serde_json::json!({
+                                                "raw_board_id":id,
+                                                "sensor_component_count":bn,
+                                                "rmse_mt":if bn>0 {Some((bs/bn as f64).sqrt())} else {None},
+                                                "axis_rmse_mt":(0..3).map(|axis|{
+                                                    if counts[id][axis]>0 {
+                                                        Some((sums[id][axis]/counts[id][axis] as f64).sqrt())
+                                                    } else {None}
+                                                }).collect::<Vec<_>>(),
+                                            }));
+                                        }
+                                        serde_json::json!({
+                                            "frames_with_accepted_fit":samples.len(),
+                                            "component_count":nn,
+                                            "total_rmse_mt":if nn>0 {
+                                                Some((ss/nn as f64).sqrt())
+                                            } else {None},
+                                            "per_board":per_board,
+                                        })
+                                    }
+                                    let ct_candidate_rot=mul_matrix(ct_rot,rot_a);
+                                    let ct_candidate_translation=add(
+                                        [a[0],a[1],a[2]],
+                                        data.ct_reference.centroid_translation_lps_mm,
+                                    );
+                                    let outcome=serde_json::json!({
+                                        "format":"gk_nov06_CT_imposed_vs_Hall_fitted_board_pressure_v1",
+                                        "status":"DIAGNOSTIC_ONLY_NOT_RIGID_POSE_VALIDATION",
+                                        "source_fit_summary_path":summary_path,
+                                        "pre_accepted_snapshots":pressure_pre.len(),
+                                        "post_accepted_snapshots":pressure_post.len(),
+                                        "prespecified_PRE_window_s":data.stationary_window_s,
+                                        "prespecified_POST_final_s":data.final_window_last_s,
+                                        "PRE_at_Hall_fitted_median":score(
+                                            profile,&pressure_pre,rot_a,[a[0],a[1],a[2]]
+                                        ),
+                                        "POST_at_Hall_fitted_median":score(
+                                            profile,&pressure_post,rot_b,[b[0],b[1],b[2]]
+                                        ),
+                                        "POST_at_independently_CT_imposed_motion_from_Hall_PRE":score(
+                                            profile,&pressure_post,ct_candidate_rot,ct_candidate_translation
+                                        ),
+                                        "NO_CT_USED_IN_CALIBRATION_OR_HALL_FIT":true,
+                                        "CT_to_Hall_held_pose_equivalence_verified":false,
+                                        "boardwise_field_cost_cannot_prove_true_sensor_mapping":true,
+                                        "ct_field_cost_cannot_be_tuned_to_reconstruct_accuracy":true,
+                                    });
+                                    let dest=Path::new(path);
+                                    if let Some(parent)=dest.parent() {
+                                        std::fs::create_dir_all(parent)
+                                            .expect("Create private board pressure directory");
+                                    }
+                                    std::fs::write(dest,serde_json::to_string_pretty(&outcome)
+                                        .unwrap()+"\n").expect("Save private boardwise field cost");
+                                    summary["board_pressure_diagnostic_path"]=serde_json::json!(path);
+                                }
                                 summary["finite_cylinder_pose"] = serde_json::json!({
                                     "head_rotation_deg":angle,
                                     "rotation_geodesic_error_vs_CT_deg":rot_err,
