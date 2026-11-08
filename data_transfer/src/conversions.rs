@@ -90,6 +90,51 @@ const SENSITIVITY: [[[f64; 3]; 4]; 8] = [
     ],
 ];
 
+/// Nominal symmetric digital readout half-ranges for RES=0/1, in mT.
+/// Not an independently measured analog saturation limit or live chip register
+/// readback. RES=2/3 are intentionally excluded here: their validity depends
+/// on temperature-compensation mode and RES=3 has asymmetric count limits.
+pub fn nominal_symmetric_mlx_half_ranges_mt(
+    gain: u8, resolution: u8, hall_conf: u8,
+) -> Option<[f64; 3]> {
+    if gain > 7 || resolution > 1 { return None; }
+    let factor = match hall_conf {
+        0xC => 1.0,
+        0x0 => 98.0 / 75.0,
+        _ => return None,
+    };
+    let scale = SENSITIVITY[gain as usize][resolution as usize];
+    Some(scale.map(|s| s * factor * 32768.0 / 1000.0))
+}
+
+#[cfg(test)]
+mod nominal_mlx_range_tests {
+    use super::*;
+
+    #[test]
+    fn matches_gk_high_sensitivity_observed_periods() {
+        let high = nominal_symmetric_mlx_half_ranges_mt(7, 0, 0xC).unwrap();
+        assert!((high[0] - 4.9152).abs() < 1e-8);
+        assert!((high[1] - 4.9152).abs() < 1e-8);
+        assert!((high[2] - 7.929856).abs() < 1e-8);
+    }
+
+    #[test]
+    fn wider_symmetric_configuration_and_unsupported_modes() {
+        let wide = nominal_symmetric_mlx_half_ranges_mt(0, 1, 0xC).unwrap();
+        assert!((wide[0] - 49.217536).abs() < 1e-8);
+        assert!((wide[2] - 79.29856).abs() < 1e-8);
+        assert_eq!(
+            nominal_symmetric_mlx_half_ranges_mt(7, 0, 0x0).unwrap()[0],
+            4.9152 * 98.0 / 75.0
+        );
+        assert!(nominal_symmetric_mlx_half_ranges_mt(0, 2, 0xC).is_none());
+        assert!(nominal_symmetric_mlx_half_ranges_mt(0, 3, 0xC).is_none());
+        assert!(nominal_symmetric_mlx_half_ranges_mt(8, 0, 0xC).is_none());
+        assert!(nominal_symmetric_mlx_half_ranges_mt(7, 0, 5).is_none());
+    }
+}
+
 impl SensitivityPerBit {
     pub const fn new(axis: Axis, gain: Gain, resolution: Resolution, hallconf: HallConf) -> Self {
         let hall_conf_multiplier = match hallconf {
