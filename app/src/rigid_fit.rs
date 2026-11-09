@@ -1262,6 +1262,92 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_joint_pre_dipole_axes_recover_three_signed_directions_with_offsets() {
+        // Ground truth is generated only for a UNIT TEST, never the Nov06
+        // experimental replay. The same fixed CT-like magnet centers, 4x4
+        // sensor sites and board transforms are used in the inverse.
+        let mut profile=RigidProfile::a1_reference().expect("A1 synthetic fixture geometry");
+        for board in &mut profile.boards {
+            board.sensor_gains=None;
+            board.background_mt=[0.0;3];
+        }
+        let moments=[
+            [12.0,-7.0,20.0],
+            [-8.0,15.0,18.0],
+            [10.0,13.0,-16.0],
+        ];
+        let biases=[[0.3,-0.2,0.6],[-0.4,0.1,0.2],[0.5,0.3,-0.1]];
+        let mut raw=[[[0.0_f64;3];16];3];
+        for board in &profile.boards {
+            let id=board.raw_board_id as usize;
+            let back=transpose(board.raw_to_world);
+            for (index,site) in board.sensors_mm.iter().enumerate() {
+                let mut field=biases[id];
+                for (j,magnet) in profile.magnets.iter().enumerate() {
+                    let r=sub(*site,magnet.center_mm);
+                    let rs=dot(r,r);
+                    let r3=rs*rs.sqrt();
+                    let r5=r3*rs;
+                    for component in 0..3 {
+                        for d in 0..3 {
+                            field[component]+=1000.0*(
+                                3.0*r[component]*r[d]/r5-
+                                if component==d {1.0/r3} else {0.0}
+                            )*moments[j][d];
+                        }
+                    }
+                }
+                raw[id][index]=mat_vec(back,field);
+            }
+        }
+        let valid=[0xffff_u16 & !(1u16<<13),0xffff_u16,0xffff_u16];
+        let train=nov06_checkerboard_training_masks(valid).unwrap();
+        let (axes,norms,qr)=nov06_joint_dipole_pre_axes(&profile,&raw,None,train).unwrap();
+        assert!(qr>1e-6,"Joint PRE dipole design near-singular: {qr}");
+        for j in 0..3 {
+            let expected=scale(moments[j],1.0/dot(moments[j],moments[j]).sqrt());
+            assert!(dot(expected,axes[j])>0.99999,
+                "Dipole axis {j} should recover planted direction: {:?}",axes[j]);
+            assert!((norms[j]-dot(moments[j],moments[j]).sqrt()).abs()<1e-5);
+        }
+    }
+
+    #[test]
+    fn synthetic_pre_heldout_field_check_never_uses_train_sites_as_test() {
+        let mut profile=RigidProfile::a1_reference().unwrap();
+        for board in &mut profile.boards {
+            board.sensor_gains=None;
+            board.background_mt=[0.0;3];
+        }
+        let sources=profile.magnets.iter().map(|m|
+            quadrature(m,m.center_mm,m.axis)).collect::<Vec<_>>();
+        let mut raw=[[[0.0_f64;3];16];3];
+        for board in &profile.boards {
+            let id=board.raw_board_id as usize;
+            let back=transpose(board.raw_to_world);
+            let nuisance=scale([1.0,-1.0,0.6],id as f64+1.0);
+            for (i,site) in board.sensors_mm.iter().enumerate() {
+                raw[id][i]=mat_vec(back,add(predict(*site,&sources),nuisance));
+            }
+        }
+        let valid=[0xffff_u16&!(1u16<<13),0xffff,0xffff];
+        let train=nov06_checkerboard_training_masks(valid).unwrap();
+        for i in 0..3 {
+            assert_eq!(train[i]&!valid[i],0);
+            assert_eq!(train[i]&(valid[i]&!train[i]),0);
+        }
+        let diagnostic=nov06_pre_axis_crosscheck(&profile,&raw,None,train,valid).unwrap();
+        let heldout=diagnostic["PRE_heldout_finite_cylinder_rmse_mt"]
+            .as_f64().unwrap();
+        assert!(heldout<1e-7,
+            "Original frozen cylinders must predict independent PRE sensor sites: {heldout}");
+        assert_eq!(diagnostic["CT_POST_NOT_USED"],serde_json::json!(true));
+        let mut insufficient=valid;
+        insufficient[0]=0x0001;
+        assert!(nov06_checkerboard_training_masks(insufficient).is_err());
+    }
+
+    #[test]
     fn signed_strength_recovery_from_synthetic_stationary_fields() {
         let mut profile = RigidProfile::a1_reference().unwrap();
         let truth = [1250.0, -1370.0, 1410.0];
