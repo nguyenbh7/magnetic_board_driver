@@ -1185,12 +1185,13 @@ mod tests {
         Ok((axes,norms,min_qr_diag))
     }
 
-    fn nov06_checkerboard_training_masks(original:[u16;3])->Result<[u16;3],String> {
+    fn nov06_checkerboard_training_masks(original:[u16;3],parity:u32)->Result<[u16;3],String> {
+        if parity>1 {return Err("PRE axis checkerboard parity must be 0 or 1".into());}
         let mut out=[0_u16;3];
         for board in 0..3 {
             for index in 0..16 {
                 // Hardware Board4: firmware index=4*column+row.
-                if ((index/4+index%4)%2)==0 {
+                if ((index/4+index%4)%2) as u32==parity {
                     out[board]|=original[board]&(1u16<<index);
                 }
             }
@@ -1316,7 +1317,7 @@ mod tests {
             }
         }
         let valid=[0xffff_u16 & !(1u16<<13),0xffff_u16,0xffff_u16];
-        let train=nov06_checkerboard_training_masks(valid).unwrap();
+        let train=nov06_checkerboard_training_masks(valid,0).unwrap();
         let (axes,norms,qr)=nov06_joint_dipole_pre_axes(&profile,&raw,None,train).unwrap();
         assert!(qr>1e-6,"Joint PRE dipole design near-singular: {qr}");
         for j in 0..3 {
@@ -1325,6 +1326,28 @@ mod tests {
                 "Dipole axis {j} should recover planted direction: {:?}",axes[j]);
             assert!((norms[j]-dot(moments[j],moments[j]).sqrt()).abs()<1e-5);
         }
+    }
+
+    #[test]
+    fn synthetic_pre_axis_opposite_checkerboard_is_disjoint_and_keeps_original_mask() {
+        let valid=[0xffff_u16&!(1_u16<<13),0xffff_u16,0xffff_u16];
+        let even=nov06_checkerboard_training_masks(valid,0).unwrap();
+        let odd=nov06_checkerboard_training_masks(valid,1).unwrap();
+        // Odd has exactly 8 on all boards; even has a predeclared
+        // deterministic fallback because Board0 sensor13 was masked.
+        assert_eq!(even[0].count_ones(),8);
+        assert_eq!(odd[0].count_ones(),8);
+        for board in 0..3 {
+            assert_eq!(even[board]&!valid[board],0);
+            assert_eq!(odd[board]&!valid[board],0);
+            assert_eq!((valid[board]&!odd[board]).count_ones(),
+                valid[board].count_ones()-8);
+            assert_eq!((valid[board]&!even[board]).count_ones(),
+                valid[board].count_ones()-8);
+        }
+        assert_eq!(even[0]&odd[0],1_u16<<1,
+            "Only fixed Board0 sensor1 is shared by opposite training folds");
+        assert!(nov06_checkerboard_training_masks(valid,2).is_err());
     }
 
     #[test]
@@ -1346,7 +1369,7 @@ mod tests {
             }
         }
         let valid=[0xffff_u16&!(1u16<<13),0xffff,0xffff];
-        let train=nov06_checkerboard_training_masks(valid).unwrap();
+        let train=nov06_checkerboard_training_masks(valid,0).unwrap();
         for i in 0..3 {
             assert_eq!(train[i]&!valid[i],0);
             assert_eq!(train[i]&(valid[i]&!train[i]),0);
@@ -1879,6 +1902,11 @@ mod tests {
         let axis_mode=std::env::var("GK_NOV06_PRE_AXIS_MODE").unwrap_or_default();
         assert!(axis_mode.is_empty() || axis_mode=="joint_dipole",
             "GK_NOV06_PRE_AXIS_MODE must be blank or joint_dipole");
+        let fold=std::env::var("GK_NOV06_PRE_AXIS_FOLD").unwrap_or_else(|_|"even".into());
+        assert!(fold=="even" || fold=="odd",
+            "GK_NOV06_PRE_AXIS_FOLD must be even or odd");
+        assert!(axis_mode=="joint_dipole" || fold=="even",
+            "Alternate PRE fold only supported for joint_dipole axis candidate");
         if let Some(path)=pressure_path.as_ref() {
             assert!(!Path::new(path).exists(),
                 "Refuse overwrite of Nov06 private board-pressure diagnostic");
@@ -1986,7 +2014,8 @@ mod tests {
                 // Final finite-cylinder amplitudes are subsequently fitted
                 // from the SAME original PRE mask as the control.
                 if axis_mode=="joint_dipole" {
-                    let train=nov06_checkerboard_training_masks(masks)
+                    let parity=if fold=="even" {0} else {1};
+                    let train=nov06_checkerboard_training_masks(masks,parity)
                         .expect("Prespecified PRE checkerboard masks");
                     let original=nov06_pre_axis_crosscheck(
                         &profile,&data.calibration_stationary_raw_mt,
@@ -2012,6 +2041,8 @@ mod tests {
                     summary["pre_only_joint_dipole_axis_diagnostic"]=serde_json::json!({
                         "status":"EXPERIMENTAL_PRE_ONLY_AXIS_ESTIMATE_NOT_APPROVED",
                         "method":"three-magnet simultaneous nine-moment linear dipole, each CT center FIXED",
+                        "PRE_axis_fold":fold,
+                        "PRE_training_parity":parity,
                         "PRE_training_sensor_masks":train,
                         "PRE_heldout_sensor_masks":std::array::from_fn::<_,3,_>(|j|masks[j]&!train[j]),
                         "PRE_joint_dipole_axis_lps_signed":axes,
