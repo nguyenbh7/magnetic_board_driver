@@ -1081,6 +1081,186 @@ fn optimize_pose(profile: &RigidProfile, observations: &[Observation], initial: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Independent PRE-only linear proxy for the three magnetic axes. All CT
+    /// magnet centers and Hall site geometry remain fixed. The model uses
+    /// 9 free dipole-moment coefficients and subtracts a separate mean LPS
+    /// vector within EACH board to remove the 9 board-constant nuisance
+    /// terms. Original PRE 4x4 checkerboard sensors are held out entirely.
+    /// This is NOT a finite-cylinder magnetic calibration: only moment
+    /// directions are passed to the existing finite-cylinder solver.
+    fn nov06_joint_dipole_pre_axes(
+        profile:&RigidProfile,
+        raw_pre:&[[[f64;3];16];3],
+        raw_background:Option<&[[[f64;3];16];3]>,
+        train_masks:[u16;3],
+    )->Result<([[f64;3];3],[f64;3],f64),String> {
+        let mut features=Vec::<(usize,[[f64;9];3],[f64;3])>::new();
+        let mut xmeans=[[[0.0;9];3];3];
+        let mut ymeans=[[0.0;3];3];
+        for board in &profile.boards {
+            let id=board.raw_board_id as usize;
+            let count=train_masks[id].count_ones() as f64;
+            if count<5.0 {return Err(format!("Insufficient PRE axis-training sites raw{id}"));}
+            for idx in 0..16 {
+                if train_masks[id]&(1<<idx)==0 {continue;}
+                let sensor=board.sensors_mm[idx];
+                let mut a=[[0.0_f64;9];3];
+                for (j,magnet) in profile.magnets.iter().enumerate() {
+                    let r=sub(sensor,magnet.center_mm);
+                    let rs=dot(r,r);
+                    if rs<1.0 {return Err("Near-zero CT magnet/sensor separation".into());}
+                    let r3=rs*rs.sqrt();
+                    let r5=r3*rs;
+                    for component in 0..3 {
+                        for moment_component in 0..3 {
+                            a[component][3*j+moment_component]=1000.0*(
+                                3.0*r[component]*r[moment_component]/r5-
+                                if component==moment_component {1.0/r3} else {0.0});
+                        }
+                    }
+                }
+                let bg=raw_background.map(|v|v[id][idx]).unwrap_or([0.0;3]);
+                let gain=board.sensor_gains.as_ref().map(|g|g[idx]).unwrap_or(1.0);
+                let y=scale(mat_vec(board.raw_to_world,sub(raw_pre[id][idx],bg)),1.0/gain);
+                for component in 0..3 {
+                    if !y[component].is_finite() {return Err("Nonfinite PRE training Hall vector".into());}
+                    ymeans[id][component]+=y[component]/count;
+                    for j in 0..9 {xmeans[id][component][j]+=a[component][j]/count;}
+                }
+                features.push((id,a,y));
+            }
+        }
+        let mut rows=Vec::<[f64;9]>::new();
+        let mut values=Vec::<f64>::new();
+        for (id,features,fields) in &features {
+            for k in 0..3 {
+                rows.push(std::array::from_fn(|j|
+                    features[k][j]-xmeans[*id][k][j]));
+                values.push(fields[k]-ymeans[*id][k]);
+            }
+        }
+        let n=rows.len();
+        if n<36 {return Err("Too few independent PRE training field components".into());}
+        // Twice-reorthogonalized modified Gram-Schmidt on 9 normalized
+        // columns; never invert an unscaled 9x9 normal matrix.
+        let mut colnorm=[0.0_f64;9];
+        for j in 0..9 {
+            colnorm[j]=rows.iter().map(|row|row[j]*row[j]).sum::<f64>().sqrt();
+            if colnorm[j]<1e-12 {return Err("Near-zero dipole design column".into());}
+        }
+        let mut qs=Vec::<Vec<f64>>::new();
+        let mut upper=[[0.0_f64;9];9];
+        let mut min_qr_diag=1.0_f64;
+        for j in 0..9 {
+            let mut v=rows.iter().map(|row|row[j]/colnorm[j]).collect::<Vec<_>>();
+            for _ in 0..2 {
+                for k in 0..j {
+                    let projection=qs[k].iter().zip(&v).map(|(q,z)|q*z).sum::<f64>();
+                    upper[k][j]+=projection;
+                    for i in 0..n {v[i]-=projection*qs[k][i];}
+                }
+            }
+            let length=v.iter().map(|z|z*z).sum::<f64>().sqrt();
+            min_qr_diag=min_qr_diag.min(length);
+            if !length.is_finite() || length < 1e-6 {
+                return Err(format!("PRE joint dipole design near-singular at column {j}: {length}"));
+            }
+            upper[j][j]=length;
+            qs.push(v.iter().map(|z|z/length).collect());
+        }
+        let mut x=[0.0_f64;9];
+        for j in (0..9).rev() {
+            let rhs=qs[j].iter().zip(&values).map(|(q,y)|q*y).sum::<f64>();
+            x[j]=(rhs-(j+1..9).map(|k|upper[j][k]*x[k]).sum::<f64>())/upper[j][j];
+        }
+        let moments=std::array::from_fn::<_,3,_>(|j|
+            std::array::from_fn::<_,3,_>(|component|
+                x[3*j+component]/colnorm[3*j+component]));
+        let norms=std::array::from_fn::<_,3,_>(|j|dot(moments[j],moments[j]).sqrt());
+        if norms.iter().any(|v|!v.is_finite() || *v<1e-6) {
+            return Err("PRE joint dipole moment direction unobservable".into());
+        }
+        let axes=std::array::from_fn::<_,3,_>(|j|scale(moments[j],1.0/norms[j]));
+        Ok((axes,norms,min_qr_diag))
+    }
+
+    fn nov06_checkerboard_training_masks(original:[u16;3])->Result<[u16;3],String> {
+        let mut out=[0_u16;3];
+        for board in 0..3 {
+            for index in 0..16 {
+                // Hardware Board4: firmware index=4*column+row.
+                if ((index/4+index%4)%2)==0 {
+                    out[board]|=original[board]&(1u16<<index);
+                }
+            }
+            if out[board].count_ones()<5 ||
+               (original[board]&!out[board]).count_ones()<4 {
+                return Err(format!("PRE checkerboard train/holdout count insufficient raw{board}"));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Same frozen finite-cylinder amplitude/board-offset calibration for
+    /// both CT-axis control and PRE-joint-axis candidate on PRE TRAIN sensors.
+    /// Evaluation at zero CT PRE magnet pose uses heldout *original sensor
+    /// sites* and never uses POST fields/CT to select a candidate.
+    fn nov06_pre_axis_crosscheck(
+        profile:&RigidProfile,
+        pre:&[[[f64;3];16];3],
+        bg:Option<&[[[f64;3];16];3]>,
+        train:[u16;3],
+        original_masks:[u16;3],
+    )->Result<serde_json::Value,String> {
+        let (strengths,offsets,train_rmse)=if let Some(background)=bg {
+            let (mag,rmse)=fit_magnet_strengths_masked(profile,background,pre,train)?;
+            (mag,[[0.0_f64;3];3],rmse)
+        } else {
+            fit_strengths_with_board_offsets_masked(profile,pre,train)?
+        };
+        let mut calibrated=profile.clone();
+        for (m,scale) in calibrated.magnets.iter_mut().zip(strengths) {m.remanence_mt=scale;}
+        for board in &mut calibrated.boards {
+            board.background_mt=offsets[board.raw_board_id as usize];
+        }
+        let sources=calibrated.magnets.iter()
+            .map(|m|quadrature(m,m.center_mm,m.axis)).collect::<Vec<_>>();
+        let mut field_sse=[0.0_f64;3];
+        let mut count=[0_usize;3];
+        for board in &calibrated.boards {
+            let id=board.raw_board_id as usize;
+            for idx in 0..16 {
+                if original_masks[id]&(1u16<<idx)==0 || train[id]&(1u16<<idx)!=0 {continue;}
+                let gain=board.sensor_gains.as_ref().map(|g|g[idx]).unwrap_or(1.0);
+                let background=bg.map(|x|x[id][idx]).unwrap_or([0.0;3]);
+                let measured=sub(scale(mat_vec(
+                    board.raw_to_world,sub(pre[id][idx],background)),1.0/gain),
+                    board.background_mt);
+                let modeled=predict(board.sensors_mm[idx],&sources);
+                for axis in 0..3 {
+                    field_sse[id]+=(modeled[axis]-measured[axis]).powi(2);
+                    count[id]+=1;
+                }
+            }
+        }
+        let total=field_sse.iter().sum::<f64>();
+        let n=count.iter().sum::<usize>();
+        if n==0 {return Err("Empty PRE holdout".into());}
+        Ok(serde_json::json!({
+            "PRE_train_finite_cylinder_rmse_mt":train_rmse,
+            "PRE_heldout_finite_cylinder_rmse_mt":(total/n as f64).sqrt(),
+            "PRE_heldout_by_raw_board_rmse_mt":(0..3).map(|i|
+                if count[i]>0 {Some((field_sse[i]/count[i] as f64).sqrt())}
+                else {None}).collect::<Vec<_>>(),
+            "PRE_heldout_sensor_counts_by_board":
+                count.map(|n|n/3),
+            "PRE_train_strengths_mt":strengths,
+            "PRE_train_board_offsets_mt":offsets,
+            "CT_POST_NOT_USED":true,
+        }))
+    }
+
     #[test]
     fn signed_strength_recovery_from_synthetic_stationary_fields() {
         let mut profile = RigidProfile::a1_reference().unwrap();
