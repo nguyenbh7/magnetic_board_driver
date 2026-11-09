@@ -1194,7 +1194,22 @@ mod tests {
                     out[board]|=original[board]&(1u16<<index);
                 }
             }
-            if out[board].count_ones()<5 ||
+            // The EXISTING frozen-cylinder strength fitter requires
+            // at least 8 sensors on EVERY board. For the Nov06 raw0
+            // 90%-guard mask, channel 13 removes one checkerboard
+            // training site, leaving only 7. Restore the very first
+            // valid complementary firmware index deterministically.
+            // This rule is specified without looking at ANY field
+            // value, CT B, or holdout error, and preserves >=7
+            // original independent raw0 heldout sensors.
+            for index in 0..16 {
+                if out[board].count_ones()>=8 {break;}
+                let bit=1_u16<<index;
+                if original[board]&bit!=0 && out[board]&bit==0 {
+                    out[board]|=bit;
+                }
+            }
+            if out[board].count_ones()<8 ||
                (original[board]&!out[board]).count_ones()<4 {
                 return Err(format!("PRE checkerboard train/holdout count insufficient raw{board}"));
             }
