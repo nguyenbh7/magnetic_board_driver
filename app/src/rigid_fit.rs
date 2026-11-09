@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_pre_axis_opposite_checkerboard_is_disjoint_and_keeps_original_mask() {
+    fn synthetic_pre_axis_opposite_checkerboard_preserves_mask_and_fixed_overlap() {
         let valid=[0xffff_u16&!(1_u16<<13),0xffff_u16,0xffff_u16];
         let even=nov06_checkerboard_training_masks(valid,0).unwrap();
         let odd=nov06_checkerboard_training_masks(valid,1).unwrap();
