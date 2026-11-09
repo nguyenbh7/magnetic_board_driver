@@ -1772,6 +1772,12 @@ mod tests {
         // against the exact same calibrated Hall measurements and model.
         // No CT pose is used as a solver seed or fitting target.
         let pressure_path=std::env::var("GK_NOV06_BOARD_PRESSURE_OUT").ok();
+        // No switch is set for the published original CT-axis control.
+        // The PRE-only candidate is an OPTIONAL, separate-source replay
+        // that must use NEW output paths and keeps POST CT evaluation only.
+        let axis_mode=std::env::var("GK_NOV06_PRE_AXIS_MODE").unwrap_or_default();
+        assert!(axis_mode.is_empty() || axis_mode=="joint_dipole",
+            "GK_NOV06_PRE_AXIS_MODE must be blank or joint_dipole");
         if let Some(path)=pressure_path.as_ref() {
             assert!(!Path::new(path).exists(),
                 "Refuse overwrite of Nov06 private board-pressure diagnostic");
@@ -1847,6 +1853,10 @@ mod tests {
             "full_record_frame_mask_qc":data.full_record_qc,
             "full_motion_replay":is_motion,
             "calibration_and_fit_use_identical_endpoint_masks":true,
+            "PRE_magnetic_axis_variant":if axis_mode.is_empty() {
+                "original_CT_unsigned_axes"
+            } else {"PRE_joint_linear_dipole_direction_candidate"},
+            "PRE_axis_candidate_never_optimized_against_CT_POST":true,
             "ct_reference":{
                 "head_rotation_deg":data.ct_reference.angle_deg,
                 "magnet_centroid_displacement_mm":data.ct_reference.centroid_displacement_mm,
@@ -1867,6 +1877,55 @@ mod tests {
                 summary["reason"]=serde_json::json!(reason);
             }
             Ok(mut profile)=>{
+                // TRAIN / HOLDOUT are alternated, physically prespecified
+                // checkerboard sites within each original valid sensor mask.
+                // Only TRAIN sites estimate magnetic axes and their
+                // train-only nuisance scores. POST CT, POST Hall fields, and
+                // POST BB locations are entirely absent from that estimation.
+                // Final finite-cylinder amplitudes are subsequently fitted
+                // from the SAME original PRE mask as the control.
+                if axis_mode=="joint_dipole" {
+                    let train=nov06_checkerboard_training_masks(masks)
+                        .expect("Prespecified PRE checkerboard masks");
+                    let original=nov06_pre_axis_crosscheck(
+                        &profile,&data.calibration_stationary_raw_mt,
+                        data.calibration_background_raw_mt.as_ref(),train,masks
+                    ).expect("CT-axis PRE train/holdout field check");
+                    let (axes,moment_norms,qr_min)=nov06_joint_dipole_pre_axes(
+                        &profile,&data.calibration_stationary_raw_mt,
+                        data.calibration_background_raw_mt.as_ref(),train
+                    ).expect("PRE-only full-three-magnet joint dipole directions");
+                    let ct_axes=profile.magnets.iter().map(|m|m.axis)
+                        .collect::<Vec<_>>();
+                    let angular_difference=(0..3).map(|j|{
+                        let cosine=dot(ct_axes[j],axes[j]).abs().clamp(0.0,1.0);
+                        cosine.acos()*RAD_TO_DEG
+                    }).collect::<Vec<_>>();
+                    for (m,axis) in profile.magnets.iter_mut().zip(axes) {
+                        m.axis=axis;
+                    }
+                    let joint=nov06_pre_axis_crosscheck(
+                        &profile,&data.calibration_stationary_raw_mt,
+                        data.calibration_background_raw_mt.as_ref(),train,masks
+                    ).expect("Joint PRE-axis candidate train/holdout field check");
+                    summary["pre_only_joint_dipole_axis_diagnostic"]=serde_json::json!({
+                        "status":"EXPERIMENTAL_PRE_ONLY_AXIS_ESTIMATE_NOT_APPROVED",
+                        "method":"three-magnet simultaneous nine-moment linear dipole, each CT center FIXED",
+                        "PRE_training_sensor_masks":train,
+                        "PRE_heldout_sensor_masks":std::array::from_fn::<_,3,_>(|j|masks[j]&!train[j]),
+                        "PRE_joint_dipole_axis_lps_signed":axes,
+                        "PRE_moment_norms_arbitrary_dipole_units":moment_norms,
+                        "PRE_dipole_QR_min_normalized_diagonal":qr_min,
+                        "CT_unsigned_magnet_axes_original":ct_axes,
+                        "unsigned_axis_angle_relative_to_CT_deg":angular_difference,
+                        "CT_axis_train_and_heldout_field_score":original,
+                        "joint_PRE_axis_train_and_heldout_field_score":joint,
+                        "NO_USE_OF_POST_CT_IN_ESTIMATION_OR_SELECTION":true,
+                        "FINAL_PRE_refit_strengths_from_full_original_masks":true,
+                        "candidate_axes_are_not_independently_verified":true,
+                        "magnet_centers_and_original_chip_mapping_not_modified":true,
+                    });
+                }
                 // Apply the SAME externally prespecified endpoint mask
                 // to stationary remanence calibration and each pose fit.
                 // Excluded near-range sensors must not silently influence
