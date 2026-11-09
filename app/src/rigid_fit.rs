@@ -1382,7 +1382,7 @@ mod tests {
         assert_eq!(diagnostic["CT_POST_NOT_USED"],serde_json::json!(true));
         let mut insufficient=valid;
         insufficient[0]=0x0001;
-        assert!(nov06_checkerboard_training_masks(insufficient).is_err());
+        assert!(nov06_checkerboard_training_masks(insufficient,0).is_err());
     }
 
     #[test]
