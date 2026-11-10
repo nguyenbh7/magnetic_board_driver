@@ -73,6 +73,32 @@ The optical HDMM instrument is **not** connected to the app. Its chart
 is only a Hall-rigid-pose prediction at a separately confirmed reflector
 position, never a measurement from the HDMM camera.
 
+## Rigid dashboard warning placement (Nov 9, 2026)
+
+The main **INPUT UNRELIABLE / TRACKING INVALID** notice is now in the
+**right-hand rigid-motion plot column, directly below the rigid-body
+rotation chart**. It shares a bordered, full-column-width status area
+with the predicted HDMM and rigid-motion plots, rather than sitting
+far above those large charts. When a critical raw-input event is latched,
+it displays a prominent red **TRACKING INVALID** heading and a
+wrapping explanation with the exact affected board/sensor/axis and
+instructions to start a new acquisition or restart replay. When no
+critical event has been detected, the same location shows a smaller,
+neutral input-QC status.
+
+The separate **live Hall range/RAW STEP WARNING** above the monitoring
+row remains in place so a magnet-positioning operator can still see
+the immediate sensor back-off warning. The source-derived input-validity
+latch, raw warning thresholds, numerical results, and frozen pre-warning
+trajectory handling were not changed by this purely visual move.
+
+A layout regression checks that the input-validity notice occurs
+**after the rotation plot within the rigid plot column** and is no
+longer in the top-of-page rigid summary. This source change has not
+yet been compiled or visually verified in the desktop GUI.
+
+---
+
 ## Tests and limits of interpretation
 
 The code contains additional tests that:
