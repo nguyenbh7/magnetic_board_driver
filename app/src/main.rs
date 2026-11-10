@@ -3800,6 +3800,8 @@ mod tracking_mode_ui_tests {
         assert_eq!(boards[0].selected_trace.len(), 1);
         assert!((boards[0].selected_trace[0].bx_mt - 4.8).abs() < 1e-6);
         assert!(live_hall_range_status(&context).contains("BACK OFF MAGNET"));
+        assert!(context.rigid_fit.input_unreliable().is_some());
+        assert!(context.rigid_fit.summary().hdmm_current_mm.is_none());
 
         // A stray firmware message must NOT be blended with recorded fields.
         let before = context.received_stream_frames;
@@ -3809,6 +3811,7 @@ mod tracking_mode_ui_tests {
         let _ = update(&mut context, Message::ReplayPause);
         let _ = update(&mut context, Message::ReplayRestart);
         assert_eq!(context.received_stream_frames, 0);
+        assert!(context.rigid_fit.input_unreliable().is_none());
         assert!(context.sensor_traces.board_summaries()[0].selected_trace.is_empty());
         let _ = update(&mut context, Message::ReplayUnload);
         assert!(context.offline_replay.is_none());
@@ -3829,6 +3832,93 @@ mod tracking_mode_ui_tests {
         assert!(source.contains("Historical firmware gain/resolution is UNKNOWN"));
         assert!(source.contains("if !from_replay { context.gk_calibration.accept_frame(&frame); }"));
         assert!(source.contains("if !from_replay && context.file_writer.is_some()"));
+    }
+
+    #[test]
+    fn critical_raw_range_latches_invalid_tracking_but_raw_traces_continue() {
+        let mut context = Context::default();
+        let presence = BoardPresence {
+            board_mask: 1, sensor_masks: [0xffff, 0, 0],
+        };
+        context.board_presence = presence.clone();
+        context.sensor_traces.set_presence(presence);
+        let mut unsafe_frame = BoardFrame::default();
+        unsafe_frame.board_id = 0;
+        unsafe_frame.sensor_mask = 0xffff;
+        unsafe_frame.base_time_us = 1_000_000;
+        for sample in unsafe_frame.samples.iter_mut() {
+            sample.bx_ut = 300.0;
+            sample.by_ut = 0.0;
+            sample.bz_ut = 0.0;
+        }
+        // The selected chart is sensor0 but sensor12 is unsafe:
+        // 7.1mT Z exceeds 80% of provisional +/-7.929856mT.
+        unsafe_frame.samples[12].bz_ut = 7100.0;
+        let _ = update(&mut context, Message::ReceivedStreamFrame(unsafe_frame.clone()));
+        let reason = context.rigid_fit.input_unreliable().expect("must latch");
+        assert!(reason.contains("sensor 12 Bz"));
+        assert!(reason.contains("UNVERIFIED"));
+        assert!(!context.live_fits.fit_enabled());
+        assert!(context.rigid_fit.summary().result.is_none());
+        assert!(context.rigid_fit.summary().hdmm_current_mm.is_none());
+        assert!(context.sensor_traces.board_summaries()[0].selected_trace.len() > 0);
+
+        // Subsequent quiet frames keep raw evidence, but do not silently
+        // re-enable a potentially aliased channel or any fitting model.
+        let mut quiet = unsafe_frame.clone();
+        quiet.base_time_us += 100_000;
+        quiet.frame_id += 1;
+        quiet.samples[12].bz_ut = 50.0;
+        let _ = update(&mut context, Message::ReceivedStreamFrame(quiet));
+        assert!(context.rigid_fit.input_unreliable().is_some());
+        assert_eq!(context.received_stream_frames, 2);
+        let _ = update(&mut context, Message::SelectTrackingMode(TrackingMode::Independent));
+        assert!(!context.live_fits.fit_enabled());
+        let _ = update(&mut context, Message::StartFieldStream);
+        assert!(context.rigid_fit.input_unreliable().is_none());
+        assert!(context.sensor_traces.board_summaries()[0].selected_trace.is_empty());
+        assert!(context.live_fits.fit_enabled());
+    }
+
+    #[test]
+    fn caution_does_not_latch_but_jump_below_wide_range_limit_does() {
+        let mut context = Context::default();
+        let presence = BoardPresence {
+            board_mask: 1, sensor_masks: [0xffff, 0, 0],
+        };
+        context.board_presence = presence.clone();
+        context.sensor_traces.set_presence(presence);
+        let mut first = BoardFrame::default();
+        first.board_id = 0;
+        first.sensor_mask = 0xffff;
+        first.base_time_us = 1_000_000;
+        for sample in first.samples.iter_mut() {
+            sample.bx_ut = 3440.0; // 70% provisional X advisory, CAUTION only
+        }
+        let _ = update(&mut context, Message::ReceivedStreamFrame(first.clone()));
+        assert!(live_hall_range_status(&context).contains("CAUTION"));
+        assert!(context.rigid_fit.input_unreliable().is_none());
+
+        // New separate wide-range acquisition: +9mT is BELOW its 20mT
+        // 80% advisory threshold, but a fast >8mT jump must still halt.
+        context.mlx_status = Some(MlxSensitivityStatus {
+            ok: true, gain: 0, resolution: 1, hall_conf: 0xC,
+        });
+        context.sensor_traces.reset_histories();
+        let mut baseline = first.clone();
+        for sample in baseline.samples.iter_mut() { sample.bx_ut = 0.0; }
+        let _ = update(&mut context, Message::ReceivedStreamFrame(baseline.clone()));
+        assert!(context.rigid_fit.input_unreliable().is_none());
+        let mut jumped = baseline;
+        jumped.base_time_us += 40_000;
+        jumped.frame_id = 1;
+        jumped.samples[10].bx_ut = 9000.0;
+        let _ = update(&mut context, Message::ReceivedStreamFrame(jumped));
+        let fault = context.rigid_fit.input_unreliable().expect("jump must latch");
+        assert!(fault.contains("sensor 10 Bx"));
+        assert!(fault.contains("sudden"));
+        assert!(live_hall_range_status(&context).contains("RAW STEP WARNING"));
+        assert!(context.rigid_fit.summary().result.is_none());
     }
 
     #[test]
