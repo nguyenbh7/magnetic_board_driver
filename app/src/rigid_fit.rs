@@ -502,6 +502,7 @@ impl RigidLiveFit {
     }
 
     pub fn reset_zero(&mut self) {
+        if self.input_unreliable.is_some() { return; }
         if let Some(result) = &self.result {
             self.zero_pose = Some(result.pose);
             self.first_time_us = self.last_dispatched_us;
@@ -527,7 +528,9 @@ impl RigidLiveFit {
         }
         self.hdmm_target_world=Some(xyz);
         self.hdmm_history.clear();
-        self.status="HDMM CT point selected: projected motion is derived from rigid fit, NOT an actual HDMM measurement".into();
+        if self.input_unreliable.is_none() {
+            self.status="HDMM CT point selected: projected motion is derived from rigid fit, NOT an actual HDMM measurement".into();
+        }
         Ok(())
     }
 
@@ -3230,6 +3233,14 @@ mod tests {
         let reference_result = RigidFitResult {
             pose: [0.0; 6], rmse_mt: 0.001, sensor_count: 48,
         };
+        rigid.result = Some(reference_result.clone());
+        rigid.zero_pose = Some([0.0; 6]);
+        rigid.xyz.push_back(RigidXyzPoint {
+            time_s: 1.0, dx_mm: 1.0, dy_mm: 0.0, dz_mm: 0.0,
+        });
+        rigid.hdmm_history.push_back(DisplacementPoint {
+            time_s: 1.0, displacement_mm: 1.0,
+        });
         rigid.block_unreliable_input(
             "raw Board 0 sensor 12 Bz sudden 10.0 mT step".into()
         );
@@ -3239,6 +3250,10 @@ mod tests {
         assert!(rigid.summary().result.is_none());
         assert!(!rigid.summary().zero_ready);
         assert!(rigid.summary().hdmm_current_mm.is_none());
+        assert_eq!(rigid.summary().xyz_history.len(), 1);
+        assert_eq!(rigid.summary().hdmm_history.len(), 1);
+        rigid.reset_zero();
+        assert!(rigid.status.contains("INPUT UNRELIABLE"));
 
         // Both old completions and a completion with a forged/matched new
         // generation must be ignored when the fault remains latched.
