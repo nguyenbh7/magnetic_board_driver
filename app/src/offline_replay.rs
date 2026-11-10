@@ -75,6 +75,14 @@ impl OfflineRecording {
             if usize::from(raw.board_id) >= MAX_SENSOR_BOARDS || raw.sensor_mask == 0 {
                 return Err(format!("Invalid board ID or empty sensor mask at byte {}", offset - n));
             }
+            // The shared live sensor conversion adds each sample's timestamp
+            // offset; reject an untrusted file that would overflow that sum.
+            if raw.samples.iter().enumerate().any(|(i, sample)|
+                raw.sensor_mask & (1u16 << i) != 0 &&
+                raw.base_time_us.checked_add(u64::from(sample.time_offset_us)).is_none()
+            ) {
+                return Err(format!("Sample timestamp overflows at byte {}", offset - n));
+            }
             let begin = *first_time_us.get_or_insert(raw.base_time_us);
             let elapsed_us = raw.base_time_us.saturating_sub(begin);
             if elapsed_us < duration_us {
@@ -237,7 +245,7 @@ mod tests {
         assert_eq!(play.cursor,1);
         play.play();
         let rest = play.advance(Duration::from_millis(100));
-        assert_eq!(rest, frames[1..]);
+        assert_eq!(rest, frames[1..].to_vec());
         assert!(play.finished());
         play.restart();
         assert_eq!(play.cursor, 0);
@@ -266,6 +274,27 @@ mod tests {
         }
         assert!(OfflineRecording::from_bytes(b"MLXBF002",Path::new("empty")).is_err());
     }
+    #[test]
+    fn rejects_overflowed_sensor_timestamp_and_invalid_board() {
+        let mut huge = frame(0, u64::MAX);
+        huge.samples[0].time_offset_us = 1;
+        assert!(OfflineRecording::from_bytes(&encode(&[huge]), Path::new("bad.bin"))
+            .unwrap_err().contains("overflows"));
+        let bad_board = frame(9, 100);
+        assert!(OfflineRecording::from_bytes(&encode(&[bad_board]), Path::new("bad_board.bin"))
+            .unwrap_err().contains("Invalid board"));
+    }
+    #[test]
+    fn retains_original_order_when_device_timestamp_order_is_inconsistent() {
+        let data = [frame(0,1_000_000), frame(1,900_000), frame(2,1_050_000)];
+        let rec = OfflineRecording::from_bytes(&encode(&data),Path::new("reorder.bin")).unwrap();
+        assert_eq!(rec.reordered_timestamps(),1);
+        assert_eq!(rec.total_frames(),3);
+        assert_eq!(rec.frames[1].raw.base_time_us,900_000);
+        assert_eq!(rec.frames[1].elapsed_us,0);
+        assert_eq!(rec.frames[2].elapsed_us,50_000);
+    }
+
     #[test]
     fn caps_each_tick_and_keeps_all_frames_for_next_tick() {
         let frames=(0..300).map(|i|frame((i%3) as u16,1000+i as u64)).collect::<Vec<_>>();
