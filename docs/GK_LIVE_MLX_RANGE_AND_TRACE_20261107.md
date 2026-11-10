@@ -113,11 +113,29 @@ New tests check plotted positive/negative limit bounds, invalid limits, fallback
 
 ## Full-width plot layout (Nov 9, 2026; source-only GUI update)
 
-In **Live Tracking / Rigid 6-DOF**, the dynamic signed dotted-guide instruction/caption now appears **above** the first plot. The rigid XYZ/rotation/HDMM prediction plot column fills the window width; beneath it, each of three raw Board 0/1/2 selected-sensor trace plots fills the window width. Latest all-sensor peaks, sensor selectors and raw-data warnings remain attached to their respective traces. The Iced canvas uses `Length::Fill`, so resizing the window expands the traces horizontally; no horizontal half-width split remains.
+In **Live Tracking / Rigid 6-DOF**, the dynamic signed dotted-guide instruction/caption now appears **above** the first plot. The selected-sensor or disconnected placeholder Board 0/1/2 raw traces now appear **first**, each using the full window width; the rigid XYZ/rotation/HDMM prediction plot column follows at full width. Latest all-sensor peaks, sensor selectors and raw-data warnings remain attached to their respective traces. The Iced canvas uses `Length::Fill`, so resizing the window expands the traces horizontally; no horizontal half-width split remains.
 
 **Both** now places the Live Tracking panel above the Sensor Traces panel, with full width for each instead of two half-width columns. The separate Sensor Traces panel already places the dotted-line instructions above the raw charts. The source includes a structural regression test checking the order (caption → rigid plot → raw traces) and the full-width Both layout. This changes only GUI layout; range calculation, firmware state provenance, rigid fitter, original data and live warning thresholds stay unchanged.
 
 After pulling, run `cargo test -p app` and `cargo check -p app`; the changes have NOT been compiled, visually inspected on a user's desktop, or checked on actual sensor boards by the assistant.
+
+---
+
+## Trace panel visibility without boards (Nov 9, 2026)
+
+**Fixed:** previously `Live Tracking / Rigid 6-DOF` created a Bx/By/Bz plot only inside `for sensor_board in context.sensor_traces.board_summaries()`, so opening the app with no controller or sensor boards showed three rigid charts (displacement, rotation, HDMM prediction) **but no raw Hall plot**. That behavior obscured the new live-trace work during offline testing.
+
+The revised live dashboard now displays the **raw Hall trace section FIRST, immediately below the live range banner and dotted-guide instructions**, before the displacement/rotation/HDMM charts. It always reserves three full-window-width trace canvases, `Board 0/1/2`, whether or not the boards are connected. An absent board is explicitly labeled **NOT CONNECTED (waiting for stream)** and its canvas says **waiting for live sensor data**. No fake measurements are generated; the plot simply draws its existing axes and *provisional* positive/negative dotted advisory limits. The separate **Sensor Traces** tab likewise displays three empty guides and the disconnected status when no boards are detected. Once each board is reported, the placeholder is replaced by that board's normal selectable sensor chart and all-sensor range/step warnings. All three rigid plots remain, below the raw traces, still full width.
+
+The source includes a structural layout regression (guide caption → raw traces → rigid charts, including disconnected placeholders) and an empty-trace numerical guide-bounds test. **The newly committed code has not yet been compiled or GUI-inspected on the user's Windows machine.**
+
+```powershell
+cd F:\GitHub\magnetic_board_driver
+git pull --ff-only origin feature/live-rigid-body-fit
+cargo test -p app
+cargo check -p app
+cargo run -p app --release
+```
 
 ---
 
