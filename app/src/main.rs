@@ -1234,6 +1234,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::GetField => {
+            if context.offline_replay.is_some() { return Task::none(); }
             if let Some(sw) = &context.sensor_watcher {
                 let board = &context.ping_args.board;
                 let sensor = &context.ping_args.sensor;
@@ -1507,6 +1508,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
         }
         Message::BeginGkBackground => {
+            if context.offline_replay.is_some() {
+                context.replay_notice = "No-magnet background capture requires live hardware, not an old recording.".into();
+                return Task::none();
+            }
             context.rigid_fit.invalidate_for_gk_calibration();
             context.hdmm_marker_coordinate_input.clear();
             context.gk_calibration.begin(false);
@@ -1586,6 +1591,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::BeginGkReference => {
+            if context.offline_replay.is_some() {
+                context.replay_notice = "Stationary reference capture is disabled during offline replay.".into();
+                return Task::none();
+            }
             // Capture all 48 raw Hall fields even if CT cannot be imported
             // at the GK console. They can be paired with DICOM offline.
             context.rigid_fit.invalidate_for_gk_calibration();
@@ -1672,6 +1681,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CalibrateGkTracking => {
+            if context.offline_replay.is_some() {
+                context.replay_notice = "Do not treat old replay frames as a new CT/Hall calibration. Load a verified matching rigid profile if needed.".into();
+                return Task::none();
+            }
             context.gk_calibration.calibrated_candidate = None;
             let outcome = (|| -> Result<(RigidProfile, [f64;3], f64, bool), String> {
                 let geometry = context.cbct_geometry.as_ref().ok_or("Import the current CT first")?;
@@ -1725,6 +1738,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::EnableExperimentalGkTracking => {
+            if context.offline_replay.is_some() {
+                context.replay_notice = "Enabling a newly calibrated GK experiment is unavailable during offline replay.".into();
+                return Task::none();
+            }
             if let Some((profile,rmse)) = context.gk_calibration.calibrated_candidate.clone() {
                 context.rigid_fit.set_experimental_gk_profile(profile,context.gk_calibration.background);
                 context.tracking_mode=TrackingMode::Rigid6Dof;
@@ -1919,6 +1936,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CaptureRigidBackground => {
+            if context.offline_replay.is_some() {
+                context.replay_notice = "Background capture is live-hardware-only; replayed fields are not a new independent background.".into();
+                return Task::none();
+            }
             match context.rigid_fit.capture_a1_background() {
                 Ok(raw) => context.live_fits.apply_background_snapshot(&raw),
                 Err(e) => context.rigid_fit.set_status(format!("Background: {e}")),
@@ -2256,6 +2277,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::GetMlxSensitivity => {
+            if context.offline_replay.is_some() { return Task::none(); }
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
 
@@ -2274,6 +2296,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::SetMlxSensitivity => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.replay_notice = "Historical MLX settings cannot be changed via replay; hardware writes disabled.".into();
+                return Task::none();
+            }
             // Changing sensitivity mid-stream changes the physical field
             // conversion and invalidates any stationary calibration.
             if context.stream_status != "idle" || context.file_writer.is_some() {
@@ -2307,6 +2333,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::ReceivedMlxSensitivity(status) => {
+            if context.offline_replay.is_some() { return Task::none(); }
             context.mlx_gain = status.gain.to_string();
             context.mlx_resolution = status.resolution.to_string();
             let changed=context.mlx_status.as_ref().is_none_or(|old|
@@ -2334,6 +2361,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::GetMlxTiming => {
+            if context.offline_replay.is_some() { return Task::none(); }
             if let Some(sw) = &context.sensor_watcher {
                 let client = sw.get_client();
                 Task::perform(
