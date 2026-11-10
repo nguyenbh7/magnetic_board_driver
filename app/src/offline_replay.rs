@@ -56,6 +56,7 @@ impl OfflineRecording {
         let mut frames = Vec::new();
         let mut presence = BoardPresence::default();
         let mut first_time_us = None;
+        let mut previous_raw_time_us: Option<u64> = None;
         let mut duration_us = 0_u64;
         let mut reordered_timestamps = 0_u64;
 
@@ -85,11 +86,12 @@ impl OfflineRecording {
             }
             let begin = *first_time_us.get_or_insert(raw.base_time_us);
             let elapsed_us = raw.base_time_us.saturating_sub(begin);
-            if elapsed_us < duration_us {
+            if previous_raw_time_us.is_some_and(|previous| raw.base_time_us < previous) {
                 // Retain original frame order and its original timestamp.
                 // Only the playback scheduler uses a nondecreasing clock.
                 reordered_timestamps += 1;
             }
+            previous_raw_time_us = Some(raw.base_time_us);
             duration_us = duration_us.max(elapsed_us);
             presence.board_mask |= 1u8 << raw.board_id;
             presence.sensor_masks[raw.board_id as usize] |= raw.sensor_mask;
