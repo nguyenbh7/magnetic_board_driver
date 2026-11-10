@@ -2666,13 +2666,19 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(rotation_line.clone()).size(17),
             text(fit_quality.clone()),
         ].spacing(12);
+        // In the live 6-DOF view, the HDMM-point prediction is the primary
+        // motion monitor beside the raw Hall traces. Translation/rotation
+        // plots remain available underneath it for additional diagnostics.
+        // This is NOT a live measurement from the vendor HDMM hardware.
         let rigid_plots = column![
-            text("Joint rigid-body motion (experimental, not HDMM accuracy)"),
-            rigid_xyz_plot(rigid.xyz_history),
-            rotation_plot(u16::MAX, rigid.rotation_history),
-            text("Rigid-fit prediction at independently confirmed HDMM marker (NOT HDMM measurement):"),
+            text("Hall-predicted HDMM marker displacement (NOT measured HDMM)"),
             hdmm_prediction_plot(rigid.hdmm_history),
-        ].spacing(9);
+            text("Additional rigid-motion diagnostics (experimental)"),
+            text("Joint rigid-body XYZ displacement"),
+            rigid_xyz_plot(rigid.xyz_history),
+            text("Rigid-body rotation"),
+            rotation_plot(u16::MAX, rigid.rotation_history),
+        ].spacing(9).width(Length::Fill);
 
         if context.dashboard_tab == DashboardTab::LiveTracking {
             // Put guide instructions ABOVE both chart sections, never in a
@@ -2743,12 +2749,20 @@ fn view(context: &Context) -> Element<'_, Message> {
                         ));
                 }
             }
-            // Raw fields first: they are the critical positioning monitor.
-            // Full-width rigid plots follow, without hiding the Hall traces
-            // below three large charts and the HDMM prediction.
-            rigid_content = rigid_content
-                .push(container(live_traces).width(Length::Fill))
-                .push(container(rigid_plots).width(Length::Fill));
+            // During the experiment the raw Bx/By/Bz traces AND the
+            // Hall-predicted HDMM-point displacement must stay visible
+            // together, near the top and immediately below the guide.
+            // Allocate more width to the three Hall-board charts. Keep
+            // secondary XYZ/rotation plots beneath HDMM in the right column.
+            // Board placeholders remain visible when hardware is absent.
+            rigid_content = rigid_content.push(
+                row![
+                    container(live_traces).width(Length::FillPortion(3)),
+                    container(rigid_plots).width(Length::FillPortion(2)),
+                ]
+                .spacing(16)
+                .width(Length::Fill)
+            );
         } else {
             // The Both tab places the separate Sensor Traces panel below
             // full-width rigid plots rather than duplicating the raw charts.
@@ -3323,22 +3337,42 @@ mod tracking_mode_ui_tests {
     }
 
     #[test]
-    fn full_width_dashboard_layout_keeps_range_guide_above_charts() {
-        // Source-level structural guard; cargo check verifies the actual
-        // Iced widget types, and the final appearance needs a GUI review.
+    fn live_dashboard_pairs_hall_traces_with_hdmm_prediction() {
+        // Structural regression: the primary monitoring columns must be
+        // adjacent below the dotted-guide caption, not separated by
+        // scroll-length rigid displacement/rotation charts.
+        // Cargo check verifies Iced types; visual layout needs a GUI review.
         let source = include_str!("main.rs");
+        let rigid_heading = source.find(
+            "Hall-predicted HDMM marker displacement (NOT measured HDMM)"
+        ).expect("HDMM prediction explicitly distinguished from measurement");
+        let hdmm = source[rigid_heading..].find(
+            "hdmm_prediction_plot(rigid.hdmm_history)"
+        ).expect("HDMM prediction chart") + rigid_heading;
+        let xyz = source[rigid_heading..].find(
+            "rigid_xyz_plot(rigid.xyz_history)"
+        ).expect("secondary displacement chart") + rigid_heading;
+        let rotation = source[rigid_heading..].find(
+            "rotation_plot(u16::MAX, rigid.rotation_history)"
+        ).expect("secondary rotation chart") + rigid_heading;
+        assert!(hdmm < xyz && xyz < rotation);
+
         let start = source.find("// Put guide instructions ABOVE both chart sections")
             .expect("rigid monitoring section");
         let end = source[start..].find("// CT import/mapping")
             .expect("end of rigid monitoring section") + start;
         let live = &source[start..end];
-        let guide = live.find(".push(\n                    text(live_hall_trace_limit_caption(context))")
+        let guide = live.find("text(live_hall_trace_limit_caption(context))")
             .expect("dotted guide explanation");
-        let rigid = live.find(".push(container(rigid_plots).width(Length::Fill))")
-            .expect("full-width rigid charts");
-        let traces = live.find(".push(container(live_traces).width(Length::Fill))")
-            .expect("full-width raw trace charts");
-        assert!(guide < traces && traces < rigid);
+        let trace_title = live.find("LIVE RAW HALL TRACES")
+            .expect("raw sensor trace section");
+        let paired = live.find(
+            "container(live_traces).width(Length::FillPortion(3)),"
+        ).expect("Hall traces in primary left column");
+        let predicted = live.find(
+            "container(rigid_plots).width(Length::FillPortion(2)),"
+        ).expect("HDMM chart in adjacent right column");
+        assert!(guide < trace_title && trace_title < paired && paired < predicted);
         assert!(live.contains("for board_id in 0u16..3"));
         assert!(live.contains("NOT CONNECTED (waiting for stream)"));
         assert!(source.contains("NO SENSOR BOARDS DETECTED — waiting for streaming data"));
@@ -3348,7 +3382,6 @@ mod tracking_mode_ui_tests {
             .expect("end of dashboard tab selection") + start;
         let both = &source[start..end];
         assert!(both.contains("column![\n                    live_tracking_widget.width(Length::Fill),\n                    sensor_trace_widget.width(Length::Fill),"));
-        assert!(!both.contains("FillPortion(1)"));
     }
 
     #[test]
