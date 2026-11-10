@@ -508,6 +508,35 @@ fn live_hall_range_status(context: &Context) -> String {
     }
 }
 
+/// Conservative fail-closed screen applied after ALL raw sensors in each
+/// board frame have been updated, before any new 6-DOF job is dispatched.
+/// The 80% limit is *advisory*, not proof of hardware saturation. Jump events
+/// are independent of magnitude and remain latched for the recording.
+fn critical_rigid_input_reason(context: &Context) -> Option<String> {
+    let limits = live_hall_range_model(context);
+    for board in context.sensor_traces.board_summaries() {
+        if let Some((sensor, axis, delta)) = board.last_sudden_jump {
+            return Some(format!(
+                "raw Board {} sensor {} {} sudden {:.2} mT step (>8 mT, 0.25 s); digital wrapping POSSIBLE, NOT PROVEN",
+                board.board_id, sensor, ["Bx", "By", "Bz"][axis], delta
+            ));
+        }
+        for (axis, peak) in board.latest_axis_peaks_mt.iter().enumerate() {
+            if let Some((sensor, magnitude)) = peak {
+                if *magnitude >= 0.80 * limits.advisory_mt[axis] {
+                    return Some(format!(
+                        "raw Board {} sensor {} {} |B|={:.3} mT reaches {:.0}% of {:.3} mT advisory limit ({}); overrange POSSIBLE, NOT PROVEN",
+                        board.board_id, sensor, ["Bx", "By", "Bz"][axis],
+                        magnitude, magnitude / limits.advisory_mt[axis] * 100.0,
+                        limits.advisory_mt[axis], limits.provenance
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn board_presence_text(presence: &BoardPresence) -> String {
     let mut lines = Vec::new();
 
@@ -1056,6 +1085,16 @@ fn ingest_board_frame(
         context.sensor_traces.update(&field);
         context.ping_field = Some(field);
     }
+    // Protect the *pose*, not merely the warning banner. A faulty raw
+    // channel anywhere on any available receiver invalidates the current
+    // synchronized input set. The raw trace and optional original-source
+    // logging continue for forensic review. No unwrapping is attempted.
+    if context.rigid_fit.input_unreliable().is_none() {
+        if let Some(reason) = critical_rigid_input_reason(context) {
+            context.rigid_fit.block_unreliable_input(reason);
+            context.live_fits.set_fit_enabled(false);
+        }
+    }
     // A recording alone is not a new measurement/background reference.
     // Keep experimental calibration commands exclusively on live hardware.
     if !from_replay { context.gk_calibration.accept_frame(&frame); }
@@ -1065,8 +1104,10 @@ fn ingest_board_frame(
     ) {
         tasks.push(Task::perform(run_rigid_fit_job(job), Message::RigidFitCompleted));
     }
-    if let Some(job) = fit_job {
-        tasks.push(Task::perform(run_fit_job(job), Message::FitCompleted));
+    if context.rigid_fit.input_unreliable().is_none() {
+        if let Some(job) = fit_job {
+            tasks.push(Task::perform(run_fit_job(job), Message::FitCompleted));
+        }
     }
     if !from_replay && context.file_writer.is_some() && !context.log_stop_requested {
         context.log_queue.push_back(frame.clone());
@@ -1128,6 +1169,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     // A matching rigid profile may be loaded explicitly AFTER
                     // replay opens; raw field traces work without a profile.
                     context.rigid_fit.invalidate_for_gk_calibration();
+                    context.rigid_fit.reset_input_guard_for_new_acquisition();
                     context.rigid_fit.set_presence(presence);
                     context.gk_calibration = GkCalibration::default();
                     context.cbct_geometry = None;
@@ -1167,7 +1209,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.live_fits = BoardLiveFits::default();
                 context.live_fits.set_fit_enabled(context.tracking_mode == TrackingMode::Independent);
                 context.live_fits.set_presence(context.board_presence.clone());
-                context.rigid_fit.reset_stream();
+                context.rigid_fit.reset_input_guard_for_new_acquisition();
                 context.received_stream_frames = 0;
                 context.replay_notice = "Replay reset to first frame. Press Play; no original file was changed.".into();
             }
@@ -1218,6 +1260,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.live_fits = BoardLiveFits::default();
             context.rigid_fit.clear_background_for_new_port();
             context.rigid_fit.invalidate_for_gk_calibration();
+            context.rigid_fit.reset_input_guard_for_new_acquisition();
             context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
             context.sensor_component_full_scale_mt.clear();
@@ -1962,12 +2005,19 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::SelectTrackingMode(mode) => {
             context.tracking_mode = mode;
-            // Independent field fitting is deliberately opt-in via this
-            // visible selector; it does not require any background capture.
-            context.live_fits.set_fit_enabled(mode == TrackingMode::Independent);
+            // No tracking algorithm may resume silently by switching modes
+            // after the acquisition's raw input was invalidated.
+            context.live_fits.set_fit_enabled(
+                mode == TrackingMode::Independent &&
+                context.rigid_fit.input_unreliable().is_none()
+            );
             Task::none()
         }
         Message::RigidFitCompleted(completion) => {
+            // The fitter also independently rejects stale generations.
+            if context.rigid_fit.input_unreliable().is_some() {
+                return Task::none();
+            }
             context.rigid_fit.apply_completion(completion);
             Task::none()
         }
@@ -1988,6 +2038,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             ingest_board_frame(context, frame, false)
         },
         Message::FitCompleted(completion) => {
+            if context.rigid_fit.input_unreliable().is_some() {
+                return Task::none();
+            }
             context.live_fits.apply_fit_completion(completion);
             Task::none()
         },
@@ -1998,6 +2051,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             context.rigid_fit.start_new_acquisition();
             context.sensor_traces.reset_histories();
+            context.live_fits.set_fit_enabled(
+                context.tracking_mode == TrackingMode::Independent
+            );
             context.gk_calibration.capturing = None;
             context.stream_status = "detecting boards".to_string();
             context.received_stream_frames = 0;
