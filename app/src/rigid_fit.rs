@@ -369,7 +369,9 @@ impl RigidLiveFit {
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
-        self.status = status.into();
+        if self.input_unreliable.is_none() {
+            self.status = status.into();
+        }
     }
 
     pub fn enabled(&self) -> bool { self.enabled }
@@ -466,7 +468,11 @@ impl RigidLiveFit {
         self.generation = self.generation.wrapping_add(1);
         self.frames.iter_mut().for_each(VecDeque::clear);
         self.busy = false;
-        self.status = "Field stream stopped; last rigid fit and plots retained".into();
+        self.status = if let Some(reason) = &self.input_unreliable {
+            format!("INPUT UNRELIABLE — RIGID FIT SUSPENDED: {reason}; historical plots frozen")
+        } else {
+            "Field stream stopped; last rigid fit and plots retained".into()
+        };
     }
 
     /// Capture the existing raw A1 background (one complete frame per board).
@@ -3215,6 +3221,43 @@ mod tests {
             elapsed_ms: 1.0,
         });
         assert!(live.summary().result.is_none());
+    }
+
+    #[test]
+    fn raw_input_fault_latches_and_rejects_even_same_generation_late_completion() {
+        let mut rigid = RigidLiveFit::default();
+        let old_generation = rigid.generation;
+        let reference_result = RigidFitResult {
+            pose: [0.0; 6], rmse_mt: 0.001, sensor_count: 48,
+        };
+        rigid.block_unreliable_input(
+            "raw Board 0 sensor 12 Bz sudden 10.0 mT step".into()
+        );
+        assert!(rigid.generation != old_generation);
+        assert!(rigid.input_unreliable().unwrap().contains("sensor 12"));
+        assert!(rigid.summary().input_unreliable.is_some());
+        assert!(rigid.summary().result.is_none());
+        assert!(!rigid.summary().zero_ready);
+        assert!(rigid.summary().hdmm_current_mm.is_none());
+
+        // Both old completions and a completion with a forged/matched new
+        // generation must be ignored when the fault remains latched.
+        for generation in [old_generation, rigid.generation] {
+            rigid.apply_completion(RigidFitCompletion {
+                generation, time_us: 1_000_000,
+                result: Some(reference_result.clone()), elapsed_ms: 2.0,
+            });
+        }
+        assert_eq!(rigid.completed, 0);
+        assert!(rigid.result.is_none());
+        assert!(!rigid.busy);
+        rigid.stop_stream();
+        assert!(rigid.status.contains("INPUT UNRELIABLE"));
+        rigid.reset_stream(); // Changing profile/receiver must not clear QC.
+        assert!(rigid.input_unreliable().is_some());
+        assert!(rigid.status.contains("INPUT UNRELIABLE"));
+        rigid.reset_input_guard_for_new_acquisition();
+        assert!(rigid.input_unreliable().is_none());
     }
 
     #[test]
