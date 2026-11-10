@@ -2682,8 +2682,8 @@ fn view(context: &Context) -> Element<'_, Message> {
 
         if context.dashboard_tab == DashboardTab::LiveTracking {
             // Put guide instructions ABOVE both chart sections, never in a
-            // narrow side column. The raw and rigid plots each get the full
-            // available dashboard width; never split the screen 50/50.
+            // narrow side column. The key Hall traces and HDMM prediction
+            // share the window in a 3:2 row, with XYZ/rotation secondary.
             rigid_content = rigid_content
                 .push(
                     text(live_hall_trace_limit_caption(context))
