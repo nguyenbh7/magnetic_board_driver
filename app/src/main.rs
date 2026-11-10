@@ -18,7 +18,7 @@ use rigid_xyz_plot::rigid_xyz_plot;
 mod sensor_trace;
 mod sensor_trace_plot;
 use sensor_trace::SensorTraceState;
-use sensor_trace_plot::sensor_trace_plot;
+use sensor_trace_plot::{sensor_trace_plot, TraceRangeGuides};
 mod live_fit;
 mod rigid_fit;
 mod cbct_geometry;
@@ -385,29 +385,62 @@ fn hall_conf_value_to_label(value: u8) -> &'static str {
     }
 }
 
+/// One shared source of axis-specific limits for the live warning AND the
+/// dotted Hall trace guides. Editing an un-applied gain/resolution control
+/// MUST NOT enlarge the limits used during an existing stream.
+#[derive(Debug, Clone, Copy)]
+struct LiveHallRangeModel {
+    digital_mt: [f64; 3],
+    advisory_mt: [f64; 3],
+    provenance: &'static str,
+}
+
+fn live_hall_range_model(context: &Context) -> LiveHallRangeModel {
+    let configured = context.mlx_status.as_ref().filter(|s| s.ok)
+        .and_then(|s| nominal_symmetric_mlx_half_ranges_mt(
+            s.gain, s.resolution, s.hall_conf));
+    // Explicitly conservative fallback, never an assertion that any chip
+    // is running the hardware-reset gain7/res0/four-phase configuration.
+    let digital_mt = configured.unwrap_or([4.9152, 4.9152, 7.929856]);
+    // The specific IMC option code is not verified. Use a provisional 25mT
+    // analog guard against showing the entire digital range as safe.
+    let advisory_mt = digital_mt.map(|digital| digital.min(25.0));
+    LiveHallRangeModel {
+        digital_mt,
+        advisory_mt,
+        provenance: if configured.is_some() {
+            "CACHED MLX setting (NOT verified 48-chip registers)"
+        } else {
+            "UNVERIFIED conservative gain7/res0 reference; NOT actual chip settings"
+        },
+    }
+}
+
+fn live_hall_trace_guides(context: &Context) -> TraceRangeGuides {
+    TraceRangeGuides {
+        advisory_mt: live_hall_range_model(context).advisory_mt,
+    }
+}
+
+fn live_hall_trace_limit_caption(context: &Context) -> String {
+    let range = live_hall_range_model(context);
+    format!(
+        "DOTTED +/- advisory guides: Bx {:.2}, By {:.2}, Bz {:.2} mT; nominal digital +/- {:.2}/{:.2}/{:.2} mT. {}. Equal Bx/By guides overlap. Guides change only after a successful firmware configuration response, not by editing unapplied settings. Neither line is a verified analog saturation limit.",
+        range.advisory_mt[0], range.advisory_mt[1], range.advisory_mt[2],
+        range.digital_mt[0], range.digital_mt[1], range.digital_mt[2],
+        range.provenance,
+    )
+}
+
 /// Safety-oriented readout warning on the CURRENT frame of EVERY sensor,
 /// not just the manually selected trace. No claim about actual saturation:
 /// the GetMlxSensitivity RPC exposes a cached configuration, not 48-chip
 /// acquisition-time register readbacks.
 fn live_hall_range_status(context: &Context) -> String {
-    let configured = context.mlx_status.as_ref().filter(|s| s.ok)
-        .and_then(|s| nominal_symmetric_mlx_half_ranges_mt(
-            s.gain, s.resolution, s.hall_conf));
-    // Gain7 / RES0 / four-phase is the smallest nominal symmetric digital
-    // readout range in the existing sensitivity table. Until the operator
-    // obtains a credible setting, use it as a conservative visual warning,
-    // NEVER as an assumption that the actual sensor registers equal gain7.
-    let limits = configured.unwrap_or([4.9152, 4.9152, 7.929856]);
-    // Melexis Rev012 lists standard IMC onset ~50mT but thin-IMC
-    // (-111) onset ~25mT. The installed variant has not been independently
-    // authenticated: use a conservative *25mT advisory cap*. This is NOT
-    // a replacement for an instrument-specific calibration/field check.
-    let advisory_limits = limits.map(|digital| digital.min(25.0));
-    let provenance = if configured.is_some() {
-        "CACHED MLX setting (not chip register verification)"
-    } else {
-        "UNVERIFIED: conservative gain7/res0 reference only"
-    };
+    let range = live_hall_range_model(context);
+    let limits = range.digital_mt;
+    let advisory_limits = range.advisory_mt;
+    let provenance = range.provenance;
     let mut worst: Option<(f64, u16, u8, usize, f64)> = None;
     let mut invalid = 0u64;
     let mut jump_count = 0u64;
@@ -2615,6 +2648,7 @@ fn view(context: &Context) -> Element<'_, Message> {
         // detection/calibration details. A positioning operator should never
         // need to scroll through the DICOM setup just to see a range warning.
         let live_range_message = live_hall_range_status(context);
+        let live_trace_limits = live_hall_trace_guides(context);
         let live_range_color = if live_range_message.contains("BACK OFF MAGNET") {
             iced::Color::from_rgb8(190, 25, 25)
         } else if live_range_message.contains("CAUTION") {
@@ -2645,6 +2679,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                 text("LIVE RAW HALL TRACES — keep visible while moving magnets")
                     .size(17),
                 text("Selected Bx/By/Bz history; range warning checks latest X/Y/Z on EVERY sensor, including those not plotted."),
+                text(live_hall_trace_limit_caption(context))
+                    .size(12)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             ].spacing(8);
             for sensor_board in context.sensor_traces.board_summaries() {
                 let board_id = sensor_board.board_id;
@@ -2677,6 +2714,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                         board_id,
                         sensor_board.selected_sensor_index,
                         sensor_board.selected_trace,
+                        live_trace_limits,
                     ));
             }
             rigid_content = rigid_content.push(
@@ -2844,12 +2882,16 @@ fn view(context: &Context) -> Element<'_, Message> {
 
     let sensor_trace_widget = {
         let summaries = context.sensor_traces.board_summaries();
+        let trace_limits = live_hall_trace_guides(context);
 
         let mut trace_content = column![
             text("Sensor field traces"),
             text("Select one sensor per board to plot Bx, By, and Bz over time."),
             text(live_hall_range_status(context))
                 .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text(live_hall_trace_limit_caption(context))
+                .size(12)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text("Live back-off warning uses axis-specific nominal limits and latest samples from ALL sensors. This separate legacy panel's optional manual scalar applies only to its historical peak warning; no hardware saturation flag is available."),
             row![
@@ -2909,6 +2951,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                             board_id,
                             selected_sensor,
                             summary.selected_trace,
+                            trace_limits,
                         ),
                     ]
                     .spacing(8)
@@ -3183,6 +3226,51 @@ mod tracking_mode_ui_tests {
         assert!(live_hall_range_status(&context).contains("BACK OFF MAGNET"));
         context.sensor_traces.reset_histories();
         assert!(!live_hall_range_status(&context).contains("RAW STEP WARNING"));
+    }
+
+    #[test]
+    fn dotted_trace_limits_follow_acknowledged_mlx_settings_not_unapplied_input() {
+        let mut context = Context::default();
+        // Without a credible firmware status, both trace guides and the
+        // all-48-sensor warning use the same conservative reference.
+        let old = live_hall_range_model(&context);
+        assert_eq!(old.advisory_mt, [4.9152, 4.9152, 7.929856]);
+        assert_eq!(live_hall_trace_guides(&context).advisory_mt, old.advisory_mt);
+        assert!(live_hall_trace_limit_caption(&context).contains("UNVERIFIED"));
+
+        // Selecting a wider preset does NOT program chips. The plot must
+        // not claim increased headroom before the hardware RPC responds.
+        let _ = update(&mut context, Message::SelectWideMlxRangePreset);
+        assert_eq!(context.mlx_gain, "0");
+        assert_eq!(live_hall_trace_guides(&context).advisory_mt, old.advisory_mt);
+
+        // The firmware replies successfully to an actual configuration
+        // operation (or returns its cached setting). This is still NOT a
+        // per-chip hardware register readback.
+        let _ = update(&mut context, Message::ReceivedMlxSensitivity(
+            MlxSensitivityStatus {ok: true, gain: 0, resolution: 1, hall_conf: 0xC}
+        ));
+        let wide = live_hall_range_model(&context);
+        assert!((wide.digital_mt[0] - 49.217536).abs() < 1e-8);
+        assert!((wide.digital_mt[2] - 79.29856).abs() < 1e-8);
+        assert_eq!(wide.advisory_mt, [25.0, 25.0, 25.0]);
+        assert_eq!(live_hall_trace_guides(&context).advisory_mt, wide.advisory_mt);
+        assert!(live_hall_trace_limit_caption(&context).contains("CACHED"));
+
+        // New text-entry settings cannot silently change active guides.
+        let _ = update(&mut context, Message::UpdateMlxGain("7".into()));
+        assert_eq!(live_hall_range_model(&context).advisory_mt, wide.advisory_mt);
+        let _ = update(&mut context, Message::ReceivedMlxSensitivity(
+            MlxSensitivityStatus {ok: true, gain: 7, resolution: 1, hall_conf: 0xC}
+        ));
+        let changed = live_hall_range_model(&context);
+        assert_eq!(changed.advisory_mt, [9.8304, 9.8304, 15.859712]);
+        // Unsupported RES2 is never displayed as a verified symmetric range.
+        let _ = update(&mut context, Message::ReceivedMlxSensitivity(
+            MlxSensitivityStatus {ok: true, gain: 7, resolution: 2, hall_conf: 0xC}
+        ));
+        assert_eq!(live_hall_range_model(&context).advisory_mt, old.advisory_mt);
+        assert!(live_hall_trace_limit_caption(&context).contains("UNVERIFIED"));
     }
 
     #[test]
