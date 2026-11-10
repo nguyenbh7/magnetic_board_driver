@@ -1091,8 +1091,15 @@ fn ingest_board_frame(
     // logging continue for forensic review. No unwrapping is attempted.
     if context.rigid_fit.input_unreliable().is_none() {
         if let Some(reason) = critical_rigid_input_reason(context) {
-            context.rigid_fit.block_unreliable_input(reason);
+            context.rigid_fit.block_unreliable_input(reason.clone());
             context.live_fits.set_fit_enabled(false);
+            // Any in-progress GK calibration capture is also compromised.
+            // Do not let range-crossed data become a new calibration reference.
+            if context.gk_calibration.capturing.take().is_some() {
+                context.gk_calibration.status = format!(
+                    "CALIBRATION CAPTURE ABORTED: unreliable Hall input ({reason})"
+                );
+            }
         }
     }
     // A recording alone is not a new measurement/background reference.
@@ -3142,15 +3149,24 @@ fn view(context: &Context) -> Element<'_, Message> {
 
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
-            text("Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."),
+            text(if rigid.input_unreliable.is_some() {
+                "INVALID RAW INPUT — independent fitting also suspended; any older independent poses are historical ONLY. Start a fresh acquisition after correction."
+            } else {
+                "Works immediately from raw Hall fields; background subtraction is optional. These are not a joint rigid 6-DOF estimate."
+            }).color(if rigid.input_unreliable.is_some() {
+                iced::Color::from_rgb8(190, 25, 25)
+            } else {
+                iced::Color::from_rgb8(70, 90, 110)
+            }),
         ].spacing(12);
 
         if summaries.is_empty() {
             live_fit_content = live_fit_content.push(text("No detected boards"));
         } else {
             for summary in summaries {
-                let fit_text = match &summary.result {
-                    Some(result) => format!(
+                let fit_text = match (rigid.input_unreliable.as_ref(), &summary.result) {
+                    (Some(_), _) => "INVALID CURRENT INPUT — prior independent pose is not current; fitting suspended.".into(),
+                    (None, Some(result)) => format!(
                         "Position: x={:.2} mm, y={:.2} mm, z={:.2} mm    Residual RMS: {:.4} mT    Sensors: {}    Fit scale: {:.3e}",
                         result.position.0,
                         result.position.1,
@@ -3159,7 +3175,7 @@ fn view(context: &Context) -> Element<'_, Message> {
                         result.n_sensors,
                         result.moment_norm,
                     ),
-                    None => format!(
+                    (None, None) => format!(
                         "Waiting for completed frame; seen {}/{} sensors",
                         summary.seen_sensors,
                         summary.expected_sensors,
