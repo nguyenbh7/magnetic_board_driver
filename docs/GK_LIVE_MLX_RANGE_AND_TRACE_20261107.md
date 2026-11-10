@@ -139,6 +139,28 @@ cargo run -p app --release
 
 ---
 
+## Hall and HDMM monitoring side by side (Nov 9, 2026; latest layout)
+
+**User-facing experiment priority:** The Live Tracking / Rigid 6-DOF panel now places **three live Hall-board Bx/By/Bz sensor charts on the left (60% of available plot width)** and **Hall-predicted HDMM reflector displacement on the right (40%)**, in a common full-window-width row. These two monitors are simultaneously visible while moving the magnets and running the experimental rigid fit. The dynamic dotted-guide explanation, worst-all-sensor range/step warning, and pose/fit status remain ABOVE the combined row.
+
+The HDMM chart is explicitly labeled **"Hall-predicted HDMM marker displacement (NOT measured HDMM)"**. It predicts displacement at an independently confirmed marker position *from the fitted rigid pose*; the app does **not** acquire the optical vendor HDMM stream. No predicted marker history is shown until its coordinate and fit-zero are established. The other **rigid XYZ displacement and rotation** plots are still available in the right column immediately **beneath HDMM**, not removed or mistaken for vendor truth.
+
+Board0/Board1/Board2 sensor traces retain their own drop-down selector, all-chip/latest-peak labels, and mT axis-specific dotted advisory guides. Without connected hardware, the left column still displays three **NOT CONNECTED** empty plot placeholders (with dotted reference guides) rather than silently collapsing. The **Sensor Traces** and **Both** tabs remain usable; "Both" still stacks full-width independent panels to avoid duplicating traces inside its rigid view.
+
+This replaces the November 9 "all charts full-width and vertically stacked" Live Tracking layout below. The 60/40 column split is a deliberate tradeoff to keep the two primary monitoring signals next to each other on a typical desktop monitor. If the window is too narrow, maximize it for legible traces. The production fitter, field conversions, range warning calculation, and hardware configuration behavior are **unchanged**.
+
+**Validation:** A source-structure regression checks dotted-guide placement, 3-board placeholders, side-by-side columns, and HDMM-before-secondary-motion order. The new GUI and Rust tests **still need to be run locally**; no connected-board or optical-HDMM test has been performed for this layout.
+
+```powershell
+cd F:\GitHub\magnetic_board_driver
+git pull --ff-only origin feature/live-rigid-body-fit
+cargo test -p app
+cargo check -p app
+cargo run -p app --release
+```
+
+---
+
 ## User workflow for the next GK measurement
 
 1. Bring up the app and select the correct board-controller COM port.
