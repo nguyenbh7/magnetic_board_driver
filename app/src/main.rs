@@ -2449,7 +2449,8 @@ fn view(context: &Context) -> Element<'_, Message> {
 
     let can_manage_log=context.file_writer.is_none()
         && !context.log_stop_requested && !context.log_finalize_in_progress
-        && !context.log_write_in_progress && !context.log_file_dialog_open;
+        && !context.log_write_in_progress && !context.log_file_dialog_open
+        && context.offline_replay.is_none() && !context.replay_loading;
     let mut select_log_button=button("Select File");
     if can_manage_log {
         select_log_button=select_log_button.on_press(Message::SelectFile);
@@ -2488,8 +2489,16 @@ fn view(context: &Context) -> Element<'_, Message> {
                 resume_log_button,
             ].spacing(8),
             row![
-                button("Start Field Stream").on_press(Message::StartFieldStream),
-                button("Stop Field Stream").on_press(Message::StopFieldStream),
+                if context.offline_replay.is_some() || context.replay_loading {
+                    button("Start Field Stream (disabled during replay)")
+                } else {
+                    button("Start Field Stream").on_press(Message::StartFieldStream)
+                },
+                if context.offline_replay.is_some() || context.replay_loading {
+                    button("Stop Field Stream (use replay controls)")
+                } else {
+                    button("Stop Field Stream").on_press(Message::StopFieldStream)
+                },
             ].spacing(8),
             text(format!("Current / last log: {log_path_label}")),
             row![
@@ -2509,12 +2518,72 @@ fn view(context: &Context) -> Element<'_, Message> {
     .width(Length::Fill)
     .style(iced::widget::container::bordered_box);
 
+    // Offline replay is a separate, read-only acquisition mode. Neither
+    // its source file nor any existing hardware log can be written by it.
+    let can_load_replay = context.offline_replay.is_none() && !context.replay_loading
+        && (context.stream_status.is_empty() || context.stream_status == "idle")
+        && context.file_writer.is_none() && !context.log_stop_requested
+        && !context.log_write_in_progress && !context.log_finalize_in_progress
+        && !context.log_file_dialog_open;
+    let mut replay_load_button = button("Open MLXBF002 recording");
+    if can_load_replay {
+        replay_load_button = replay_load_button.on_press(Message::LoadOfflineReplay);
+    }
+    let mut replay_play_button = button("Play");
+    let mut replay_pause_button = button("Pause");
+    let mut replay_restart_button = button("Restart");
+    let mut replay_unload_button = button("Unload");
+    if let Some(replay) = &context.offline_replay {
+        if !replay.running && !replay.finished() {
+            replay_play_button = replay_play_button.on_press(Message::ReplayPlay);
+        }
+        if replay.running {
+            replay_pause_button = replay_pause_button.on_press(Message::ReplayPause);
+        }
+        replay_restart_button = replay_restart_button.on_press(Message::ReplayRestart);
+        replay_unload_button = replay_unload_button.on_press(Message::ReplayUnload);
+    }
+    let replay_status_text = if let Some(replay) = &context.offline_replay {
+        format!("{} | {}", replay.recording.path().display(), replay.progress())
+    } else if context.replay_loading {
+        "Loading recording; please do not start a hardware stream.".to_string()
+    } else {
+        "No recording loaded".to_string()
+    };
+    let replay_panel = container(column![
+        text("OFFLINE REPLAY — read-only, no sensor boards needed").size(18),
+        text("Load an existing MLXBF002 log to drive raw Hall traces, range warnings and (only with a separately verified matching calibration profile) the experimental six-DOF fitter. This does NOT import measured optical HDMM."),
+        row![
+            replay_load_button,
+            replay_play_button,
+            replay_pause_button,
+            replay_restart_button,
+            replay_unload_button,
+            text("Speed:"),
+            pick_list(
+                ReplaySpeed::ALL.to_vec(),
+                context.offline_replay.as_ref().map(|replay| replay.speed),
+                Message::ReplaySpeedSelected,
+            ),
+        ].spacing(8),
+        text(replay_status_text),
+        text(context.replay_notice.as_str())
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        text("REPLAY SAFETY: live acquisition and logging are disabled while a file is loaded. Historical firmware gain/resolution is UNKNOWN from this binary; dotted limits are provisional. Raw fields may already be wrapped; QC and independent CT/HDMM truth are still required."),
+    ].spacing(8))
+        .padding(12)
+        .width(Length::Fill)
+        .style(iced::widget::container::bordered_box);
+
     let stream_widget = container(
         column![
+            replay_panel,
             logging_panel,
             text(format!(
                 "Stream: {} · host frames received {}",
-                if context.stream_status.is_empty() {
+                if context.offline_replay.is_some() {
+                    "OFFLINE REPLAY (not hardware)"
+                } else if context.stream_status.is_empty() {
                     "idle"
                 } else {
                     context.stream_status.as_str()
@@ -3590,9 +3659,20 @@ mod tracking_mode_ui_tests {
 pub fn main() -> iced::Result {
     iced::application(Context::default, update, view)
         .subscription(|context: &Context| {
+            let mut subscriptions = Vec::new();
             if context.cbct_importing {
-                iced::time::every(std::time::Duration::from_millis(250)).map(|_| Message::CbctProgressTick)
-            } else { iced::Subscription::none() }
+                subscriptions.push(
+                    iced::time::every(std::time::Duration::from_millis(250))
+                        .map(|_| Message::CbctProgressTick)
+                );
+            }
+            if context.offline_replay.as_ref().is_some_and(|replay| replay.running) {
+                subscriptions.push(
+                    iced::time::every(std::time::Duration::from_millis(50))
+                        .map(|_| Message::ReplayTick)
+                );
+            }
+            iced::Subscription::batch(subscriptions)
         })
         .scale_factor(ui_scale_factor)
         .run()
