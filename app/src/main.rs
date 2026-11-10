@@ -3264,7 +3264,9 @@ mod tracking_mode_ui_tests {
             MlxSensitivityStatus {ok: true, gain: 7, resolution: 1, hall_conf: 0xC}
         ));
         let changed = live_hall_range_model(&context);
-        assert_eq!(changed.advisory_mt, [9.8304, 9.8304, 15.859712]);
+        assert!((changed.advisory_mt[0] - 9.8304).abs() < 1e-8);
+        assert!((changed.advisory_mt[1] - 9.8304).abs() < 1e-8);
+        assert!((changed.advisory_mt[2] - 15.859712).abs() < 1e-8);
         // Unsupported RES2 is never displayed as a verified symmetric range.
         let _ = update(&mut context, Message::ReceivedMlxSensitivity(
             MlxSensitivityStatus {ok: true, gain: 7, resolution: 2, hall_conf: 0xC}
