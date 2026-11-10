@@ -1120,6 +1120,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.sensor_traces = SensorTraceState::default();
                     context.board_presence = presence.clone();
                     context.sensor_traces.set_presence(presence.clone());
+                    context.live_fits = BoardLiveFits::default();
+                    context.live_fits.set_fit_enabled(context.tracking_mode == TrackingMode::Independent);
                     context.live_fits.set_presence(presence.clone());
                     // A live-session profile/HDMM target must never silently
                     // carry over to a historical log with unrelated geometry.
@@ -1162,6 +1164,8 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             if let Some(replay) = &mut context.offline_replay {
                 replay.restart();
                 context.sensor_traces.reset_histories();
+                context.live_fits = BoardLiveFits::default();
+                context.live_fits.set_fit_enabled(context.tracking_mode == TrackingMode::Independent);
                 context.live_fits.set_presence(context.board_presence.clone());
                 context.rigid_fit.reset_stream();
                 context.received_stream_frames = 0;
@@ -1174,7 +1178,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 let none = BoardPresence::default();
                 context.rigid_fit.set_presence(none.clone());
                 context.sensor_traces = SensorTraceState::default();
-                context.live_fits.set_presence(none.clone());
+                context.live_fits = BoardLiveFits::default();
                 context.board_presence = none;
                 context.mlx_status = None;
                 context.ping_field = None;
