@@ -244,6 +244,9 @@ pub struct RigidSummary {
     pub zero_ready: bool,
     pub profile_name: Option<String>,
     pub status: String,
+    /// Latched current-acquisition unsafe raw-input condition. Earlier
+    /// trajectories remain in history for retrospective review only.
+    pub input_unreliable: Option<String>,
     pub result: Option<RigidFitResult>,
     pub translation_from_zero: Option<[f64; 3]>,
     pub rotation_from_zero_deg: Option<f64>,
@@ -282,6 +285,9 @@ pub struct RigidLiveFit {
     reacquisition_seed: Option<[f64;6]>,
     /// Manually CT-confirmed HDMM reflective sticker position in LPS mm.
     hdmm_target_world: Option<[f64;3]>,
+    /// If set, further rigid optimization and completion acceptance stop
+    /// until a NEW acquisition/replay restart resets the raw Hall epoch.
+    input_unreliable: Option<String>,
     hdmm_history: VecDeque<DisplacementPoint>,
     displacement: VecDeque<DisplacementPoint>,
     xyz: VecDeque<RigidXyzPoint>,
@@ -368,13 +374,45 @@ impl RigidLiveFit {
 
     pub fn enabled(&self) -> bool { self.enabled }
 
+    pub fn input_unreliable(&self) -> Option<&str> {
+        self.input_unreliable.as_deref()
+    }
+
+    /// Fail closed on an observed >80%-of-advisory raw component or a
+    /// temporally adjacent >8mT jump. This is a *screen*, not proof that
+    /// the chip saturated. Preserve PRE-event history but remove ALL live
+    /// pose and HDMM values, and invalidate any in-flight fitter job.
+    pub fn block_unreliable_input(&mut self, reason: String) {
+        if self.input_unreliable.is_some() { return; }
+        self.input_unreliable = Some(reason.clone());
+        self.generation = self.generation.wrapping_add(1);
+        self.frames.iter_mut().for_each(VecDeque::clear);
+        self.busy = false;
+        self.last_dispatched_us = None;
+        self.result = None;
+        self.zero_pose = None;
+        self.reacquisition_seed = None;
+        self.status = format!(
+            "INPUT UNRELIABLE — RIGID FIT SUSPENDED: {reason}. Earlier plots are frozen PRE-WARNING history ONLY. Start a NEW acquisition after correcting the setup; a quiet trace does not prove a recovered sensor branch."
+        );
+    }
+
+    /// Explicitly start a fresh recorded/live epoch. Switching calibration
+    /// profiles, dashboard tabs or fit mode must NOT silently clear a latch.
+    pub fn reset_input_guard_for_new_acquisition(&mut self) {
+        self.input_unreliable = None;
+        self.reset_stream();
+    }
+
     pub fn set_presence(&mut self, presence: BoardPresence) {
         self.presence = presence;
         self.reset_stream();
     }
 
     pub fn reset_stream(&mut self) {
-        self.status = if !self.enabled {
+        self.status = if let Some(reason) = &self.input_unreliable {
+            format!("INPUT UNRELIABLE — RIGID FIT SUSPENDED: {reason}. Restart acquisition only after reviewing field range and reference.")
+        } else if !self.enabled {
             "Rigid fitting disabled".into()
         } else if self.profile.as_ref().is_some_and(|p| p.name.starts_with("A1 "))
             && self.background_raw.iter().any(Option::is_none)
@@ -405,6 +443,7 @@ impl RigidLiveFit {
     /// establishes the NEW relative zero and history.
     pub fn start_new_acquisition(&mut self) {
         let old=self.result.as_ref().map(|r|r.pose);
+        self.input_unreliable = None;
         self.reset_stream();
         if self.enabled {
             self.reacquisition_seed=old;
@@ -516,6 +555,7 @@ impl RigidLiveFit {
             zero_ready: self.zero_pose.is_some(),
             profile_name: self.profile.as_ref().map(|p| p.name.clone()),
             status: self.status.clone(),
+            input_unreliable: self.input_unreliable.clone(),
             result: self.result.clone(),
             translation_from_zero: rel.map(|r| r.0),
             rotation_from_zero_deg: rel.map(|r| r.1),
@@ -523,7 +563,11 @@ impl RigidLiveFit {
             xyz_history: self.xyz.iter().cloned().collect(),
             rotation_history: self.rotation.iter().cloned().collect(),
             hdmm_history: self.hdmm_history.iter().cloned().collect(),
-            hdmm_current_mm: self.hdmm_history.back().map(|p|p.displacement_mm),
+            hdmm_current_mm: if self.input_unreliable.is_some() {
+                None
+            } else {
+                self.hdmm_history.back().map(|p|p.displacement_mm)
+            },
             hdmm_point_ready: self.hdmm_target_world.is_some(),
             busy: self.busy,
             completed: self.completed,
@@ -535,7 +579,7 @@ impl RigidLiveFit {
     /// Always receive the board's raw frames for A1 background capture.
     /// Only launch the expensive rigid solver when its tracking mode is selected.
     pub fn receive_frame(&mut self, frame: &BoardFrame, fit_active: bool) -> Option<RigidFitJob> {
-        if !self.enabled { return None; }
+        if !self.enabled || self.input_unreliable.is_some() { return None; }
         let profile = self.profile.as_ref()?;
         let b_id = frame.board_id as usize;
         if b_id >= 3 || !profile.boards.iter().any(|b| b.raw_board_id == frame.board_id)
@@ -624,7 +668,9 @@ impl RigidLiveFit {
     }
 
     pub fn apply_completion(&mut self, completion: RigidFitCompletion) {
-        if completion.generation != self.generation { return; }
+        if self.input_unreliable.is_some() || completion.generation != self.generation {
+            return;
+        }
         self.busy = false;
         self.completed = self.completed.saturating_add(1);
         self.last_elapsed_ms = Some(completion.elapsed_ms);
