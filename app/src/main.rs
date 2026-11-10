@@ -514,29 +514,24 @@ fn live_hall_range_status(context: &Context) -> String {
 /// are independent of magnitude and remain latched for the recording.
 fn critical_rigid_input_reason(context: &Context) -> Option<String> {
     let limits = live_hall_range_model(context);
-    for board in context.sensor_traces.board_summaries() {
-        if let Some((sensor, axis, delta)) = board.last_sudden_jump {
-            return Some(format!(
-                "raw Board {} sensor {} {} sudden {:.2} mT step (>8 mT, 0.25 s); digital wrapping POSSIBLE, NOT PROVEN",
-                board.board_id, sensor, ["Bx", "By", "Bz"][axis], delta
-            ));
-        }
-        for (axis, peak) in board.latest_axis_peaks_mt.iter().enumerate() {
-            if let Some((sensor, magnitude)) = peak {
-                if *magnitude >= 0.80 * limits.advisory_mt[axis] {
-                    return Some(format!(
-                        "raw Board {} sensor {} {} |B|={:.3} mT reaches {:.0}% of {:.3} mT advisory limit ({}); overrange POSSIBLE, NOT PROVEN",
-                        board.board_id, sensor, ["Bx", "By", "Bz"][axis],
-                        magnitude, magnitude / limits.advisory_mt[axis] * 100.0,
-                        limits.advisory_mt[axis], limits.provenance
-                    ));
-                }
-            }
-        }
-    }
-    None
+    let issue = context.sensor_traces.critical_input(limits.advisory_mt, 0.80)?;
+    Some(match issue {
+        sensor_trace::CriticalRawInput::SuddenStep {
+            board_id, sensor, axis, delta_mt,
+        } => format!(
+            "raw Board {board_id} sensor {sensor} {} sudden {delta_mt:.2} mT step (>8 mT, 0.25 s); digital wrapping POSSIBLE, NOT PROVEN",
+            ["Bx", "By", "Bz"][axis],
+        ),
+        sensor_trace::CriticalRawInput::AdvisoryRange {
+            board_id, sensor, axis, magnitude_mt, advisory_limit_mt,
+        } => format!(
+            "raw Board {board_id} sensor {sensor} {} |B|={magnitude_mt:.3} mT reaches {:.0}% of {advisory_limit_mt:.3} mT advisory limit ({}); overrange POSSIBLE, NOT PROVEN",
+            ["Bx", "By", "Bz"][axis],
+            magnitude_mt / advisory_limit_mt * 100.0,
+            limits.provenance,
+        ),
+    })
 }
-
 fn board_presence_text(presence: &BoardPresence) -> String {
     let mut lines = Vec::new();
 
