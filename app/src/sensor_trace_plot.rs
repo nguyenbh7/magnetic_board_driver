@@ -5,22 +5,33 @@ use crate::sensor_trace::SensorTracePoint;
 
 const PLOT_HEIGHT: f32 = 220.0;
 
+/// Axis-specific ADVISORY limits, in mT. These are NOT independently verified
+/// analog saturation thresholds or per-chip register readbacks. The caller
+/// derives them from the same nominal MLX range model as the range banner.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceRangeGuides {
+    pub advisory_mt: [f64; 3],
+}
+
 #[derive(Debug, Clone)]
 pub struct SensorTracePlot {
     board_id: u16,
     sensor_index: Option<u8>,
     points: Vec<SensorTracePoint>,
+    limits: TraceRangeGuides,
 }
 
 pub fn sensor_trace_plot<Message: 'static>(
     board_id: u16,
     sensor_index: Option<u8>,
     points: Vec<SensorTracePoint>,
+    limits: TraceRangeGuides,
 ) -> Element<'static, Message> {
     canvas(SensorTracePlot {
         board_id,
         sensor_index,
         points,
+        limits,
     })
     .width(Length::Fill)
     .height(Length::Fixed(PLOT_HEIGHT))
@@ -106,7 +117,10 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             x_max = x_min + 1.0;
         }
 
-        let (mut y_min, mut y_max) = field_bounds_mt(&self.points);
+        // Keep the threshold guides inside the visible axis rather than
+        // silently off-screen when a low-amplitude trace is displayed.
+        let (mut y_min, mut y_max) =
+            field_bounds_with_guides_mt(&self.points, self.limits.advisory_mt);
 
         if y_min > 0.0 {
             y_min = 0.0;
@@ -201,6 +215,26 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
                 .with_width(1.0),
         );
 
+        // A dotted + and - guide for each component's advisory boundary.
+        // Bx and By usually have IDENTICAL limits: draw the common guide
+        // once to avoid hiding one color on top of the other.
+        let axis_limits = self.limits.advisory_mt;
+        for (axis, color) in [(0, bx_color), (1, by_color), (2, bz_color)] {
+            let limit = axis_limits[axis];
+            if !limit.is_finite() || limit <= 0.0 { continue; }
+            if axis == 1 && (limit - axis_limits[0]).abs() < 1.0e-6 {
+                continue;
+            }
+            for signed_limit in [-limit, limit] {
+                let y = map_y(signed_limit);
+                if y >= plot_top && y <= plot_bottom {
+                    draw_dotted_guide(
+                        &mut frame, plot_left, plot_right, y, color,
+                    );
+                }
+            }
+        }
+
         draw_series(&mut frame, &self.points, |p| p.bx_mt, map_x, map_y, bx_color);
         draw_series(&mut frame, &self.points, |p| p.by_mt, map_x, map_y, by_color);
         draw_series(&mut frame, &self.points, |p| p.bz_mt, map_x, map_y, bz_color);
@@ -226,6 +260,39 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
 
         vec![frame.into_geometry()]
     }
+}
+
+/// Expand measured trace bounds to include the two signed guide locations
+/// for every valid axis-specific advisory threshold.
+fn field_bounds_with_guides_mt(
+    points: &[SensorTracePoint], guides: [f64; 3],
+) -> (f64, f64) {
+    let (mut lo, mut hi) = field_bounds_mt(points);
+    for limit in guides {
+        if limit.is_finite() && limit > 0.0 {
+            lo = lo.min(-limit);
+            hi = hi.max(limit);
+        }
+    }
+    (lo, hi)
+}
+
+fn draw_dotted_guide(
+    frame: &mut canvas::Frame, left: f32, right: f32, y: f32, color: Color,
+) {
+    // One canvas path with separated short segments avoids a large number
+    // of individual draw calls when all three board plots update live.
+    let mut segments = canvas::path::Builder::new();
+    let mut x = left;
+    while x < right {
+        segments.move_to(Point::new(x, y));
+        segments.line_to(Point::new((x + 2.0).min(right), y));
+        x += 6.0;
+    }
+    frame.stroke(
+        &segments.build(),
+        canvas::Stroke::default().with_color(color).with_width(1.2),
+    );
 }
 
 fn field_bounds_mt(points: &[SensorTracePoint]) -> (f64, f64) {
@@ -315,4 +382,37 @@ fn draw_label(
         size: Pixels(size),
         ..canvas::Text::default()
     });
+}
+#[cfg(test)]
+mod trace_limit_plot_tests {
+    use super::*;
+
+    #[test]
+    fn dotted_guides_use_independent_signed_xy_and_z_levels() {
+        let points = [
+            SensorTracePoint {time_s: 0.0, bx_mt: 0.4, by_mt: -0.2, bz_mt: 0.6},
+            SensorTracePoint {time_s: 1.0, bx_mt: 0.5, by_mt: -0.1, bz_mt: 0.7},
+        ];
+        let (lo, hi) = field_bounds_with_guides_mt(
+            &points, [4.9152, 4.9152, 7.929856],
+        );
+        assert_eq!(lo, -7.929856);
+        assert_eq!(hi, 7.929856);
+        let (wide_lo, wide_hi) = field_bounds_with_guides_mt(
+            &points, [25.0, 25.0, 25.0],
+        );
+        assert_eq!((wide_lo, wide_hi), (-25.0, 25.0));
+    }
+
+    #[test]
+    fn invalid_limits_cannot_distort_raw_trace_bounds() {
+        let points = [
+            SensorTracePoint {time_s: 0.0, bx_mt: -0.25, by_mt: 0.0, bz_mt: 0.1},
+            SensorTracePoint {time_s: 1.0, bx_mt: 0.4, by_mt: 0.0, bz_mt: 0.3},
+        ];
+        assert_eq!(
+            field_bounds_with_guides_mt(&points, [f64::NAN, 0.0, -10.0]),
+            (-0.25, 0.4),
+        );
+    }
 }
