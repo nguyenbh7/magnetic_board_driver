@@ -2858,8 +2858,10 @@ fn view(context: &Context) -> Element<'_, Message> {
         }
 
         let selected_content = match context.tracking_mode {
-            TrackingMode::Rigid6Dof => container(rigid_content).padding(10),
-            TrackingMode::Independent => container(live_fit_content).padding(10),
+            TrackingMode::Rigid6Dof => container(rigid_content)
+                .padding(10).width(Length::Fill),
+            TrackingMode::Independent => container(live_fit_content)
+                .padding(10).width(Length::Fill),
         };
 
         let mut mode_header = column![
@@ -2885,7 +2887,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             ].spacing(8));
         }
 
-        container(mode_header.push(selected_content)).padding(10)
+        container(mode_header.push(selected_content))
+            .padding(10).width(Length::Fill)
     };
 
     let sensor_trace_widget = {
@@ -2970,7 +2973,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             }
         }
 
-        container(trace_content)
+        container(trace_content).width(Length::Fill)
     };
 
     let mlx_status_text = mlx_status_text(context);
@@ -3293,8 +3296,11 @@ mod tracking_mode_ui_tests {
         // Source-level structural guard; cargo check verifies the actual
         // Iced widget types, and the final appearance needs a GUI review.
         let source = include_str!("main.rs");
-        let live = source.split("if context.dashboard_tab == DashboardTab::LiveTracking {")
-            .last().expect("live rigid chart branch");
+        let start = source.find("// Put guide instructions ABOVE both chart sections")
+            .expect("rigid monitoring section");
+        let end = source[start..].find("// CT import/mapping")
+            .expect("end of rigid monitoring section") + start;
+        let live = &source[start..end];
         let guide = live.find(".push(\n                    text(live_hall_trace_limit_caption(context))")
             .expect("dotted guide explanation");
         let rigid = live.find(".push(container(rigid_plots).width(Length::Fill))")
@@ -3302,8 +3308,11 @@ mod tracking_mode_ui_tests {
         let traces = live.find("container(live_traces).width(Length::Fill)")
             .expect("full-width raw trace charts");
         assert!(guide < rigid && rigid < traces);
-        let both = source.split("DashboardTab::Both => {")
-            .last().expect("both dashboard layout");
+        let start = source.find("let active_dashboard_widget = match context.dashboard_tab")
+            .expect("dashboard tab selection");
+        let end = source[start..].find("let mut dashboard_sections")
+            .expect("end of dashboard tab selection") + start;
+        let both = &source[start..end];
         assert!(both.contains("column![\n                    live_tracking_widget.width(Length::Fill),\n                    sensor_trace_widget.width(Length::Fill),"));
         assert!(!both.contains("FillPortion(1)"));
     }
