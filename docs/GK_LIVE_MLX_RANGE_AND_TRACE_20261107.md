@@ -1,7 +1,6 @@
 # Gamma Knife live rigid 6-DOF — sensor range and trace safety (2026-11-07)
 
-**Implemented on `feature/live-rigid-body-fit`; not yet built/tested on the
-user's Windows checkout or exercised against connected MLX90393 boards.**
+**Implemented on `feature/live-rigid-body-fit`; the user reported an app test pass before the November 9 dotted-guide changes. The new code requires fresh local build/tests and has NOT been exercised against connected MLX90393 boards.**
 These controls are experimental operator aids; they do not certify
 sensor saturation, historical range, or clinical tracking accuracy.
 
@@ -89,6 +88,27 @@ histories, not per-axis digital ranges. This was too easy to miss.
    coordinate mapping and 8/10mT offline channel QC are
    otherwise unchanged. No automatic unwrapping or new
    clinical tracking-accuracy claim.
+
+## Dynamic dotted trace limits (Nov 9, 2026; code committed, hardware unverified)
+
+In both **Live Tracking → Rigid 6-DOF** and **Sensor Traces / Both**, the Bx/By/Bz raw field plot now draws **dotted positive and negative axis-specific ADVISORY limits**, using the EXACT same shared `live_hall_range_model` source as the red/yellow live-range banner. No magnet model or data values are adjusted. The canvas automatically includes the plotted guide levels in its y-axis, so a large change to a wider range can compress the visible raw magnetic traces; no line is secretly outside the view. The caption distinguishes selected Bx/By/Bz colors, displayed advisory limits, the larger nominal digital limits, and provenance. Equal X/Y thresholds coincide and are drawn once.
+
+**Dynamic settings:** the plots use `MlxSensitivityStatus` returned by the *successful* firmware get/set RPC, not editable `mlx_gain`, `mlx_resolution` or `mlx_hall_conf` text fields. Simply choosing the wider-range preset or editing controls must **not** cause the active limits to grow before the operator applies them and receives an `ok=true` response. The response is only the firmware's **cached setting**, **not a live 48-chip register snapshot**. After a new valid get/set response the guides update immediately in both plot views, together with the range warning. A new port clears the previous status; unsupported RES2/3 or unknown settings **fall back to explicitly UNVERIFIED conservative gain7/res0** (they do not borrow old or claim symmetric large ranges). Per-chip or separate X/Y/Z resolutions are NOT yet read back, so true per-chip limit verification still needs hardware.
+
+**Actual guide values and caution:** gain7/res0/HALLCONF0xC gives dotted **X/Y ±4.9152mT, Z ±7.929856mT**. Gain0/res1/HALLCONF0xC gives digital **X/Y ±49.217536mT, Z ±79.29856mT**, but the **dotted advisory guides are ±25mT on each component** because the as-installed IMC analog option is unknown. These guides are *not a hardware saturation guarantee*: an aliased/wrapped field might fall below the displayed guide. The 65%-caution, 80%-back-off and session-latched >8mT jump warnings remain separate, and evaluate **all available chips**, not only each plotted sensor. Old data, rigid fits, and MLX programming logic are unchanged.
+
+**Offline regression (run on Windows after pulling; NOT YET EXECUTED on new commit):**
+
+```powershell
+cd F:\GitHub\magnetic_board_driver
+git pull --ff-only origin feature/live-rigid-body-fit
+cargo test -p app
+cargo check -p app
+```
+
+New tests check plotted positive/negative limit bounds, invalid limits, fallback configuration, dynamic gain/resolution update after a firmware response, and prevention of false widening from unapplied settings. The user previously reported an app test pass, but these new changes have not yet been tested on that machine. GUI and live-board behavior remain to be inspected.
+
+---
 
 ## User workflow for the next GK measurement
 
