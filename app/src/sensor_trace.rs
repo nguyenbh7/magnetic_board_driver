@@ -5,6 +5,18 @@ use data_transfer::rpc::{BoardPresence, SensorField};
 const MAX_TRACE_POINTS: usize = 600;
 const UT_PER_MT: f64 = 1000.0;
 
+/// First critical condition observed in current raw sensor histories.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CriticalRawInput {
+    SuddenStep {
+        board_id: u16, sensor: u8, axis: usize, delta_mt: f64,
+    },
+    AdvisoryRange {
+        board_id: u16, sensor: u8, axis: usize,
+        magnitude_mt: f64, advisory_limit_mt: f64,
+    },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SensorTraceState {
     boards: BTreeMap<u16, BoardSensorTraceState>,
@@ -133,6 +145,43 @@ impl SensorTraceState {
             board.sudden_jump_count = board.sudden_jump_count.saturating_add(1);
             board.last_sudden_jump = Some((sensor_index, axis, magnitude));
         }
+    }
+
+    /// O(number of observed chips) critical screen against their LATEST
+    /// raw samples. Avoid cloning 600-point histories/plot summaries for
+    /// every live board frame: this runs in the hot acquisition path.
+    pub fn critical_input(
+        &self, advisory_mt: [f64; 3], threshold_fraction: f64,
+    ) -> Option<CriticalRawInput> {
+        if !(threshold_fraction.is_finite() && threshold_fraction > 0.0) {
+            return None;
+        }
+        for (&board_id, board) in &self.boards {
+            if let Some((sensor, axis, delta_mt)) = board.last_sudden_jump {
+                return Some(CriticalRawInput::SuddenStep {
+                    board_id, sensor, axis, delta_mt,
+                });
+            }
+            for (&sensor, history) in &board.traces {
+                if let Some(latest) = history.points.back() {
+                    for (axis, magnitude_mt) in [
+                        latest.bx_mt.abs(), latest.by_mt.abs(), latest.bz_mt.abs()
+                    ].into_iter().enumerate() {
+                        let limit = advisory_mt[axis];
+                        if limit.is_finite() && limit > 0.0
+                            && magnitude_mt.is_finite()
+                            && magnitude_mt >= threshold_fraction * limit
+                        {
+                            return Some(CriticalRawInput::AdvisoryRange {
+                                board_id, sensor, axis,
+                                magnitude_mt, advisory_limit_mt: limit,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn select_sensor(&mut self, board_id: u16, sensor_index: u8) {
@@ -280,6 +329,48 @@ fn sensor_field_to_trace_point(field: &SensorField) -> Option<SensorTracePoint> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn critical_input_uses_all_sensors_not_just_selected_or_past_peak() {
+        let mut traces = SensorTraceState::default();
+        traces.set_presence(BoardPresence {
+            board_mask: 1, sensor_masks: [0xffff, 0, 0],
+        });
+        let board = traces.boards.get_mut(&0).unwrap();
+        board.selected_sensor_index = Some(0);
+        board.traces.entry(0).or_default().points.push_back(
+            SensorTracePoint {time_s: 0.0, bx_mt: 0.1, by_mt: 0.0, bz_mt: 0.0}
+        );
+        let other = board.traces.entry(12).or_default();
+        other.points.push_back(
+            SensorTracePoint {time_s: 0.0, bx_mt: 0.0, by_mt: 0.0, bz_mt: 7.1}
+        );
+        assert_eq!(
+            traces.critical_input([4.9152, 4.9152, 7.929856], 0.8),
+            Some(CriticalRawInput::AdvisoryRange {
+                board_id: 0, sensor: 12, axis: 2,
+                magnitude_mt: 7.1, advisory_limit_mt: 7.929856,
+            })
+        );
+        // Only the latest raw sample controls range gating. The earlier
+        // 7.1mT observation is still in the graph, but no longer current.
+        let board = traces.boards.get_mut(&0).unwrap();
+        board.traces.get_mut(&12).unwrap().points.push_back(
+            SensorTracePoint {time_s: 0.1, bx_mt: 0.0, by_mt: 0.0, bz_mt: 0.1}
+        );
+        assert_eq!(
+            traces.critical_input([4.9152, 4.9152, 7.929856], 0.8),
+            None
+        );
+        let board = traces.boards.get_mut(&0).unwrap();
+        board.last_sudden_jump = Some((12, 1, 9.3));
+        assert_eq!(
+            traces.critical_input([25.0;3], 0.8),
+            Some(CriticalRawInput::SuddenStep {
+                board_id: 0, sensor: 12, axis: 1, delta_mt: 9.3
+            })
+        );
+    }
+
     #[test]
     fn warning_requires_verified_full_scale_and_uses_ninety_percent() {
         assert!(!above_warning_margin(Some(25.0),None));
