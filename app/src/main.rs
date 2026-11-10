@@ -17,6 +17,8 @@ mod rigid_xyz_plot;
 use rigid_xyz_plot::rigid_xyz_plot;
 mod sensor_trace;
 mod sensor_trace_plot;
+mod offline_replay;
+use offline_replay::{OfflineRecording, OfflineReplay, ReplaySpeed};
 use sensor_trace::SensorTraceState;
 use sensor_trace_plot::{sensor_trace_plot, TraceRangeGuides};
 mod live_fit;
@@ -86,6 +88,15 @@ enum Message {
     GetField,
     RecievedField(data_transfer::rpc::SensorField),
     ReceivedStreamFrame(data_transfer::rpc::BoardFrame),
+    LoadOfflineReplay,
+    ReplayFilePicked(Option<PathBuf>),
+    ReplayLoaded(Result<Arc<OfflineRecording>, String>),
+    ReplayPlay,
+    ReplayPause,
+    ReplayRestart,
+    ReplayUnload,
+    ReplaySpeedSelected(ReplaySpeed),
+    ReplayTick,
     FitCompleted(FitCompletion),
     RigidFitCompleted(RigidFitCompletion),
     SelectMagnetLocations(MagnetLocationPreset),
@@ -316,6 +327,9 @@ struct Context {
     ping_field: Option<SensorField>,
     sensor_grids: BTreeMap<u8, SensorGrid>,
     sensor_traces: SensorTraceState,
+    offline_replay: Option<OfflineReplay>,
+    replay_loading: bool,
+    replay_notice: String,
     /// Requires an operator-verified range for the current MLX gain/res config.
     sensor_component_full_scale_mt: String,
     dashboard_tab: DashboardTab,
@@ -835,6 +849,22 @@ fn select_cbct_detections_json(
     async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
 }
 
+fn pick_offline_replay_file(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Open READ-ONLY MLXBF002 board-frame recording")
+        .add_filter("MLXBF002 recording", &["bin"])
+        .set_parent(&window);
+    async move { dialog.pick_file().await.map(|handle| handle.path().to_path_buf()) }
+}
+
+async fn load_offline_replay_file(
+    path: PathBuf,
+) -> Result<Arc<OfflineRecording>, String> {
+    async_std::task::spawn_blocking(move || OfflineRecording::load(&path)).await
+}
+
 async fn run_cbct_import_off_thread(
     path: PathBuf,
     variant: cbct_geometry::CbctDetectorVariant,
@@ -1004,6 +1034,45 @@ async fn run_fit_job(job: FitJob) -> FitCompletion {
 
 async fn run_rigid_fit_job(job: RigidFitJob) -> RigidFitCompletion {
     async_std::task::spawn_blocking(move || job.run()).await
+}
+
+/// One shared path for frames from hardware and read-only offline replay.
+/// Replay never drives the logging writer or pretends to be a live stream.
+fn ingest_board_frame(
+    context: &mut Context, frame: BoardFrame, from_replay: bool,
+) -> Task<Message> {
+    context.received_stream_frames =
+        context.received_stream_frames.saturating_add(1);
+    if !from_replay {
+        context.stream_status = "receiving".to_string();
+    }
+    let mut fit_job = None;
+    for sensor_index in 0..frame.samples.len() {
+        let Some(field) = compact_sample_to_sensor_field(&frame, sensor_index)
+        else { continue };
+        if let Some(job) = context.live_fits.update(field.clone()) {
+            fit_job = Some(job);
+        }
+        context.sensor_traces.update(&field);
+        context.ping_field = Some(field);
+    }
+    // A recording alone is not a new measurement/background reference.
+    // Keep experimental calibration commands exclusively on live hardware.
+    if !from_replay { context.gk_calibration.accept_frame(&frame); }
+    let mut tasks = Vec::new();
+    if let Some(job) = context.rigid_fit.receive_frame(
+        &frame, context.tracking_mode == TrackingMode::Rigid6Dof,
+    ) {
+        tasks.push(Task::perform(run_rigid_fit_job(job), Message::RigidFitCompleted));
+    }
+    if let Some(job) = fit_job {
+        tasks.push(Task::perform(run_fit_job(job), Message::FitCompleted));
+    }
+    if !from_replay && context.file_writer.is_some() && !context.log_stop_requested {
+        context.log_queue.push_back(frame.clone());
+        if let Some(task) = next_log_write_task(context) { tasks.push(task); }
+    }
+    Task::batch(tasks)
 }
 
 fn update(context: &mut Context, message: Message) -> Task<Message> {
@@ -1757,56 +1826,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::ReceivedStreamFrame(frame) => {
-            context.received_stream_frames =
-                context.received_stream_frames.saturating_add(1);
-            context.stream_status = "receiving".to_string();
-
-            let mut fit_job = None;
-
-            for sensor_index in 0..frame.samples.len() {
-                let Some(sensor_field) =
-                    compact_sample_to_sensor_field(&frame, sensor_index)
-                else {
-                    continue;
-                };
-
-                if let Some(job) = context.live_fits.update(sensor_field.clone()) {
-                    fit_job = Some(job);
-                }
-
-                context.sensor_traces.update(&sensor_field);
-                context.ping_field = Some(sensor_field);
+            // Firmware subscriptions must never contaminate an offline run.
+            if context.offline_replay.is_some() || context.replay_loading {
+                return Task::none();
             }
-
-            context.gk_calibration.accept_frame(&frame);
-            let mut tasks = Vec::new();
-
-            if let Some(job) = context.rigid_fit.receive_frame(
-                &frame,
-                context.tracking_mode == TrackingMode::Rigid6Dof,
-            ) {
-                tasks.push(Task::perform(
-                    run_rigid_fit_job(job),
-                    Message::RigidFitCompleted,
-                ));
-            }
-
-            if let Some(job) = fit_job {
-                tasks.push(Task::perform(
-                    run_fit_job(job),
-                    Message::FitCompleted,
-                ));
-            }
-
-            if context.file_writer.is_some() && !context.log_stop_requested {
-                context.log_queue.push_back(frame.clone());
-
-                if let Some(task) = next_log_write_task(context) {
-                    tasks.push(task);
-                }
-            }
-
-            Task::batch(tasks)
+            ingest_board_frame(context, frame, false)
         },
         Message::FitCompleted(completion) => {
             context.live_fits.apply_fit_completion(completion);
