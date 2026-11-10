@@ -3646,6 +3646,90 @@ mod tracking_mode_ui_tests {
     }
 
     #[test]
+    fn offline_replay_is_read_only_updates_traces_and_blocks_live_acquisition() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let path = std::env::temp_dir().join(
+            format!("mlx_offline_readonly_{}_{}.bin", std::process::id(), suffix)
+        );
+        let mut bytes = b"MLXBF002".to_vec();
+        let mut original_frames = Vec::new();
+        for (board_id, microsecond) in [(0u16, 1_000_000u64),
+            (1, 1_010_000), (2, 1_020_000), (0, 1_050_000)]
+        {
+            let mut frame = BoardFrame::default();
+            frame.board_id = board_id;
+            frame.base_time_us = microsecond;
+            frame.sensor_mask = 0xffff;
+            for sample in frame.samples.iter_mut() {
+                sample.bx_ut = 4_800.0;
+                sample.by_ut = 500.0;
+                sample.bz_ut = 7_300.0;
+            }
+            let packed = postcard::to_stdvec(&frame).unwrap();
+            bytes.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&packed);
+            original_frames.push(frame);
+        }
+        fs::write(&path, &bytes).unwrap();
+        let rec = OfflineRecording::load(&path).expect("decode actual logger framing");
+        let mut context = Context::default();
+        let _ = update(&mut context, Message::ReplayLoaded(Ok(rec)));
+        assert!(context.offline_replay.is_some());
+        assert_eq!(context.board_presence.board_mask, 0b111);
+        assert!(!context.rigid_fit.enabled());
+        assert!(live_hall_range_status(&context).contains("UNVERIFIED"));
+
+        // While a recorded file is loaded, firmware and logging cannot run.
+        let _ = update(&mut context, Message::StartFieldStream);
+        assert_eq!(context.stream_status, "idle");
+        let _ = update(&mut context, Message::StartLogging);
+        assert!(context.file_writer.is_none());
+        let _ = update(&mut context, Message::SetMlxSensitivity);
+        assert!(context.mlx_status.is_none());
+
+        let _ = update(&mut context, Message::ReplayPlay);
+        let _ = update(&mut context, Message::ReplayTick);
+        assert_eq!(context.received_stream_frames, 1);
+        let boards = context.sensor_traces.board_summaries();
+        assert_eq!(boards.len(), 3);
+        assert_eq!(boards[0].selected_trace.len(), 1);
+        assert!((boards[0].selected_trace[0].bx_mt - 4.8).abs() < 1e-6);
+        assert!(live_hall_range_status(&context).contains("BACK OFF MAGNET"));
+
+        // A stray firmware message must NOT be blended with recorded fields.
+        let before = context.received_stream_frames;
+        let _ = update(&mut context,
+            Message::ReceivedStreamFrame(original_frames[0].clone()));
+        assert_eq!(context.received_stream_frames, before);
+        let _ = update(&mut context, Message::ReplayPause);
+        let _ = update(&mut context, Message::ReplayRestart);
+        assert_eq!(context.received_stream_frames, 0);
+        assert!(context.sensor_traces.board_summaries()[0].selected_trace.is_empty());
+        let _ = update(&mut context, Message::ReplayUnload);
+        assert!(context.offline_replay.is_none());
+        assert_eq!(context.board_presence.board_mask, 0);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn replay_interface_exposes_transport_and_explicit_source_label() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("Open MLXBF002 recording"));
+        assert!(source.contains("Message::ReplayPlay"));
+        assert!(source.contains("Message::ReplayPause"));
+        assert!(source.contains("Message::ReplayRestart"));
+        assert!(source.contains("Message::ReplayUnload"));
+        assert!(source.contains("OFFLINE REPLAY (not hardware)"));
+        assert!(source.contains("Historical firmware gain/resolution is UNKNOWN"));
+        assert!(source.contains("if !from_replay { context.gk_calibration.accept_frame(&frame); }"));
+        assert!(source.contains("if !from_replay && context.file_writer.is_some()"));
+    }
+
+    #[test]
     fn wide_range_preset_requires_explicit_apply_and_does_not_change_tracking_mode() {
         let mut context = Context::default();
         let initial_mode = context.tracking_mode;
