@@ -90,26 +90,6 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
             label_color,
         );
 
-        if self.points.len() < 2 {
-            let sensor_text = self
-                .sensor_index
-                .map(|sensor| format!("sensor {}", sensor))
-                .unwrap_or_else(|| "no sensor selected".to_string());
-
-            draw_label(
-                &mut frame,
-                format!(
-                    "Board {} {}: waiting for trace history",
-                    self.board_id, sensor_text
-                ),
-                Point::new(plot_left + 12.0, plot_top + 24.0),
-                12.0,
-                label_color,
-            );
-
-            return vec![frame.into_geometry()];
-        }
-
         let x_min = self.points.first().map(|p| p.time_s).unwrap_or(0.0);
         let mut x_max = self.points.last().map(|p| p.time_s).unwrap_or(1.0);
 
@@ -233,6 +213,26 @@ impl<Message> canvas::Program<Message> for SensorTracePlot {
                     );
                 }
             }
+        }
+
+        // With no connected boards or fewer than two samples, keep the
+        // chart frame and dotted +/- advisory guides visible. Do not plot or
+        // fabricate sensor measurements; annotate the empty chart instead.
+        if self.points.len() < 2 {
+            let sensor_text = self.sensor_index
+                .map(|sensor| format!("sensor {sensor}"))
+                .unwrap_or_else(|| "no sensor selected".to_string());
+            draw_label(
+                &mut frame,
+                format!(
+                    "Board {} {}: waiting for live sensor data",
+                    self.board_id, sensor_text,
+                ),
+                Point::new(plot_left + 12.0, plot_top + 27.0),
+                12.0,
+                label_color,
+            );
+            return vec![frame.into_geometry()];
         }
 
         draw_series(&mut frame, &self.points, |p| p.bx_mt, map_x, map_y, bx_color);
@@ -402,6 +402,16 @@ mod trace_limit_plot_tests {
             &points, [25.0, 25.0, 25.0],
         );
         assert_eq!((wide_lo, wide_hi), (-25.0, 25.0));
+    }
+
+    #[test]
+    fn disconnected_trace_still_has_symmetric_advisory_guide_bounds() {
+        // The empty chart is intentionally rendered, not backed by fake
+        // field samples. The dotted guide loop now runs before its message.
+        let points: Vec<SensorTracePoint> = Vec::new();
+        let (low, high) =
+            field_bounds_with_guides_mt(&points, [4.9152, 4.9152, 7.929856]);
+        assert_eq!((low, high), (-7.929856, 7.929856));
     }
 
     #[test]
