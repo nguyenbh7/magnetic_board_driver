@@ -1079,7 +1079,126 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
 
     //println!("{:#?}", message);
     match message {
+        Message::LoadOfflineReplay => {
+            if context.offline_replay.is_some() || context.replay_loading
+                || (context.stream_status != "idle" && !context.stream_status.is_empty())
+                || context.file_writer.is_some() || context.log_stop_requested
+                || context.log_write_in_progress || context.log_finalize_in_progress
+                || context.log_file_dialog_open
+            {
+                context.replay_notice = "Stop the hardware stream, finish/close logging, and unload any existing replay before opening a recording.".into();
+                return Task::none();
+            }
+            context.replay_loading = true;
+            context.replay_notice = "Selecting an existing MLXBF002 recording for READ-ONLY replay".into();
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, pick_offline_replay_file))
+                .then(Task::future)
+                .map(Message::ReplayFilePicked)
+        }
+        Message::ReplayFilePicked(picked) => {
+            if let Some(path) = picked {
+                context.replay_notice = format!("Reading and validating: {}", path.display());
+                Task::perform(load_offline_replay_file(path), Message::ReplayLoaded)
+            } else {
+                context.replay_loading = false;
+                context.replay_notice = "Replay selection cancelled; no data modified.".into();
+                Task::none()
+            }
+        }
+        Message::ReplayLoaded(result) => {
+            context.replay_loading = false;
+            match result {
+                Ok(recording) => {
+                    let presence = recording.presence();
+                    context.replay_notice = format!(
+                        "OFFLINE REPLAY (READ ONLY): {} frames across {:.2}s; {} out-of-order board timestamps. The raw log does NOT contain per-chip gain/resolution or CT calibration. Rigid fits require a separately validated matching profile.",
+                        recording.total_frames(), recording.duration_s(),
+                        recording.reordered_timestamps(),
+                    );
+                    context.offline_replay = Some(OfflineReplay::new(recording));
+                    context.sensor_traces = SensorTraceState::default();
+                    context.board_presence = presence.clone();
+                    context.sensor_traces.set_presence(presence.clone());
+                    context.live_fits.set_presence(presence.clone());
+                    context.rigid_fit.set_presence(presence);
+                    context.gk_calibration.capturing = None;
+                    context.mlx_status = None; // Historical log lacks true register settings.
+                    context.sensor_component_full_scale_mt.clear();
+                    context.received_stream_frames = 0;
+                    context.dashboard_tab = DashboardTab::LiveTracking;
+                    context.stream_status = "idle".into();
+                }
+                Err(err) => {
+                    context.replay_notice = format!("REPLAY LOAD FAILED: {err}; original file unchanged.");
+                }
+            }
+            Task::none()
+        }
+        Message::ReplayPlay => {
+            if let Some(replay) = &mut context.offline_replay {
+                replay.play();
+            }
+            Task::none()
+        }
+        Message::ReplayPause => {
+            if let Some(replay) = &mut context.offline_replay {
+                replay.pause();
+                // Retain plotted history and invalidate in-flight fits so a
+                // delayed completion cannot arrive while replay is paused.
+                context.rigid_fit.stop_stream();
+            }
+            Task::none()
+        }
+        Message::ReplayRestart => {
+            if let Some(replay) = &mut context.offline_replay {
+                replay.restart();
+                context.sensor_traces.reset_histories();
+                context.live_fits.set_presence(context.board_presence.clone());
+                context.rigid_fit.reset_stream();
+                context.received_stream_frames = 0;
+                context.replay_notice = "Replay reset to first frame. Press Play; no original file was changed.".into();
+            }
+            Task::none()
+        }
+        Message::ReplayUnload => {
+            if context.offline_replay.take().is_some() {
+                let none = BoardPresence::default();
+                context.rigid_fit.set_presence(none.clone());
+                context.sensor_traces = SensorTraceState::default();
+                context.live_fits.set_presence(none.clone());
+                context.board_presence = none;
+                context.mlx_status = None;
+                context.ping_field = None;
+                context.stream_status = "idle".into();
+                context.received_stream_frames = 0;
+                context.replay_notice = "Offline recording unloaded. Live hardware may be selected; a new stream must re-detect its boards.".into();
+            }
+            Task::none()
+        }
+        Message::ReplaySpeedSelected(speed) => {
+            if let Some(replay) = &mut context.offline_replay {
+                replay.speed = speed;
+            }
+            Task::none()
+        }
+        Message::ReplayTick => {
+            let frames = context.offline_replay.as_mut()
+                .map(|replay| replay.tick()).unwrap_or_default();
+            let mut tasks = Vec::new();
+            for frame in frames {
+                tasks.push(ingest_board_frame(context, frame, true));
+            }
+            if context.offline_replay.as_ref().is_some_and(|replay| replay.finished()) {
+                context.rigid_fit.stop_stream();
+            }
+            Task::batch(tasks)
+        }
         Message::PortSelected(serial_port_info) => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.replay_notice = "Unload offline replay before switching to a live controller.".into();
+                return Task::none();
+            }
             context.sensor_watcher = Some(SensorWatcher::new(&serial_port_info));
             context.board_presence = BoardPresence::default();
             context.live_fits = BoardLiveFits::default();
@@ -1821,6 +1940,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             iced::clipboard::write(rigid_fit_status_text(&context.rigid_fit.summary()))
         }
         Message::RecievedField(sensor_field) => {
+            if context.offline_replay.is_some() { return Task::none(); }
             context.sensor_traces.update(&sensor_field);
             context.ping_field = Some(sensor_field);
             Task::none()
@@ -1837,6 +1957,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartFieldStream => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.replay_notice = "Unload offline replay before starting the hardware field stream.".into();
+                return Task::none();
+            }
             context.rigid_fit.start_new_acquisition();
             context.sensor_traces.reset_histories();
             context.gk_calibration.capturing = None;
@@ -1900,6 +2024,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
 
         Message::StopFieldStream => {
+                if context.offline_replay.is_some() || context.replay_loading {
+                    context.replay_notice = "Use Pause or Unload for offline replay.".into();
+                    return Task::none();
+                }
                 context.gk_calibration.capturing = None;
                 context.stream_status = "stopping".to_string();
                 if let Some(sw) = &context.sensor_watcher {
@@ -1923,6 +2051,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         },
 
         Message::SelectFile => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.log_notice = "Logging is disabled during offline replay; recorded source files are read-only.".into();
+                return Task::none();
+            }
             if context.file_writer.is_some() || context.log_stop_requested
                 || context.log_write_in_progress || context.log_finalize_in_progress {
                 context.log_notice = "Finish stopping/closing the current log before selecting a new file.".into();
@@ -1969,6 +2101,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::StartLogging => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.log_notice = "Recording replayed frames is disabled; unload replay to log a new hardware acquisition.".into();
+                return Task::none();
+            }
             if context.file_writer.is_some() || context.log_stop_requested
                 || context.log_write_in_progress || context.log_finalize_in_progress
                 || context.log_file_dialog_open {
@@ -2009,6 +2145,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::ResumeLogging => {
+            if context.offline_replay.is_some() || context.replay_loading {
+                context.log_notice = "Cannot append replay frames into a hardware log.".into();
+                return Task::none();
+            }
             if context.file_writer.is_some() || context.log_stop_requested
                 || context.log_write_in_progress || context.log_finalize_in_progress
                 || context.log_file_dialog_open {
