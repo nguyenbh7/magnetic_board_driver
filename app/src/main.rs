@@ -2684,51 +2684,71 @@ fn view(context: &Context) -> Element<'_, Message> {
                         .size(12)
                         .width(Length::Fill)
                         .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                )
-                .push(container(rigid_plots).width(Length::Fill));
+                );
 
             let mut live_traces = column![
                 text("LIVE RAW HALL TRACES — keep visible while moving magnets")
                     .size(17),
                 text("Selected Bx/By/Bz history; range warning checks latest X/Y/Z on EVERY sensor, including those not plotted."),
             ].spacing(8).width(Length::Fill);
-            for sensor_board in context.sensor_traces.board_summaries() {
-                let board_id = sensor_board.board_id;
-                let latest = sensor_board.latest_axis_peaks_mt;
-                let peak_labels = ["Bx", "By", "Bz"].into_iter()
-                    .enumerate()
-                    .map(|(axis, label)| match latest[axis] {
-                        Some((sensor, value)) =>
-                            format!("{label}: {value:.2} mT (sensor {sensor})"),
-                        None => format!("{label}: waiting"),
-                    }).collect::<Vec<_>>().join("  |  ");
-                live_traces = live_traces
-                    .push(row![
-                        text(format!("Board {board_id} — raw sensor")),
-                        pick_list(
-                            sensor_board.available_sensors,
+            // Always reserve the three board trace panels, even without
+            // connected hardware. Real data replaces each placeholder as
+            // BoardPresence/SensorTraceState reports a board.
+            let observed_boards = context.sensor_traces.board_summaries();
+            for board_id in 0u16..3 {
+                if let Some(sensor_board) =
+                    observed_boards.iter().find(|board| board.board_id == board_id)
+                {
+                    let latest = sensor_board.latest_axis_peaks_mt;
+                    let peak_labels = ["Bx", "By", "Bz"].into_iter()
+                        .enumerate()
+                        .map(|(axis, label)| match latest[axis] {
+                            Some((sensor, value)) =>
+                                format!("{label}: {value:.2} mT (sensor {sensor})"),
+                            None => format!("{label}: waiting"),
+                        }).collect::<Vec<_>>().join("  |  ");
+                    live_traces = live_traces
+                        .push(row![
+                            text(format!("Board {board_id} — raw sensor")),
+                            pick_list(
+                                sensor_board.available_sensors.clone(),
+                                sensor_board.selected_sensor_index,
+                                move |sensor_index| Message::SelectSensorTrace {
+                                    board_id, sensor_index
+                                },
+                            ),
+                        ].spacing(8))
+                        .push(text(format!("LATEST all-sensor peaks: {peak_labels}")))
+                        .push(text(if sensor_board.invalid_samples > 0 {
+                            format!("MISSING/INVALID DATA: {} fields", sensor_board.invalid_samples)
+                        } else {
+                            "Digital readout may already be wrapped even with no active warning.".to_string()
+                        }))
+                        .push(sensor_trace_plot(
+                            board_id,
                             sensor_board.selected_sensor_index,
-                            move |sensor_index| Message::SelectSensorTrace {
-                                board_id, sensor_index
-                            },
-                        ),
-                    ].spacing(8))
-                    .push(text(format!("LATEST all-sensor peaks: {peak_labels}")))
-                    .push(text(if sensor_board.invalid_samples > 0 {
-                        format!("MISSING/INVALID DATA: {} fields", sensor_board.invalid_samples)
-                    } else {
-                        "Digital readout may already be wrapped even with no active warning.".to_string()
-                    }))
-                    .push(sensor_trace_plot(
-                        board_id,
-                        sensor_board.selected_sensor_index,
-                        sensor_board.selected_trace,
-                        live_trace_limits,
-                    ));
+                            sensor_board.selected_trace.clone(),
+                            live_trace_limits,
+                        ));
+                } else {
+                    live_traces = live_traces
+                        .push(text(format!(
+                            "Board {board_id} — NOT CONNECTED (waiting for stream)"
+                        )))
+                        .push(sensor_trace_plot(
+                            board_id,
+                            None,
+                            Vec::new(),
+                            live_trace_limits,
+                        ));
+                }
             }
-            rigid_content = rigid_content.push(
-                container(live_traces).width(Length::Fill)
-            );
+            // Raw fields first: they are the critical positioning monitor.
+            // Full-width rigid plots follow, without hiding the Hall traces
+            // below three large charts and the HDMM prediction.
+            rigid_content = rigid_content
+                .push(container(live_traces).width(Length::Fill))
+                .push(container(rigid_plots).width(Length::Fill));
         } else {
             // The Both tab places the separate Sensor Traces panel below
             // full-width rigid plots rather than duplicating the raw charts.
@@ -2914,7 +2934,18 @@ fn view(context: &Context) -> Element<'_, Message> {
         .spacing(12);
 
         if summaries.is_empty() {
-            trace_content = trace_content.push(text("No detected boards"));
+            trace_content = trace_content
+                .push(text("NO SENSOR BOARDS DETECTED — waiting for streaming data. Dotted limits are provisional until the actual chip configuration is verified."));
+            for board_id in 0u16..3 {
+                trace_content = trace_content
+                    .push(text(format!("Board {board_id} — NOT CONNECTED")))
+                    .push(sensor_trace_plot(
+                        board_id,
+                        None,
+                        Vec::new(),
+                        trace_limits,
+                    ));
+            }
         } else {
             for summary in summaries {
                 let board_id = summary.board_id;
@@ -3305,9 +3336,12 @@ mod tracking_mode_ui_tests {
             .expect("dotted guide explanation");
         let rigid = live.find(".push(container(rigid_plots).width(Length::Fill))")
             .expect("full-width rigid charts");
-        let traces = live.find("container(live_traces).width(Length::Fill)")
+        let traces = live.find(".push(container(live_traces).width(Length::Fill))")
             .expect("full-width raw trace charts");
-        assert!(guide < rigid && rigid < traces);
+        assert!(guide < traces && traces < rigid);
+        assert!(live.contains("for board_id in 0u16..3"));
+        assert!(live.contains("NOT CONNECTED (waiting for stream)"));
+        assert!(source.contains("NO SENSOR BOARDS DETECTED — waiting for streaming data"));
         let start = source.find("let active_dashboard_widget = match context.dashboard_tab")
             .expect("dashboard tab selection");
         let end = source[start..].find("let mut dashboard_sections")
