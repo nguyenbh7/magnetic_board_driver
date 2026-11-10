@@ -2689,6 +2689,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                 context.received_stream_frames,
             )),
             text(board_presence_text(&context.board_presence)),
+            text(context.rigid_fit.input_unreliable()
+                .map(|reason| format!("RIGID POSE INVALID — {reason}; historical plots frozen; restart acquisition after correction."))
+                .unwrap_or_else(|| "Rigid input QC: no latched critical range/step fault; not validated absolute accuracy.".into()))
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text(live_hall_range_status(context))
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
@@ -2712,12 +2717,16 @@ fn view(context: &Context) -> Element<'_, Message> {
         } else {
             "Active profile: none — load a calibrated Gamma Knife profile".to_string()
         };
-        let fit_quality = rigid.result.as_ref()
-            .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
-                r.rmse_mt, r.sensor_count, rigid.completed.saturating_sub(rigid.rejected),
-                rigid.rejected, rigid.last_duration_ms.unwrap_or(0.0)))
-            .unwrap_or_else(|| format!("No accepted fit yet · {} completed / {} rejected",
-                rigid.completed, rigid.rejected));
+        let fit_quality = if rigid.input_unreliable.is_some() {
+            format!("NO VALID CURRENT POSE — input QC latched; {} earlier completed fits retained for historical review ONLY.", rigid.completed)
+        } else {
+            rigid.result.as_ref()
+                .map(|r| format!("Field RMSE {:.3} mT · {} sensors · accepted {} / rejected {} · fit {:.0} ms",
+                    r.rmse_mt, r.sensor_count, rigid.completed.saturating_sub(rigid.rejected),
+                    rigid.rejected, rigid.last_duration_ms.unwrap_or(0.0)))
+                .unwrap_or_else(|| format!("No accepted fit yet · {} completed / {} rejected",
+                    rigid.completed, rigid.rejected))
+        };
         let position_line = rigid.translation_from_zero
             .map(|d| {
                 let magnitude = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
@@ -2987,10 +2996,25 @@ fn view(context: &Context) -> Element<'_, Message> {
         } else {
             iced::Color::from_rgb8(70, 90, 110)
         };
+        let input_qc_banner = rigid.input_unreliable.as_ref()
+            .map(|reason| format!(
+                "INVALID / UNRELIABLE 6-DOF TRACKING — {reason}. All pose/HDMM updates stopped. Prior curves are FROZEN pre-warning history, not valid current motion. Correct conditions and start a NEW acquisition or restart offline replay; do not just switch fits."
+            ))
+            .unwrap_or_else(|| "INPUT QC: no critical all-sensor range/step fault latched this acquisition (NOT proof of sensor accuracy).".to_string());
+        let input_qc_color = if rigid.input_unreliable.is_some() {
+            iced::Color::from_rgb8(190, 25, 25)
+        } else {
+            iced::Color::from_rgb8(70, 90, 110)
+        };
         let mut rigid_content = column![
             text(live_range_message)
                 .size(18)
                 .color(live_range_color)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            text(input_qc_banner)
+                .size(18)
+                .color(input_qc_color)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text(position_line.clone()).size(18),
@@ -3002,9 +3026,17 @@ fn view(context: &Context) -> Element<'_, Message> {
         // plots remain available underneath it for additional diagnostics.
         // This is NOT a live measurement from the vendor HDMM hardware.
         let rigid_plots = column![
-            text("Hall-predicted HDMM marker displacement (NOT measured HDMM)"),
+            text(if rigid.input_unreliable.is_some() {
+                "HDMM PREDICTION INVALID NOW — plot contains FROZEN earlier accepted estimates (NOT live HDMM)"
+            } else {
+                "Hall-predicted HDMM marker displacement (NOT measured HDMM)"
+            }),
             hdmm_prediction_plot(rigid.hdmm_history),
-            text("Additional rigid-motion diagnostics (experimental)"),
+            text(if rigid.input_unreliable.is_some() {
+                "FROZEN PRE-WARNING RIGID MOTION — NOT CURRENT TRACKING"
+            } else {
+                "Additional rigid-motion diagnostics (experimental)"
+            }),
             text("Joint rigid-body XYZ displacement"),
             rigid_xyz_plot(rigid.xyz_history),
             text("Rigid-body rotation"),
