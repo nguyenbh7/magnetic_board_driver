@@ -1112,7 +1112,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 Ok(recording) => {
                     let presence = recording.presence();
                     context.replay_notice = format!(
-                        "OFFLINE REPLAY (READ ONLY): {} frames across {:.2}s; {} out-of-order board timestamps. The raw log does NOT contain per-chip gain/resolution or CT calibration. Rigid fits require a separately validated matching profile.",
+                        "OFFLINE REPLAY (READ ONLY): {} frames across {:.2}s; {} out-of-order board timestamps. The raw log does NOT contain per-chip gain/resolution or CT calibration. Any prior live calibration is cleared: explicitly load a verified matching rigid profile for optional motion fitting.",
                         recording.total_frames(), recording.duration_s(),
                         recording.reordered_timestamps(),
                     );
@@ -1121,8 +1121,13 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.board_presence = presence.clone();
                     context.sensor_traces.set_presence(presence.clone());
                     context.live_fits.set_presence(presence.clone());
+                    // A live-session profile/HDMM target must never silently
+                    // carry over to a historical log with unrelated geometry.
+                    // A matching rigid profile may be loaded explicitly AFTER
+                    // replay opens; raw field traces work without a profile.
+                    context.rigid_fit.invalidate_for_gk_calibration();
                     context.rigid_fit.set_presence(presence);
-                    context.gk_calibration.capturing = None;
+                    context.gk_calibration = GkCalibration::default();
                     context.mlx_status = None; // Historical log lacks true register settings.
                     context.sensor_component_full_scale_mt.clear();
                     context.received_stream_frames = 0;
@@ -1190,7 +1195,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 tasks.push(ingest_board_frame(context, frame, true));
             }
             if context.offline_replay.as_ref().is_some_and(|replay| replay.finished()) {
-                context.rigid_fit.stop_stream();
+                // Do not discard a solver job still completing from the last
+                // replay frames; results are visibly research-only.
+                context.replay_notice = "OFFLINE REPLAY COMPLETE. Source unchanged; last accepted rigid fit (if a matching profile was explicitly loaded) may still be finishing.".into();
             }
             Task::batch(tasks)
         }
