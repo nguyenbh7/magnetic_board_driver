@@ -37,6 +37,28 @@ In the new **OFFLINE REPLAY** panel near the top:
 - Changing the output gain/resolution UI without applying does not change historical data or digital guide levels. **An MLXBF002 file does not contain full per-chip on-chip register snapshots**, so replay resets MLX range provenance to **UNVERIFIED** and displays the deliberately conservative nominal gain7/res0 dotted guides. This may be different from the actual acquisition hardware settings and is NOT proof of analog non-saturation.
 - With or without replay, a field step/range warning is an operator aid, not proof of digital wrapping or sensor saturation; the production pose fitter retains its existing QC rather than silently unwrapping data.
 
+## Critical raw input → invalid current motion (Nov 9, 2026)
+
+New conservative behavior during playback: if **any raw board sensor** reaches
+80% of its current (possibly unverified) advisory component limit, or a
+same-chip component jumps **>8mT in ≤0.25s**, the **INPUT UNRELIABLE**
+latch suspends new 6-DOF fits and disables independent fitting. Any in-flight
+6-DOF completion is rejected. The **current** fit, relative zero and
+predicted-HDMM scalar value disappear; pre-warning pose plots remain with
+explicit historical/frozen labeling. Importantly, raw Hall traces, field
+warnings and read-only source playback **continue**. Pausing and resuming
+does not reset this QC state. Choose **Restart** to replay from the start
+with a fresh latch, or correct the setup and start a new live acquisition.
+
+Because original MLXBF002 frames contain no independent chip register
+readbacks, the default provisional range threshold may trigger well
+**before** the large Board 0 steps around 65–73s. This is fail-closed
+screening and should not be interpreted as proof the chip saturated that
+early. No original data, fit model, or optical HDMM measurement is rewritten.
+See [GK_LIVE_INPUT_VALIDITY_20261109.md](GK_LIVE_INPUT_VALIDITY_20261109.md).
+
+---
+
 ## Regressions and acceptance
 
 `app/src/offline_replay.rs` tests cover original logger framing, signed component values and board IDs, speed/clock behavior, pause/resume/restart, bad and truncated files, and bounded delivery. `app/src/main.rs` integration tests cover loading the same format, displaying recorded fields/warnings, blocking hardware stream/logging/setting writes, ignoring a stray hardware frame, clearing history and leaving the source file byte-for-byte intact.
