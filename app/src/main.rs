@@ -3014,11 +3014,6 @@ fn view(context: &Context) -> Element<'_, Message> {
                 .color(live_range_color)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            text(input_qc_banner)
-                .size(18)
-                .color(input_qc_color)
-                .width(Length::Fill)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             text(position_line.clone()).size(18),
             text(rotation_line.clone()).size(17),
             text(fit_quality.clone()),
@@ -3043,6 +3038,29 @@ fn view(context: &Context) -> Element<'_, Message> {
             rigid_xyz_plot(rigid.xyz_history),
             text("Rigid-body rotation"),
             rotation_plot(u16::MAX, rigid.rotation_history),
+            // Keep the validity result WITH its rigid-motion charts:
+            // on a tall lab monitor a banner above all plots is too far
+            // from the rotation/HDMM monitor to be noticed while tracking.
+            container(
+                column![
+                    text(if rigid.input_unreliable.is_some() {
+                        "TRACKING INVALID — RIGID POSE AND HDMM PREDICTION SUSPENDED"
+                    } else {
+                        "Rigid-body input validity"
+                    })
+                    .size(if rigid.input_unreliable.is_some() { 19 } else { 14 })
+                    .color(input_qc_color),
+                    text(input_qc_banner)
+                        .size(if rigid.input_unreliable.is_some() { 16 } else { 12 })
+                        .color(input_qc_color)
+                        .width(Length::Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(6)
+            )
+            .padding(10)
+            .width(Length::Fill)
+            .style(iced::widget::container::bordered_box),
         ].spacing(9).width(Length::Fill);
 
         if context.dashboard_tab == DashboardTab::LiveTracking {
@@ -3730,6 +3748,21 @@ mod tracking_mode_ui_tests {
             "rotation_plot(u16::MAX, rigid.rotation_history)"
         ).expect("secondary rotation chart") + rigid_heading;
         assert!(hdmm < xyz && xyz < rotation);
+        // The invalid/current status must live in the RIGHT-HAND
+        // rigid-motion column, directly after its rotation chart—not
+        // above the full-width plot row where it was hard to see.
+        let rigid_section_end = source[rigid_heading..].find(
+            "].spacing(9).width(Length::Fill);"
+        ).expect("rigid column end") + rigid_heading;
+        let rigid_column = &source[rigid_heading..rigid_section_end];
+        let invalid_banner = rigid_column.find(
+            "text(input_qc_banner)"
+        ).expect("tracking validity status below rigid rotation");
+        assert!(invalid_banner + rigid_heading > rotation);
+        let top_section = &source[source.find("let mut rigid_content = column![")
+            .expect("main tracking header")..rigid_heading];
+        assert!(!top_section.contains("text(input_qc_banner)"),
+            "tracking validity must not be separated from rigid charts");
 
         let start = source.find("// Put guide instructions ABOVE both chart sections")
             .expect("rigid monitoring section");
