@@ -2675,14 +2675,23 @@ fn view(context: &Context) -> Element<'_, Message> {
         ].spacing(9);
 
         if context.dashboard_tab == DashboardTab::LiveTracking {
+            // Put guide instructions ABOVE both chart sections, never in a
+            // narrow side column. The raw and rigid plots each get the full
+            // available dashboard width; never split the screen 50/50.
+            rigid_content = rigid_content
+                .push(
+                    text(live_hall_trace_limit_caption(context))
+                        .size(12)
+                        .width(Length::Fill)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                )
+                .push(container(rigid_plots).width(Length::Fill));
+
             let mut live_traces = column![
                 text("LIVE RAW HALL TRACES — keep visible while moving magnets")
                     .size(17),
                 text("Selected Bx/By/Bz history; range warning checks latest X/Y/Z on EVERY sensor, including those not plotted."),
-                text(live_hall_trace_limit_caption(context))
-                    .size(12)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            ].spacing(8);
+            ].spacing(8).width(Length::Fill);
             for sensor_board in context.sensor_traces.board_summaries() {
                 let board_id = sensor_board.board_id;
                 let latest = sensor_board.latest_axis_peaks_mt;
@@ -2718,15 +2727,14 @@ fn view(context: &Context) -> Element<'_, Message> {
                     ));
             }
             rigid_content = rigid_content.push(
-                row![
-                    container(rigid_plots).width(Length::FillPortion(1)),
-                    container(live_traces).width(Length::FillPortion(1)),
-                ].spacing(12)
+                container(live_traces).width(Length::Fill)
             );
         } else {
-            // The Both tab already places the separate Sensor Traces panel
-            // alongside the rigid plot panel, without duplicating the charts.
-            rigid_content = rigid_content.push(rigid_plots);
+            // The Both tab places the separate Sensor Traces panel below
+            // full-width rigid plots rather than duplicating the raw charts.
+            rigid_content = rigid_content.push(
+                container(rigid_plots).width(Length::Fill)
+            );
         }
         // CT import/mapping remains available when needed, but does not
         // obstruct monitoring during an active 6DOF positioning experiment.
@@ -3059,13 +3067,18 @@ fn view(context: &Context) -> Element<'_, Message> {
         DashboardTab::LiveTracking => live_tracking_widget,
         DashboardTab::SensorTraces => sensor_trace_widget,
         DashboardTab::Both => {
+            // Stack entire panels rather than squeezing every chart into
+            // two half-width columns. The sensor guide caption stays ABOVE
+            // the separate raw trace plots in sensor_trace_widget.
             container(
-                row![
-                    live_tracking_widget.width(Length::FillPortion(1)),
-                    sensor_trace_widget.width(Length::FillPortion(1)),
+                column![
+                    live_tracking_widget.width(Length::Fill),
+                    sensor_trace_widget.width(Length::Fill),
                 ]
                 .spacing(12)
+                .width(Length::Fill)
             )
+            .width(Length::Fill)
         }
     };
     
@@ -3273,6 +3286,26 @@ mod tracking_mode_ui_tests {
         ));
         assert_eq!(live_hall_range_model(&context).advisory_mt, old.advisory_mt);
         assert!(live_hall_trace_limit_caption(&context).contains("UNVERIFIED"));
+    }
+
+    #[test]
+    fn full_width_dashboard_layout_keeps_range_guide_above_charts() {
+        // Source-level structural guard; cargo check verifies the actual
+        // Iced widget types, and the final appearance needs a GUI review.
+        let source = include_str!("main.rs");
+        let live = source.split("if context.dashboard_tab == DashboardTab::LiveTracking {")
+            .last().expect("live rigid chart branch");
+        let guide = live.find(".push(\n                    text(live_hall_trace_limit_caption(context))")
+            .expect("dotted guide explanation");
+        let rigid = live.find(".push(container(rigid_plots).width(Length::Fill))")
+            .expect("full-width rigid charts");
+        let traces = live.find("container(live_traces).width(Length::Fill)")
+            .expect("full-width raw trace charts");
+        assert!(guide < rigid && rigid < traces);
+        let both = source.split("DashboardTab::Both => {")
+            .last().expect("both dashboard layout");
+        assert!(both.contains("column![\n                    live_tracking_widget.width(Length::Fill),\n                    sensor_trace_widget.width(Length::Fill),"));
+        assert!(!both.contains("FillPortion(1)"));
     }
 
     #[test]
