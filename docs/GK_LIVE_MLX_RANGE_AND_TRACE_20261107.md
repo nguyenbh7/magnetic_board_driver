@@ -26,12 +26,13 @@ histories, not per-axis digital ranges. This was too easy to miss.
 
 ## Implementation
 
-1. **Near-top combined monitoring:** Live Tracking in rigid 6DOF
-   mode places the current XYZ/rotation/fit-quality readout and
-   **rigid pose plots next to selected Bx/By/Bz raw trace plots**
-   for each board. The long CT detector and calibration control
-   sections are now below those plots. The Both tab continues to
-   use the separate sensor-trace panel without duplicate charts.
+1. **Near-top full-width monitoring (updated Nov 9):** Live Tracking in rigid 6DOF
+   mode places the current XYZ/rotation/fit-quality readout and dotted-line
+   instructions **above** the chart area. Rigid pose plots and selected
+   Bx/By/Bz raw traces for each board are **stacked full-width**, rather than
+   competing for two half-width columns. CT detector and calibration controls
+   remain below the live plots. The **Both** tab also stacks full-width
+   Live Tracking and Sensor Traces panels, without duplicating raw charts.
 2. **Prominent red back-off warning:** Latest X/Y/Z absolute
    component magnitude is computed across ALL observed channels
    on each available board, **not only the selected trace**.
@@ -107,6 +108,16 @@ cargo check -p app
 ```
 
 New tests check plotted positive/negative limit bounds, invalid limits, fallback configuration, dynamic gain/resolution update after a firmware response, and prevention of false widening from unapplied settings. The user previously reported an app test pass, but these new changes have not yet been tested on that machine. GUI and live-board behavior remain to be inspected.
+
+---
+
+## Full-width plot layout (Nov 9, 2026; source-only GUI update)
+
+In **Live Tracking / Rigid 6-DOF**, the dynamic signed dotted-guide instruction/caption now appears **above** the first plot. The rigid XYZ/rotation/HDMM prediction plot column fills the window width; beneath it, each of three raw Board 0/1/2 selected-sensor trace plots fills the window width. Latest all-sensor peaks, sensor selectors and raw-data warnings remain attached to their respective traces. The Iced canvas uses `Length::Fill`, so resizing the window expands the traces horizontally; no horizontal half-width split remains.
+
+**Both** now places the Live Tracking panel above the Sensor Traces panel, with full width for each instead of two half-width columns. The separate Sensor Traces panel already places the dotted-line instructions above the raw charts. The source includes a structural regression test checking the order (caption → rigid plot → raw traces) and the full-width Both layout. This changes only GUI layout; range calculation, firmware state provenance, rigid fitter, original data and live warning thresholds stay unchanged.
+
+After pulling, run `cargo test -p app` and `cargo check -p app`; the changes have NOT been compiled, visually inspected on a user's desktop, or checked on actual sensor boards by the assistant.
 
 ---
 
