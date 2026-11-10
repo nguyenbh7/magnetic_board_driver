@@ -161,6 +161,14 @@ cargo run -p app --release
 
 ---
 
+## Fail-closed 6-DOF input validity (Nov 9, 2026)
+
+The raw-field warning is now also an **active fitting gate**, not merely a banner. After a complete board frame updates the raw Hall histories, the app screens **all currently observed chips** for either a component at **80% or more of the configured/provisional axis-specific advisory limit** or a same-chip **>8mT step within 0.25s**. The 65% caution alone does not halt fitting. The check uses only the latest sample per observed chip (O(number of chips), not a complete 600-sample plot-history scan); sudden-jump evidence remains latched for the stream. A critical event latches an **INPUT UNRELIABLE** state for the entire acquisition, blocks new six-DOF and independent fit jobs, invalidates stale completions, and clears the current XYZ/rotation/HDMM result. The raw traces and original logging continue. Older motion curves are retained only as explicitly labeled **FROZEN pre-warning history**. Changing fitting models or a quiet post-event field cannot re-enable fitting; begin a **new live stream** after reviewing the setup or **Restart** Offline Replay.
+
+This is a conservative QC screen, **not verification of digital wrapping or physical sensor saturation**, and an unknown gain/resolution may result in early invalidation by the conservative provisional limits. A physically wrapped field could also be incorrectly below the threshold; the guard is not a sufficient accuracy condition. New source tests and a detailed workflow are in [GK_LIVE_INPUT_VALIDITY_20261109.md](GK_LIVE_INPUT_VALIDITY_20261109.md). The new code has not yet been compiled or exercised on connected boards by the assistant.
+
+---
+
 ## User workflow for the next GK measurement
 
 1. Bring up the app and select the correct board-controller COM port.
