@@ -1128,6 +1128,9 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.rigid_fit.invalidate_for_gk_calibration();
                     context.rigid_fit.set_presence(presence);
                     context.gk_calibration = GkCalibration::default();
+                    context.cbct_geometry = None;
+                    context.hdmm_marker_coordinate_input.clear();
+                    context.cbct_status = "Old live CBCT setup cleared when offline recording was loaded; explicitly import matching provenance for further analysis.".into();
                     context.mlx_status = None; // Historical log lacks true register settings.
                     context.sensor_component_full_scale_mt.clear();
                     context.received_stream_frames = 0;
