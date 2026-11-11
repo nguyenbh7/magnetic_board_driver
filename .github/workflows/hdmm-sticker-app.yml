@@ -1,0 +1,21 @@
+name: HDMM sticker app import smoke tests
+on:
+  push:
+    branches: [feature/live-rigid-body-fit]
+    paths:
+      - 'app/src/hdmm_sticker.rs'
+      - 'app/src/main.rs'
+      - 'app/python_cbct/hdmm_sticker_geometry.py'
+      - '.github/workflows/hdmm-sticker-app.yml'
+  workflow_dispatch:
+
+jobs:
+  windows-rust-app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile, unit-test the HDMM point importer
+        run: cargo test -p app hdmm_sticker
+      - name: Verify full app Rust types
+        run: cargo check -p app
