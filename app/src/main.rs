@@ -1192,6 +1192,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.gk_calibration = GkCalibration::default();
                     context.cbct_geometry = None;
                     context.hdmm_marker_coordinate_input.clear();
+                    context.hdmm_sticker_source_status.clear();
                     context.cbct_status = "Old live CBCT setup cleared when offline recording was loaded; explicitly import matching provenance for further analysis.".into();
                     context.mlx_status = None; // Historical log lacks true register settings.
                     context.sensor_component_full_scale_mt.clear();
@@ -1284,6 +1285,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.sensor_component_full_scale_mt.clear();
             context.mlx_status = None; // old port's cached settings are not this device's
             context.hdmm_marker_coordinate_input.clear();
+            context.hdmm_sticker_source_status.clear();
             context.dashboard_tab = DashboardTab::LiveTracking;
             context.tracking_mode = TrackingMode::Rigid6Dof;
             context.stream_status = "idle".to_string();
@@ -1373,6 +1375,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.hdmm_marker_coordinate_input.clear();
+                context.hdmm_sticker_source_status.clear();
                 context.cbct_status = format!(
                     "Selected {}. Re-import CT; previous geometry and mapping approval cleared.",
                     variant
@@ -1439,6 +1442,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.gk_calibration.cad_mapping_approved = false;
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.hdmm_marker_coordinate_input.clear();
+                context.hdmm_sticker_source_status.clear();
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
@@ -1478,6 +1482,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.gk_calibration.cad_mapping_approved = false;
                     context.rigid_fit.invalidate_for_gk_calibration();
                     context.hdmm_marker_coordinate_input.clear();
+                    context.hdmm_sticker_source_status.clear();
                     }
                     Err(error) => {
                         context.cbct_status = format!("CBCT import failed: {error}");
@@ -1589,6 +1594,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             }
             context.rigid_fit.invalidate_for_gk_calibration();
             context.hdmm_marker_coordinate_input.clear();
+            context.hdmm_sticker_source_status.clear();
             context.gk_calibration.begin(false);
             Task::none()
         }
@@ -2011,6 +2017,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             // review; the JSON picker NEVER directly activates fitting.
             context.rigid_fit.clear_hdmm_target();
             context.hdmm_marker_coordinate_input.clear();
+            context.hdmm_sticker_source_status.clear();
             let result = (|| {
                 let geometry = context.cbct_geometry.as_ref()
                     .ok_or("No current CT geometry loaded")?;
@@ -2062,6 +2069,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::ClearHdmmMarkerCoordinates => {
             context.rigid_fit.clear_hdmm_target();
             context.hdmm_marker_coordinate_input.clear();
+            context.hdmm_sticker_source_status.clear();
             context.hdmm_sticker_source_status = "HDMM point cleared".into();
             Task::none()
         }
