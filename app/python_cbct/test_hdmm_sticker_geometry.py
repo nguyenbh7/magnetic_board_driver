@@ -208,10 +208,10 @@ def test_distorted_magnet_geometry_and_board_registration_fail_closed(tmp_path):
     bad_boards = json.loads(json.dumps(post))
     for obj in bad_boards["objects"]:
         if obj["name"] == "array_right":
-            obj["chip_grid_lps_mm"] = (
-                np.asarray(obj["chip_grid_lps_mm"]) +
-                np.array([0., 0., 6.])
-            ).tolist()
+            # Distort ONE chip nonrigidly. An entire board shifted along a
+            # third dimension can be approximately explained by global
+            # rotation when the boards are separated by a long baseline.
+            obj["chip_grid_lps_mm"][7][2] += 12.0
     with pytest.raises(ValueError, match="fixed-board CT registration RMS"):
         mod.transfer_reference(reviewed, pre, bad_boards)
 
