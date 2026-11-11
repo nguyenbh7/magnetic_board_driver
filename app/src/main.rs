@@ -1994,9 +1994,12 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::UpdateHdmmMarkerCoordinates(value) => {
+            // Editing a reviewed value breaks its file provenance. Invalidate
+            // the active marker prediction until Set is explicitly pressed.
+            context.rigid_fit.clear_hdmm_target();
             context.hdmm_marker_coordinate_input=value;
             context.hdmm_sticker_source_status =
-                "MANUAL ENTRY — independently verify actual sticker identity and CURRENT CT LPS coordinates; not automatically detected.".into();
+                "MANUAL ENTRY — previous reviewed-file provenance no longer applies. Independently verify actual sticker identity and CURRENT CT LPS coordinates; press Set to reactivate.".into();
             Task::none()
         }
         Message::ImportReviewedHdmmSticker => {
