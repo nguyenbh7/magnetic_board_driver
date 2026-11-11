@@ -3965,7 +3965,15 @@ mod tracking_mode_ui_tests {
         let end = source[start..].find("let mut dashboard_sections")
             .expect("end of dashboard tab selection") + start;
         let both = &source[start..end];
-        assert!(both.contains("column![\n                    live_tracking_widget.width(Length::Fill),\n                    sensor_trace_widget.width(Length::Fill),"));
+        // Structural invariant: Both stacks Live Tracking above Sensor Traces.
+        // Ignore platform line endings and indentation (Windows CRLF vs LF).
+        let normalized = both.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalized.contains(
+                "column![ live_tracking_widget.width(Length::Fill), sensor_trace_widget.width(Length::Fill),"
+            ),
+            "Both tab must stack Live Tracking above Sensor Traces at full width"
+        );
     }
 
     #[test]
