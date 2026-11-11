@@ -158,6 +158,8 @@ def fov_status(shape, affine_ras, point_lps, *, marker_radius_mm=4.0):
         "assumed_support_radius_mm": float(marker_radius_mm),
         "voxel_position_ijk": ijk.tolist(),
         "scan_shape_ijk": list(shape),
+        "only_checks_reconstructed_voxel_grid_bounds": True,
+        "actual_cylindrical_cbct_or_masked_reconstruction_support_unverified": True,
         "not_direct_sticker_detection": True,
     }
 
