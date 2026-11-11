@@ -3911,6 +3911,20 @@ mod tracking_mode_ui_tests {
             "rotation_plot(u16::MAX, rigid.rotation_history)"
         ).expect("secondary rotation chart") + rigid_heading;
         assert!(hdmm < xyz && xyz < rotation);
+        let readout = source[rigid_heading..].find(
+            "text(hdmm_display.value).size(34)"
+        ).expect("prominent numeric Hall sticker prediction") + rigid_heading;
+        let source_hint = source[rigid_heading..].find(
+            "text(hdmm_display.caption)"
+        ).expect("readout provenance and HOLD/INVALID indication") + rigid_heading;
+        let import = source[rigid_heading..].find(
+            "button(\"Load reviewed sticker\")"
+        ).expect("reviewed sticker import near prediction") + rigid_heading;
+        let activate = source[rigid_heading..].find(
+            "button(\"Set HDMM point\")"
+        ).expect("explicit HDMM marker activation near graph") + rigid_heading;
+        assert!(rigid_heading < readout && readout < source_hint
+                && source_hint < import && import < activate && activate < hdmm);
         // The invalid/current status must live in the RIGHT-HAND
         // rigid-motion column, directly after its rotation chart—not
         // above the full-width plot row where it was hard to see.
