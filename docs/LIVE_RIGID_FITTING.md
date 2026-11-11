@@ -2,6 +2,14 @@
 
 Experimental desktop-app feature branch: feature/live-rigid-body-fit.
 
+For the next Gamma Knife phantom measurement, see
+[reviewed CT HDMM sticker → live Hall-predicted displacement workflow](GK_NEXT_HDMM_STICKER_LIVE_COMPARISON.md).
+The live dashboard displays a large, explicitly labeled Hall-predicted sticker
+displacement (mm) directly above its graph, with **Load reviewed sticker** and
+**Set HDMM point** controls beside the plot. LIVE / HOLD / INVALID / REPLAY
+labels distinguish current accepted fits from stale or unsafe values; the
+actual optical HDMM remains on its independent display.
+
 ## Build and run (Windows PowerShell)
 
     git fetch origin
