@@ -231,3 +231,54 @@ def test_reference_magnet_provenance_and_no_file_overwrite(tmp_path):
     with pytest.raises(ValueError, match="reference detector magnets changed"):
         mod.transfer_reference(reviewed, tampered, post)
     assert source.exists()
+
+def test_target_review_labels_full_cropped_and_outside_without_fake_sticker(tmp_path):
+    pre, post, approved, _, _ = reference(tmp_path)
+    shape = (160, 160, 160)
+    transfer = mod.transfer_reference(
+        approved, pre, post, target_volume_shape=shape,
+        target_affine_ras=AFFINE_RAS_LPS_IDENTITY,
+    )
+    pt = np.asarray(transfer["predicted_target_hdmm_marker_lps_mm"])
+    vol = np.zeros(shape, dtype=np.float32)
+    x, y, z = np.ogrid[:shape[0], :shape[1], :shape[2]]
+    vol += 90.0 * np.exp(-((x-pt[0])**2 + (y-pt[1])**2
+                           + (z-pt[2])**2) / 3.0)
+    full = mod.review_transferred_marker_target(
+        transfer, vol, AFFINE_RAS_LPS_IDENTITY, search_radius_mm=12,
+    )
+    assert full["status"] == "TARGET_FULL_FOV_CANDIDATES_ONLY"
+    assert full["nearby_candidate_count"] >= 1
+    assert not full["direct_target_sticker_identification"]
+    assert all(c["identity"] == "UNVERIFIED_CT_STICKER_CANDIDATE"
+               for c in full["nearby_ct_candidates"])
+
+    # The predicted point is close enough to the scan edge that a
+    # 4-mm marker support is partially cropped: do not call this measured.
+    partial_shape = (int(np.ceil(pt[0])) + 2, 160, 160)
+    partial_vol = vol[:partial_shape[0]]
+    partial_pred = mod.transfer_reference(
+        approved, pre, post, target_volume_shape=partial_shape,
+        target_affine_ras=AFFINE_RAS_LPS_IDENTITY,
+    )
+    partial = mod.review_transferred_marker_target(
+        partial_pred, partial_vol, AFFINE_RAS_LPS_IDENTITY,
+    )
+    assert partial["status"] == "TARGET_EDGE_CROPPED_UNCONFIRMED"
+    assert not partial["direct_target_sticker_identification"]
+
+    outside_shape = (40, 40, 40)
+    outside_pred = mod.transfer_reference(
+        approved, pre, post, target_volume_shape=outside_shape,
+        target_affine_ras=AFFINE_RAS_LPS_IDENTITY,
+    )
+    outside = mod.review_transferred_marker_target(
+        outside_pred, np.zeros(outside_shape), AFFINE_RAS_LPS_IDENTITY,
+    )
+    assert outside["status"] == "PREDICTED_TARGET_OUTSIDE_RECONSTRUCTED_FOV"
+    assert outside["nearby_ct_candidates"] == []
+    assert not outside["direct_target_sticker_identification"]
+    with pytest.raises(ValueError, match="gated rigid-transfer"):
+        mod.review_transferred_marker_target(
+            {"format": "bogus"}, vol, AFFINE_RAS_LPS_IDENTITY,
+        )
