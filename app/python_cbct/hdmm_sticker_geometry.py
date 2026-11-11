@@ -94,9 +94,19 @@ def stationary_registration(a,b):
             np.asarray(b[BOARDS[0]]["chip_grid_lps_mm"],float)[left],
             np.asarray(b[BOARDS[1]]["chip_grid_lps_mm"],float)[right],
         ])
-        fit = fit_points(old,new)
+        try:
+            fit = fit_points(old,new)
+        except ValueError as exc:
+            # Some *incorrect 4x4 index permutations* have rank-deficient
+            # cross-covariance even when the physical boards are valid.
+            # Reject only that pairing; do not reject the entire CT scan.
+            if "collinear/degenerate" not in str(exc):
+                raise
+            continue
         if best is None or fit["rms_mm"] < best["fit"]["rms_mm"]:
             best = {"fit":fit, "permutations":{"left":left,"right":right}}
+    if best is None:
+        raise ValueError("no nondegenerate stationary board registration")
     return best
 
 
