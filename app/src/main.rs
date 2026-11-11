@@ -25,6 +25,7 @@ mod live_fit;
 mod rigid_fit;
 mod cbct_geometry;
 mod hdmm_sticker;
+mod hdmm_live_readout;
 mod gk_background;
 use gk_background::GkBackgroundFile;
 mod stage_presets;
@@ -2066,7 +2067,23 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.rigid_fit.set_hdmm_target_lps([v[0],v[1],v[2]]),
                 _=>Err("Enter exactly three CT LPS coordinates in millimetres, e.g. 100.2,-75.0,28.4".into())
             };
-            if let Err(e)=result {context.rigid_fit.set_status(format!("HDMM point rejected: {e}"));}
+            match result {
+                Ok(()) => {
+                    if context.hdmm_sticker_source_status.starts_with(
+                        "REVIEW REQUIRED BEFORE ACTIVATING:"
+                    ) {
+                        // Importing a reviewed file is not the same as setting
+                        // its point; preserve provenance after explicit Set.
+                        context.hdmm_sticker_source_status =
+                            context.hdmm_sticker_source_status.replacen(
+                                "REVIEW REQUIRED BEFORE ACTIVATING:",
+                                "REVIEWED CT POINT SET:",
+                                1,
+                            );
+                    }
+                }
+                Err(e) => context.rigid_fit.set_status(format!("HDMM point rejected: {e}")),
+            }
             Task::none()
         }
         Message::ClearHdmmMarkerCoordinates => {
@@ -3115,12 +3132,65 @@ fn view(context: &Context) -> Element<'_, Message> {
         // motion monitor beside the raw Hall traces. Translation/rotation
         // plots remain available underneath it for additional diagnostics.
         // This is NOT a live measurement from the vendor HDMM hardware.
+        let hdmm_display = hdmm_live_readout::hdmm_live_readout(
+            rigid.hdmm_point_ready,
+            rigid.zero_ready,
+            rigid.hdmm_current_mm,
+            rigid.input_unreliable.is_some(),
+            context.stream_status == "receiving",
+            context.offline_replay.is_some(),
+            &rigid.status,
+        );
+        let hdmm_value_color = if hdmm_display.invalid {
+            iced::Color::from_rgb8(190, 25, 25)
+        } else if hdmm_display.held {
+            iced::Color::from_rgb8(105, 110, 120)
+        } else {
+            iced::Color::from_rgb8(20, 75, 110)
+        };
+        let hdmm_review_hint = if rigid.hdmm_point_ready {
+            "HDMM sticker point selected; see its CT provenance in the setup section."
+        } else if context.hdmm_sticker_source_status.starts_with(
+            "REVIEW REQUIRED BEFORE ACTIVATING:"
+        ) {
+            "Reviewed CT sticker loaded. Verify the location in this CT; then press Set HDMM point."
+        } else if context.hdmm_sticker_source_status.starts_with(
+            "HDMM sticker geometry NOT accepted:"
+        ) {
+            "Sticker JSON rejected; check CT identity, magnet positions, and details in setup."
+        } else if !context.hdmm_marker_coordinate_input.trim().is_empty() {
+            "Manual CT LPS coordinates require independent sticker verification before Set."
+        } else {
+            "Import geometry from the current CBCT, then load an operator-reviewed sticker JSON."
+        };
         let rigid_plots = column![
             text(if rigid.input_unreliable.is_some() {
                 "HDMM PREDICTION INVALID NOW — plot contains FROZEN earlier accepted estimates (NOT live HDMM)"
             } else {
                 "Hall-predicted HDMM marker displacement (NOT measured HDMM)"
             }),
+            // Keep a large Hall-derived numeric displacement immediately
+            // above its graph for side-by-side comparison with the external
+            // optical HDMM display. HOLD/INVALID must never look live.
+            text(hdmm_display.value).size(34).color(hdmm_value_color),
+            text(hdmm_display.caption)
+                .size(13)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            row![
+                if context.cbct_geometry.is_some() {
+                    button("Load reviewed sticker")
+                        .on_press(Message::ImportReviewedHdmmSticker)
+                } else { button("Load reviewed sticker") },
+                if !context.hdmm_marker_coordinate_input.trim().is_empty() {
+                    button("Set HDMM point")
+                        .on_press(Message::ApplyHdmmMarkerCoordinates)
+                } else { button("Set HDMM point") },
+            ].spacing(8),
+            text(hdmm_review_hint)
+                .size(12)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             hdmm_prediction_plot(rigid.hdmm_history),
             text(if rigid.input_unreliable.is_some() {
                 "FROZEN PRE-WARNING RIGID MOTION — NOT CURRENT TRACKING"
