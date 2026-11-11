@@ -70,6 +70,8 @@ git switch a1-vgm-validation
 git pull --ff-only origin a1-vgm-validation
 $outDir = '.\analysis_outputs\hdmm_sticker_validation'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+# Make proposal path absolute before switching back to the live-app repository.
+$outDir = (Resolve-Path $outDir).Path
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $proposal = "$outDir\next_gk_anatomy_first_$stamp.json"
 python .\tools\cbct_bridge\hdmm_anatomy_first.py propose `
