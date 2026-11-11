@@ -1,3 +1,55 @@
+## HDMM sticker reference and cropped-scan recovery (November 10, 2026)
+
+The standalone app source includes `app/python_cbct/hdmm_sticker_geometry.py`
+with an operator-reviewed CT HDMM marker workflow. It is intentionally a
+**separate Python CLI**, not automatic marker selection or a new fitting
+calibration step. It does not require the neighboring research repository.
+
+1. In a scan with **the complete sticker visible**, run `inspect` with
+   an independently examined approximate nose/sticker LPS position.
+   Review the proposed bright/dark candidates in the original CT; the
+   source does not assert any candidate is the optical sticker.
+2. After independently confirming the sticker in CT or metrologically
+   measuring a rigid sticker-to-fiducial offset, record the LPS point with
+   `approve` and its physical evidence note. The approval is hashed
+   against the reference CT detector report, and a CT-visible reference
+   cannot be approved if its assumed support is clipped by the volume.
+3. For a subsequent cropped CT, run `transfer` with the reviewed reference
+   and both CT detections files. The algorithm registers stationary side
+   receiver chips, then computes head rigid motion from three CT magnets.
+   Pass `--target-scan` and `--review-target-radius-mm 12` to get an
+   additional *candidate-only* inspection around the predicted point.
+   It reports `TARGET_FULL_FOV_CANDIDATES_ONLY`,
+   `TARGET_EDGE_CROPPED_UNCONFIRMED` or
+   `PREDICTED_TARGET_OUTSIDE_RECONSTRUCTED_FOV`. The coordinates are
+   **predicted**, not recovered by observing a completely missing sticker.
+4. No auto-import into the live tracking profile is permitted. Enter the
+   separately verified point through the existing explicit marker/CT
+   geometry review workflow. A sticker reattached or moving relative to
+   the magnet carrier invalidates the previous reference.
+
+**For complete usage and limitations**, see the research repository
+`docs/GK_HDMM_STICKER_REFERENCE_RECOVERY.md` on
+`a1-vgm-validation`; the CLI is independently shipped here with
+identical implementation and mirrored tests.
+
+```powershell
+cd F:\GitHub\magnetic_board_driver
+git pull --ff-only origin feature/live-rigid-body-fit
+python -m pytest -q app/python_cbct/test_hdmm_sticker_geometry.py
+python app/python_cbct/hdmm_sticker_geometry.py --help
+python app/python_cbct/hdmm_sticker_geometry.py transfer --help
+```
+
+**Status:** synthetic test cases are committed but new code has not yet
+been run against real sticker-positive and edge-cropped CBCT series,
+and the user still needs a complete reference CT or independently
+measured fixed offset. Rectangular reconstructed-volume coverage does
+not prove physical conebeam support or optical sticker visibility.
+No board/magnet/BB CT detector behavior or live fitter was changed.
+
+---
+
 # Gamma Knife live app — background, HDMM proxy, repeat acquisition, raw sensor QC, DICOM packaging
 
 Status: **implemented in source on `feature/live-rigid-body-fit`, not yet compiled or experimentally validated on the user's Windows machine**. The app is for **experimental**, not clinical, tracking.
