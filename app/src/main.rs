@@ -24,6 +24,7 @@ use sensor_trace_plot::{sensor_trace_plot, TraceRangeGuides};
 mod live_fit;
 mod rigid_fit;
 mod cbct_geometry;
+mod hdmm_sticker;
 mod gk_background;
 use gk_background::GkBackgroundFile;
 mod stage_presets;
@@ -142,6 +143,8 @@ enum Message {
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
     UpdateHdmmMarkerCoordinates(String),
+    ImportReviewedHdmmSticker,
+    ReviewedHdmmStickerFilePicked(Option<PathBuf>),
     ApplyHdmmMarkerCoordinates,
     ClearHdmmMarkerCoordinates,
     CopyRigidStatus,
@@ -342,6 +345,7 @@ struct Context {
     cbct_setup_status: String,
     cbct_setup_checking: bool,
     hdmm_marker_coordinate_input: String,
+    hdmm_sticker_source_status: String,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -821,6 +825,18 @@ fn import_gk_background_file(
         .add_filter("JSON", &["json"])
         .set_parent(&window);
     async move { dialog.pick_file().await.map(|handle|handle.path().to_path_buf()) }
+}
+
+fn pick_reviewed_hdmm_sticker_file(
+    window: &dyn iced::Window,
+) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Import reviewed HDMM CT marker location (NOT raw bright-object candidates)")
+        .add_filter("HDMM sticker geometry JSON", &["json"])
+        .set_parent(&window);
+    async move {
+        dialog.pick_file().await.map(|handle| handle.path().to_path_buf())
+    }
 }
 
 fn save_gk_calibration_file(
@@ -1973,6 +1989,60 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         }
         Message::UpdateHdmmMarkerCoordinates(value) => {
             context.hdmm_marker_coordinate_input=value;
+            context.hdmm_sticker_source_status =
+                "MANUAL ENTRY — independently verify actual sticker identity and CURRENT CT LPS coordinates; not automatically detected.".into();
+            Task::none()
+        }
+        Message::ImportReviewedHdmmSticker => {
+            if context.cbct_geometry.is_none() {
+                context.hdmm_sticker_source_status =
+                    "Import matching CT geometry BEFORE loading a reviewed HDMM marker.".into();
+                return Task::none();
+            }
+            iced::window::oldest()
+                .and_then(|id| iced::window::run(id, pick_reviewed_hdmm_sticker_file))
+                .then(Task::future)
+                .map(Message::ReviewedHdmmStickerFilePicked)
+        }
+        Message::ReviewedHdmmStickerFilePicked(picked) => {
+            let Some(path) = picked else { return Task::none(); };
+            // An old marker must not survive a newly attempted, incompatible
+            // import. Operator has to click Set HDMM point after successful
+            // review; the JSON picker NEVER directly activates fitting.
+            context.rigid_fit.clear_hdmm_target();
+            context.hdmm_marker_coordinate_input.clear();
+            let result = (|| {
+                let geometry = context.cbct_geometry.as_ref()
+                    .ok_or("No current CT geometry loaded")?;
+                let size = std::fs::metadata(&path)
+                    .map_err(|e| format!("Cannot read marker JSON metadata: {e}"))?.len();
+                if size > 2_000_000 {
+                    return Err("HDMM marker JSON exceeds 2 MB".to_owned());
+                }
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Cannot read marker JSON: {e}"))?;
+                let magnets = geometry.magnets.iter()
+                    .map(|m| (m.name.as_str(), m.center_lps_mm))
+                    .collect::<Vec<_>>();
+                hdmm_sticker::parse_reviewed_hdmm_point(
+                    &raw, &magnets, &geometry.frame_uid
+                )
+            })();
+            match result {
+                Ok(reviewed) => {
+                    let p = reviewed.marker_lps_mm;
+                    context.hdmm_marker_coordinate_input =
+                        format!("{:.6},{:.6},{:.6}", p[0], p[1], p[2]);
+                    context.hdmm_sticker_source_status = format!(
+                        "REVIEW REQUIRED BEFORE ACTIVATING: {}. Source file: {}. Inspect the predicted/reference point in its CT scan, then click Set HDMM point.",
+                        reviewed.provenance, path.display()
+                    );
+                }
+                Err(error) => {
+                    context.hdmm_sticker_source_status =
+                        format!("HDMM sticker geometry NOT accepted: {error}");
+                }
+            }
             Task::none()
         }
         Message::ApplyHdmmMarkerCoordinates => {
@@ -1992,6 +2062,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::ClearHdmmMarkerCoordinates => {
             context.rigid_fit.clear_hdmm_target();
             context.hdmm_marker_coordinate_input.clear();
+            context.hdmm_sticker_source_status = "HDMM point cleared".into();
             Task::none()
         }
         Message::CaptureRigidBackground => {
@@ -2967,7 +3038,18 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(position_line.clone()),
             text(rotation_line.clone()),
             text("HDMM comparison (predicted from rigid pose — NOT measured HDMM):"),
-            text("Enter the actual HDMM reflective sticker's independently confirmed CT LPS X,Y,Z (mm). A CT glass BB is NOT automatically the sticker."),
+            text("Use a physically reviewed HDMM sticker reference or a magnet-rigid transferred point matching the CURRENT CT. A target-scan prediction is not a direct CT detection. Original glass BB is not the optical reflector."),
+            if context.cbct_geometry.is_some() {
+                button("Load reviewed sticker JSON")
+                    .on_press(Message::ImportReviewedHdmmSticker)
+            } else {
+                button("Load reviewed sticker JSON")
+            },
+            text(if context.hdmm_sticker_source_status.is_empty() {
+                "No reviewed sticker file loaded. Manual CT LPS entry requires independent verification."
+            } else {
+                context.hdmm_sticker_source_status.as_str()
+            }).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             row![
                 text_input("CT LPS X,Y,Z (mm)",&context.hdmm_marker_coordinate_input)
                     .on_input(Message::UpdateHdmmMarkerCoordinates),
