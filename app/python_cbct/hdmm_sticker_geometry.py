@@ -451,6 +451,72 @@ def transfer_reference(reference_record, reference_detections, target_detections
     }
 
 
+def review_transferred_marker_target(
+    transfer, volume, affine_ras, *, search_radius_mm=12.0,
+):
+    """Inspect a transfer in target CT without promoting a blob to a sticker.
+
+    Uses the target prediction established WITHOUT optical HDMM data; a
+    nearby bright/dark spot is only a candidate. Partial or missing FOV
+    must remain explicitly unconfirmed. No source data are modified.
+    """
+    if transfer.get("format") != TRANSFER_FORMAT or (
+        transfer.get("status") != "RIGID_TRANSFER_ESTIMATE_NOT_DIRECT_CT_DETECTION"
+    ):
+        raise ValueError("review requires a gated rigid-transfer report")
+    data = np.asarray(volume)
+    if data.ndim != 3 or not np.isfinite(data).all():
+        raise ValueError("target CT must be a finite 3D volume")
+    center = finite_point(transfer["predicted_target_hdmm_marker_lps_mm"])
+    target_fov = fov_status(
+        data.shape, affine_ras, center,
+        marker_radius_mm=(
+            transfer.get("target_fov", {}).get("assumed_support_radius_mm", 4.0)
+        ),
+    )
+    output = {
+        "format": "gk_hdmm_sticker_transfer_target_review_v1",
+        "coordinate_frame": "DICOM_LPS_mm",
+        "predicted_target_hdmm_marker_lps_mm": center.tolist(),
+        "target_fov": target_fov,
+        "transferred_from_reviewed_reference": True,
+        "direct_target_sticker_identification": False,
+        "optical_hdmm_data_used_for_candidate_ranking": False,
+        "source_data_modified": False,
+        "nearby_ct_candidates": [],
+        "status": "PREDICTED_TARGET_OUTSIDE_RECONSTRUCTED_FOV",
+    }
+    if target_fov["status"] == "OUTSIDE_FOV":
+        output["note"] = (
+            "Target center lies outside the reconstructed volume. No target "
+            "sticker coordinates were measured; keep the rigid transfer as "
+            "a model-derived estimate only."
+        )
+        return output
+    nearby = candidate_report(
+        data, affine_ras, center, radius_mm=search_radius_mm
+    )
+    output["nearby_ct_candidates"] = nearby["candidates"]
+    output["nearby_candidate_count"] = nearby["candidate_count"]
+    if target_fov["status"] == "CROPPED_OR_EDGE_LIMITED":
+        output["status"] = "TARGET_EDGE_CROPPED_UNCONFIRMED"
+        output["note"] = (
+            "Sticker support intersects the reconstructed-volume edge. "
+            "Visible fragments might be among the candidates; without a "
+            "reviewed shape/point correspondence the complete center is "
+            "NOT measured from this scan."
+        )
+    else:
+        output["status"] = "TARGET_FULL_FOV_CANDIDATES_ONLY"
+        output["note"] = (
+            "Review these predicted-location CT candidates in the actual "
+            "images against an independently documented sticker appearance. "
+            "The transfer remains unverified by this scan; neither nearest "
+            "blob nor strongest contrast is automatically accepted."
+        )
+    return output
+
+
 def load_volume(scan_path):
     from cbct_detect import scan_path as resolve_scan
     import detector_core as core
@@ -491,6 +557,8 @@ def cli(argv=None):
     transfer.add_argument("--reference-detections", required=True, type=Path)
     transfer.add_argument("--target-detections", required=True, type=Path)
     transfer.add_argument("--target-scan", type=Path)
+    transfer.add_argument("--review-target-radius-mm", type=float, default=None,
+                          help="if target CT is provided, inspect +/- ROI around transferred sticker; leave unset to skip")
     transfer.add_argument("--out", required=True, type=Path)
 
     args = ap.parse_args(argv)
@@ -520,6 +588,13 @@ def cli(argv=None):
             dims = volume.shape
         record = transfer_reference(reference, source, target,
                                     target_volume_shape=dims, target_affine_ras=affine)
+        if args.review_target_radius_mm is not None:
+            if not args.target_scan:
+                raise ValueError("--review-target-radius-mm requires --target-scan")
+            record["target_review"] = review_transferred_marker_target(
+                record, volume, affine,
+                search_radius_mm=args.review_target_radius_mm,
+            )
     write_no_overwrite(args.out, record)
     print(f"{record['status']}: {args.out}")
     if args.mode == "inspect":
@@ -527,6 +602,11 @@ def cli(argv=None):
     if args.mode == "transfer":
         print("Predicted target LPS mm:", record["predicted_target_hdmm_marker_lps_mm"])
         print("Target FOV:", record["target_fov"]["status"])
+        if "target_review" in record:
+            review = record["target_review"]
+            print("Target CT review:", review["status"],
+                  "candidates:", len(review["nearby_ct_candidates"]))
+            print("DO NOT treat transfer/candidate as directly detected sticker.")
 
 
 if __name__ == "__main__":
