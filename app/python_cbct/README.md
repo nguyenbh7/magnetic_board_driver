@@ -1,3 +1,28 @@
+## HDMM sticker reference and cropped-scan geometry (2026-11-10)
+
+The bundled **hdmm_sticker_geometry.py** provides three independent,
+read-only commands: **inspect** an approximate nose/reflector CT region
+for local positive/negative contrast candidates, **approve** an
+independently reviewed reference optical sticker point from an intact
+scan, and **transfer** that CT-LPS point to a later cropped scan using
+stationary receiver registration and three-magnet head motion.
+
+This is NOT an autonomous optical sticker classifier. An optical
+reflector can be invisible in CBCT or cut off by the reconstruction FOV.
+No valid reference or physical measurement means **no recovered point**.
+The live app's **Load reviewed sticker JSON** validates the geometry
+against the currently loaded CT and only populates a coordinate field
+for separate manual Set HDMM point approval; no tracking is activated.
+
+Full commands and scan/measurement prerequisites:
+[GK HDMM sticker reference protocol](../../docs/GK_HDMM_STICKER_REFERENCE_WORKFLOW_20261110.md).
+The lab-package script already copies all Python files in this folder,
+so this module is included in portable app ZIPs without another Git
+checkout. Synthetic tests are in test_hdmm_sticker_geometry.py
+(install pytest separately for developer validation).
+
+---
+
 ## Lab laptop installation and package diagnostics (2026-11-06)
 
 **Yes, this folder already has `requirements.txt`.** It is the authoritative
