@@ -22,6 +22,52 @@ rotation about the CT-defined origin. It is NOT the vendor HDMM signal,
 not a measured optical marker center, and not a clinical motion-tracking
 validation.
 
+## Current in-app CT sticker workflow (2026-11-12 UI cleanup)
+
+The GUI now has one **HDMM optical sticker — CT detection and review**
+panel directly after **DICOM Geometry — CT preview**. Its controls have
+different responsibilities; no second Load/Set buttons appear next to the
+live displacement graph:
+
+1. Import the **original** CBCT ZIP or DICOM folder in the DICOM panel;
+   the ordinary detector finds magnets/48 chips/optional glass BB and
+   explicitly reports **HDMM NOT SEARCHED**.
+2. Click **Find HDMM candidates from CT**. The app runs its own
+   `app/python_cbct/hdmm_anatomy_first.py` with slice-profile-v2 and a
+   25-mm experimental search radius in a worker; JSON and PNG are saved
+   alongside the imported CT detection report. No separate research repo
+   or Jupyter notebook is required.
+3. Click **Open CT review image** and check the **original reconstructed
+   CT slices**, including the FOV near the nasal tip. Candidate IDs are
+   unverified; the preview focus is not an automatic marker detection.
+4. Select the verified candidate from the dropdown, write at least 20
+   characters documenting the physical CT evidence, and explicitly click
+   **Approve operator-reviewed CT candidate**. The Python review bridge
+   checks original scan hash, affine, detector report hash, FrameOfReferenceUID,
+   FOV support, candidate ID, and operator note. Cropped/ROI-limited components
+   are rejected. If the anatomy detector abstains or the sticker isn't visible,
+   do not approve a guessed position.
+5. A successfully reviewed JSON is **staged** into the CT LPS input, not
+   activated. Inspect provenance and coordinates, then click **Set HDMM
+   point**. The graph shows a Hall-predicted *point* movement, not optical
+   HDMM readings or a calibrated optical centroid.
+6. **Load existing reviewed sticker JSON** and raw manual CT LPS coordinates
+   remain separate, clearly labeled fallback inputs inside that same panel.
+   Changing a CT source or detector invalidates any previous sticker review.
+7. Finally, after a valid rigid Hall fit, **Set zero** in magnetic calibration
+   at the same stationary physical pose as the vendor optical HDMM zero.
+
+The **Live Tracking** monitor keeps the large numeric readout beside raw Hall
+traces but contains no duplicate marker selection buttons. **Sensor Traces**
+uses the same axis-specific all-sensor limits as Live Tracking; the conflicting
+legacy manual scalar warning input has been removed.
+
+The legacy command-line walkthrough below is optional for offline research
+or reproducibility. The GUI now runs both proposal and approval workflows.
+The GUI and Rust build must still pass Windows testing after this integration.
+
+---
+
 ## 1. Build the app and analyze its tests
 
 ```powershell
