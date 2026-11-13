@@ -1437,7 +1437,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
         Message::CbctSetupChecked(result) => {
             context.cbct_setup_checking=false;
             context.cbct_setup_status=match result {
-                Ok(summary)=>format!("DICOM environment ready for Original/Optimized.\n{summary}"),
+                Ok(summary)=>format!("DICOM Python package check complete.\n{summary}"),
                 Err(error)=>format!("DICOM setup needs attention:\n{error}"),
             };
             Task::none()
