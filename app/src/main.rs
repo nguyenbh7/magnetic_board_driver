@@ -3216,6 +3216,128 @@ fn view(context: &Context) -> Element<'_, Message> {
         .width(Length::Fill)
         .style(iced::widget::container::bordered_box);
 
+        // One HDMM CT workflow. Neither CBCT import nor ordinary bright-object
+        // detection identifies a reflective sticker. Review the CT image before
+        // approving an unverified candidate; only Set activates its position.
+        let hdmm_choices = context.hdmm_ct_proposal.as_ref()
+            .map(|p| p.candidates.iter().map(|c|c.id.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut hdmm_candidate_rows = column![
+            text("CT proposal components (NOT optical sticker identities)").size(14),
+        ].spacing(4);
+        if let Some(proposal) = context.hdmm_ct_proposal.as_ref() {
+            if proposal.candidates.is_empty() {
+                hdmm_candidate_rows = hdmm_candidate_rows.push(text(
+                    "No candidate returned. The detector may have abstained; do not invent sticker coordinates."
+                ));
+            }
+            for candidate in proposal.candidates.iter().take(24) {
+                hdmm_candidate_rows = hdmm_candidate_rows.push(
+                    text(candidate.detail.as_str()).size(12)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                );
+            }
+            if proposal.candidates.len() > 24 {
+                hdmm_candidate_rows = hdmm_candidate_rows.push(
+                    text(format!("Showing first 24 of {} candidates; full list in the saved JSON.",
+                        proposal.candidates.len()))
+                );
+            }
+            if let Some(focus) = proposal.distal_review_focus.as_deref() {
+                hdmm_candidate_rows = hdmm_candidate_rows.push(text(format!(
+                    "Preview focus: {focus} (anatomical review aid ONLY; NOT selected or approved)"
+                )));
+            }
+        }
+        let hdmm_ready_for_review = context.hdmm_ct_proposal.as_ref()
+            .zip(context.hdmm_ct_candidate_choice.as_ref())
+            .is_some_and(|(p, selected)| p.candidates.iter()
+                .any(|c| &c.id == selected && !c.edge_limited));
+        let hdmm_can_approve = hdmm_ready_for_review
+            && context.hdmm_ct_review_note.trim().chars().count() >= 20
+            && !context.hdmm_ct_searching && !context.hdmm_ct_approving
+            && !context.cbct_importing;
+        let hdmm_panel = container(column![
+            text("HDMM optical sticker — CT detection and review").size(20),
+            text("1. Import the original CT ZIP/folder above. 2. Find unverified candidate components. 3. Open the CT review image AND examine original slices. 4. Select the physically verified sticker and document evidence. 5. Approve/Set its CT coordinates. The glass BB is NOT the optical sticker.")
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            row![
+                if context.cbct_geometry.is_some()
+                    && !context.cbct_importing && !context.hdmm_ct_searching
+                    && !context.hdmm_ct_approving
+                {
+                    button("Find HDMM candidates from CT")
+                        .on_press(Message::FindHdmmCtCandidates)
+                } else { button("Find HDMM candidates from CT") },
+                if context.hdmm_ct_proposal.as_ref()
+                    .and_then(|p|p.preview_path.as_ref()).is_some()
+                {
+                    button("Open CT review image").on_press(Message::OpenHdmmCtPreview)
+                } else { button("Open CT review image") },
+                if context.hdmm_ct_proposal.is_some() {
+                    button("Copy CT review paths").on_press(Message::CopyHdmmCtReportPath)
+                } else { button("Copy CT review paths") },
+            ].spacing(8),
+            text(if context.hdmm_ct_status.is_empty() {
+                if context.cbct_geometry.is_some() {
+                    "HDMM optical sticker NOT SEARCHED. The CBCT magnet/board/BB detector does not run this step."
+                } else {
+                    "No current CT geometry. Import a CBCT to enable the sticker search."
+                }
+            } else {
+                context.hdmm_ct_status.as_str()
+            }).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            hdmm_candidate_rows,
+            row![
+                text("Operator-selected CT candidate:"),
+                pick_list(
+                    hdmm_choices,
+                    context.hdmm_ct_candidate_choice.clone(),
+                    Message::SelectHdmmCtCandidate,
+                ),
+            ].spacing(8),
+            text("Approval is an explicit claim that you independently verified the physical sticker in the ORIGINAL CT, not just the suggested image crosshair. A candidate near the scan/ROI boundary is prohibited."),
+            text_input("Document CT evidence for optical sticker identity (20+ characters)",
+                &context.hdmm_ct_review_note)
+                .on_input(Message::UpdateHdmmReviewNote)
+                .width(Length::Fill),
+            if hdmm_can_approve {
+                button("Approve operator-reviewed CT candidate")
+                    .on_press(Message::ApproveHdmmCtCandidate)
+            } else { button("Approve operator-reviewed CT candidate") },
+            text("An approved CT component centroid is an estimate, NOT the calibrated optical reflector center. Automatic selection/approval is disabled."),
+            row![
+                if context.cbct_geometry.is_some() {
+                    button("Load existing reviewed sticker JSON")
+                        .on_press(Message::ImportReviewedHdmmSticker)
+                } else { button("Load existing reviewed sticker JSON") },
+                text("Use this only for a separately reviewed same-CT reference or strict rigid transfer."),
+            ].spacing(8),
+            text(if context.hdmm_sticker_source_status.is_empty() {
+                "No reviewed HDMM point staged. Manual CT LPS coordinates below are an explicit fallback requiring independent physical verification."
+            } else {
+                context.hdmm_sticker_source_status.as_str()
+            }).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            row![
+                text_input("HDMM point CT LPS X,Y,Z (mm)",
+                    &context.hdmm_marker_coordinate_input)
+                    .on_input(Message::UpdateHdmmMarkerCoordinates),
+                if context.cbct_geometry.is_some()
+                    && !context.hdmm_marker_coordinate_input.trim().is_empty() {
+                    button("Set HDMM point").on_press(Message::ApplyHdmmMarkerCoordinates)
+                } else { button("Set HDMM point") },
+                button("Clear HDMM point").on_press(Message::ClearHdmmMarkerCoordinates),
+            ].spacing(8),
+            text(if rigid.hdmm_point_ready {
+                "HDMM CT point SET for Hall rigid projection; the numerical graph is NOT measured optical HDMM."
+            } else {
+                "HDMM point NOT SET: large Hall displacement remains disabled until approval/Set and rigid zero."
+            }),
+        ].spacing(9))
+        .padding(12)
+        .width(Length::Fill)
+        .style(iced::widget::container::bordered_box);
+
         // Magnetic calibration stays separate from CT geometry and approval.
         let tracking_panel = container(column![
             text("Magnetic calibration and tracking").size(20),
@@ -3497,9 +3619,10 @@ fn view(context: &Context) -> Element<'_, Message> {
         // CT import/mapping remains available when needed, but does not
         // obstruct monitoring during an active 6DOF positioning experiment.
         rigid_content = rigid_content
-            .push(tracking_panel)
             .push(dicom_panel)
-            .push(cad_mapping_panel);
+            .push(hdmm_panel)
+            .push(cad_mapping_panel)
+            .push(tracking_panel);
 
         let mut live_fit_content = column![
             text("Independent magnet tracking — one fitted magnet per board"),
