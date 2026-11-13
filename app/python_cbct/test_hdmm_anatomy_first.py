@@ -127,3 +127,39 @@ def test_too_small_or_nonfinite_volume_fails_closed():
     v[0,0,0]=np.nan
     with pytest.raises(ValueError,match="reasonably sized"):
         mod.anatomy_proposals(v,LPS_IDENTITY_AFFINE)
+
+
+def test_distal_nose_review_focus_is_not_nearest_blob_or_automatic_identity():
+    anatomy = {
+        "status": "ANATOMY_HEURISTIC_REVIEW_REQUIRED",
+        "nose_region_landmark_lps_mm": [103., -192., -135.],
+    }
+    candidates = [
+        {"candidate_id": "N01", "centroid_lps_mm": [106., -194., -141.],
+         "threshold_raw_ct": 2000., "voxel_count": 11},
+        {"candidate_id": "N02", "centroid_lps_mm": [92., -181., -132.],
+         "threshold_raw_ct": 2000., "voxel_count": 17},
+        {"candidate_id": "N06", "centroid_lps_mm": [104., -191., -154.],
+         "threshold_raw_ct": 2400., "voxel_count": 356,
+         "touches_search_roi_boundary": True},
+    ]
+    before = list(candidates)
+    focus = mod.choose_distal_review_focus(anatomy, candidates)
+    assert focus == "N06"
+    assert candidates == before  # no reordering, accepting, or false identification
+    assert mod.choose_distal_review_focus(anatomy, candidates[:2]) is None
+    assert mod.choose_distal_review_focus({"status": "ABSTAIN"}, candidates) is None
+
+
+def test_distal_review_focus_rejects_midface_or_lateral_hardware():
+    anatomy = {
+        "status": "ANATOMY_HEURISTIC_REVIEW_REQUIRED",
+        "nose_region_landmark_lps_mm": [103., -192., -135.],
+    }
+    candidates = [
+        {"candidate_id": "N01", "centroid_lps_mm": [103., -192., -136.],
+         "threshold_raw_ct": 2400., "voxel_count": 500},
+        {"candidate_id": "N02", "centroid_lps_mm": [159., -192., -155.],
+         "threshold_raw_ct": 2400., "voxel_count": 500},
+    ]
+    assert mod.choose_distal_review_focus(anatomy, candidates) is None
