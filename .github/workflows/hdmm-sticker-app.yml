@@ -6,6 +6,7 @@ on:
       - 'app/src/hdmm_sticker.rs'
       - 'app/src/main.rs'
       - 'app/src/hdmm_ct_workflow.rs'
+      - 'app/src/rigid_fit.rs'
       - 'app/src/cbct_geometry.rs'
       - 'app/python_cbct/hdmm_anatomy_first.py'
       - 'app/python_cbct/approve_anatomy_hdmm_sticker.py'
