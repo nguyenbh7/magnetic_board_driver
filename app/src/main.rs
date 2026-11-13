@@ -173,7 +173,6 @@ enum Message {
         board_id: u16,
         sensor_index: u8,
     },
-    SetSensorComponentFullScale(String),
 
     StartFieldStream,
     FieldStreamStarted(Result<(), String>),
@@ -344,8 +343,6 @@ struct Context {
     offline_replay: Option<OfflineReplay>,
     replay_loading: bool,
     replay_notice: String,
-    /// Requires an operator-verified range for the current MLX gain/res config.
-    sensor_component_full_scale_mt: String,
     dashboard_tab: DashboardTab,
     tracking_mode: TrackingMode,
     board_presence: BoardPresence,
@@ -1239,10 +1236,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.cbct_geometry = None;
                     context.hdmm_marker_coordinate_input.clear();
                     context.hdmm_sticker_source_status.clear();
+                    context.clear_hdmm_ct_review();
                     context.cbct_status = "Old live CBCT setup cleared when offline recording was loaded; explicitly import matching provenance for further analysis.".into();
                     context.mlx_status = None; // Historical log lacks true register settings.
-                    context.sensor_component_full_scale_mt.clear();
-                    context.received_stream_frames = 0;
+                            context.received_stream_frames = 0;
                     context.dashboard_tab = DashboardTab::LiveTracking;
                     context.stream_status = "idle".into();
                 }
@@ -1328,10 +1325,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.reset_input_guard_for_new_acquisition();
             context.gk_calibration = GkCalibration::default();
             context.sensor_traces = SensorTraceState::default();
-            context.sensor_component_full_scale_mt.clear();
             context.mlx_status = None; // old port's cached settings are not this device's
             context.hdmm_marker_coordinate_input.clear();
             context.hdmm_sticker_source_status.clear();
+            context.clear_hdmm_ct_review();
             context.dashboard_tab = DashboardTab::LiveTracking;
             context.tracking_mode = TrackingMode::Rigid6Dof;
             context.stream_status = "idle".to_string();
@@ -2723,11 +2720,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 old.hall_conf!=status.hall_conf);
             context.mlx_hall_conf = hall_conf_value_to_label(status.hall_conf).to_string();
             context.mlx_status = Some(status);
-            // Changing gain/resolution can change full-scale, but merely
-            // rereading unchanged settings should preserve the user range.
+            // A genuine settings change invalidates calibrated field/pose
+            // assumptions; read-only cached status does not.
             if changed {
-                context.sensor_component_full_scale_mt.clear();
-                // No old GK stationary model may be silently reused after
+                    // No old GK stationary model may be silently reused after
                 // an observed conversion-configuration change.
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.gk_calibration.calibrated_candidate = None;
@@ -2828,10 +2824,6 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             sensor_index,
         } => {
             context.sensor_traces.select_sensor(board_id, sensor_index);
-            Task::none()
-        }
-        Message::SetSensorComponentFullScale(value) => {
-            context.sensor_component_full_scale_mt=value;
             Task::none()
         }
     }
@@ -3794,12 +3786,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(live_hall_trace_limit_caption(context))
                 .size(12)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            text("Live back-off warning uses axis-specific nominal limits and latest samples from ALL sensors. This separate legacy panel's optional manual scalar applies only to its historical peak warning; no hardware saturation flag is available."),
-            row![
-                text("Optional manual common full-scale for legacy peak history (mT):"),
-                text_input("Range for current gain/res", &context.sensor_component_full_scale_mt)
-                    .on_input(Message::SetSensorComponentFullScale),
-            ].spacing(8),
+            text("Both dashboards use the SAME axis-specific all-48-sensor input warning and dotted nominal limits. These are digital-range advisories, not verified analog saturation detection."),
         ]
         .spacing(12);
 
@@ -3847,15 +3834,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                         } else { "Received field values are finite; clipping remains possible".into() }),
                         text(match (summary.peak_component_mt,summary.peak_sensor_index) {
                             (Some(peak),Some(sensor)) => {
-                                let limit=context.sensor_component_full_scale_mt.trim()
-                                    .parse::<f64>().ok().filter(|v|v.is_finite() && *v>0.0);
-                                format!("Peak across all sensors: {:.3} mT (sensor {}). {}",
-                                    peak,sensor,
-                                    if sensor_trace::above_warning_margin(Some(peak),limit) {
-                                        "WARNING >=90% of verified full-scale; possible clipping"
-                                    } else if limit.is_some() {
-                                        "Below set alert margin; not proof against saturation"
-                                    } else {"Full-scale unknown; cannot assess saturation"})
+                                format!("Historical peak across all sensors: {:.3} mT (sensor {}). Use the shared current all-sensor axis-specific status above; historical peak alone cannot establish absence of clipping.",
+                                    peak,sensor)
                             }
                             _=>"No Hall fields yet".into(),
                         }),
