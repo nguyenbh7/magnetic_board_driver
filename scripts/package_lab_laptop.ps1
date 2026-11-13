@@ -5,6 +5,7 @@
 # Use -SkipBuild if target/release/app.exe is already built and no app is running.
 param(
     [switch]$SkipBuild,
+    [switch]$RequireHybrid,
     [string]$OutputZip = ""
 )
 
@@ -13,6 +14,10 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $binary = Join-Path $repo "target\release\app.exe"
 $pythonSource = Join-Path $repo "app\python_cbct"
 $setup = Join-Path $repo "scripts\setup_dicom_windows.ps1"
+$hybridFile = Join-Path $pythonSource "hybrid_board_detector.py"
+if ($RequireHybrid -and -not (Test-Path -LiteralPath $hybridFile -PathType Leaf)) {
+    throw "Hybrid packaging requested, but app/python_cbct/hybrid_board_detector.py is missing. Vendor the reviewed notebook first."
+}
 
 if (-not $SkipBuild) {
     Write-Host "Building release app (close any running app.exe first)..."
@@ -63,8 +68,9 @@ GK live fitting app — lab laptop quick start
        powershell -ExecutionPolicy Bypass -File .\scripts\setup_dicom_windows.ps1
 4) Start .\app.exe. Open DICOM Geometry -> Check DICOM packages.
    If a Python environment error occurs, click Copy setup commands.
-5) Original / Optimized use the packaged Python detector. Hybrid is NOT
-   available until the separately reviewed algorithm is integrated.
+5) Original / Optimized use the packaged Python detector. Hybrid availability:
+   __HYBRID_STATUS__
+   Never select Hybrid unless the bundled Python environment reports ready.
 6) If you previously set CBCT_DETECT_SCRIPT or CBCT_PYTHON to another
    installation, remove those overrides so the app picks the bundled code.
 7) Keep app.exe and app/python_cbct together. No other Git checkout needed.
@@ -74,6 +80,12 @@ app/python_cbct/requirements.txt. Hall streaming and Rust magnetic fitting
 do NOT require those Python packages. The app does not install anything
 automatically. This is experimental GK tracking software; no clinical use.
 '@
+    $hybridStatus = if (Test-Path -LiteralPath $hybridFile -PathType Leaf) {
+        "Reviewed Hybrid detector module INCLUDED in app/python_cbct."
+    } else {
+        "Hybrid source NOT bundled; Original/Optimized only."
+    }
+    $readme = $readme.Replace("__HYBRID_STATUS__", $hybridStatus)
     Set-Content -LiteralPath (Join-Path $folder "README_LAB_LAPTOP.txt") -Value $readme -Encoding UTF8
     Compress-Archive -LiteralPath $folder -DestinationPath $OutputZip -CompressionLevel Optimal
     Write-Host "Created portable app + offline source ZIP: $OutputZip"
