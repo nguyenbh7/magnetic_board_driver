@@ -49,6 +49,22 @@ class DicomsSetupTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("missing bundled detector",message)
 
+    def test_bundled_hybrid_is_reported_when_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            detector=Path(temp)/"cbct_detect.py"
+            detector.write_text("print('stub')", encoding="utf-8")
+            (Path(temp)/"hybrid_board_detector.py").write_text(
+                "SOURCE_FUNCTIONS_SHA256 = " + repr("f"*64), encoding="utf-8")
+            with patch.object(checker.importlib,"import_module",return_value=None),\
+                 patch.object(checker.importlib.metadata,"version",return_value="1.0"),\
+                 patch.object(checker.subprocess,"run",return_value=SimpleNamespace(
+                    returncode=0,stdout="--detector-variant",stderr=""
+                 )):
+                ok,message=checker.diagnose(detector)
+            self.assertTrue(ok)
+            self.assertIn("ready for Original/Optimized/Hybrid",message)
+            self.assertIn("Hybrid source is bundled",message)
+
     def test_good_synthetic_dependencies_reports_ready(self):
         with tempfile.TemporaryDirectory() as temp:
             detector=Path(temp)/"cbct_detect.py"
