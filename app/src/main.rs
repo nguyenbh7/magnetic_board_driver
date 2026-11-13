@@ -4218,14 +4218,12 @@ mod tracking_mode_ui_tests {
         let source_hint = source[rigid_heading..].find(
             "text(hdmm_display.caption)"
         ).expect("readout provenance and HOLD/INVALID indication") + rigid_heading;
-        let import = source[rigid_heading..].find(
-            "button(\"Load reviewed sticker\")"
-        ).expect("reviewed sticker import near prediction") + rigid_heading;
-        let activate = source[rigid_heading..].find(
-            "button(\"Set HDMM point\")"
-        ).expect("explicit HDMM marker activation near graph") + rigid_heading;
-        assert!(rigid_heading < readout && readout < source_hint
-                && source_hint < import && import < activate && activate < hdmm);
+        assert!(rigid_heading < readout && readout < source_hint && source_hint < hdmm);
+        let readout_column = &source[rigid_heading..hdmm];
+        assert!(!readout_column.contains("button(\"Set HDMM point\")"),
+            "numerical HDMM monitor must not duplicate the CT setup action");
+        assert!(!readout_column.contains("button(\"Load reviewed sticker"),
+            "reviewed sticker import belongs in one CT setup panel");
         // The invalid/current status must live in the RIGHT-HAND
         // rigid-motion column, directly after its rotation chart—not
         // above the full-width plot row where it was hard to see.
@@ -4275,6 +4273,36 @@ mod tracking_mode_ui_tests {
             ),
             "Both tab must stack Live Tracking above Sensor Traces at full width"
         );
+    }
+
+    #[test]
+    fn hdmm_ct_setup_has_one_explicit_review_and_activation_location() {
+        let source = include_str!("main.rs");
+        let panel_start = source.find("let hdmm_panel = container(column![")
+            .expect("dedicated HDMM CT workflow panel");
+        let panel_end = source[panel_start..].find("// Magnetic calibration stays separate")
+            .expect("HDMM CT panel ends before calibration") + panel_start;
+        let panel = &source[panel_start..panel_end];
+        let find = panel.find("button(\"Find HDMM candidates from CT\")")
+            .expect("run bundled anatomy-first CT algorithm");
+        let preview = panel.find("button(\"Open CT review image\")")
+            .expect("open visual candidate review");
+        let approve = panel.find("button(\"Approve operator-reviewed CT candidate\")")
+            .expect("explicit operator review");
+        let existing = panel.find("button(\"Load existing reviewed sticker JSON\")")
+            .expect("load previously reviewed reference");
+        let set = panel.find("button(\"Set HDMM point\")")
+            .expect("single explicit HDMM target activation");
+        assert!(find < preview && preview < approve && approve < existing && existing < set);
+        assert_eq!(source.matches("button(\"Set HDMM point\")").count(), 2,
+            "one enabled and one disabled form of one CT setup button");
+        assert_eq!(source.matches("button(\"Load existing reviewed sticker JSON\")").count(), 2,
+            "only one GUI location to load a reviewed sticker");
+        assert!(source.contains("Message::HdmmCtCandidatesFound(result) =>"));
+        assert!(source.contains("Message::HdmmCtCandidateApproved(result) =>"));
+        assert!(source.contains("context.clear_hdmm_ct_review();"));
+        assert!(source.contains("Optical HDMM sticker NOT SEARCHED"));
+        assert!(!source.contains("HDMM marker unavailable."));
     }
 
     #[test]
