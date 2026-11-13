@@ -65,11 +65,15 @@ def diagnose(script: Path) -> tuple[bool, str]:
         except (OSError, subprocess.TimeoutExpired) as exc:
             success = False
             lines.append(f"FAIL: cannot check detector CLI: {exc}")
-    # The known research algorithm is unavailable in the app-local snapshot.
-    if not script.with_name("hybrid_board_detector.py").is_file():
-        lines.append("NOTE: Hybrid algorithm is NOT installed; Original and Optimized can still work.")
+    hybrid_present = script.with_name("hybrid_board_detector.py").is_file()
+    if hybrid_present:
+        lines.append("PASS: Reviewed Hybrid source is bundled alongside the CT detector.")
+    else:
+        lines.append("NOTE: Hybrid source is NOT bundled; Original/Optimized remain available.")
     lines.append(
-        "RESULT: DICOM Python environment ready for Original/Optimized."
+        ("RESULT: DICOM Python environment ready for Original/Optimized/Hybrid."
+         if hybrid_present else
+         "RESULT: DICOM Python environment ready for Original/Optimized.")
         if success else "RESULT: DICOM Python environment is NOT ready. Install requirements.txt."
     )
     return success, "\n".join(lines)
