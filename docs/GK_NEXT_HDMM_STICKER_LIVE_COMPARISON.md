@@ -74,7 +74,7 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $proposal = "$outDir\next_gk_anatomy_first_$stamp.json"
 python .\app\python_cbct\hdmm_anatomy_first.py propose `
     --scan $scan --detections $det `
-    --landmark-method slice-profile-v2 --out $proposal
+    --landmark-method slice-profile-v2 --radius-mm 25 --out $proposal
 if ($LASTEXITCODE -ne 0) { throw 'Anatomy-first CT candidate proposal failed' }
 Get-Content $proposal -Raw | ConvertFrom-Json |
     Select-Object -ExpandProperty candidates |
@@ -82,7 +82,11 @@ Get-Content $proposal -Raw | ConvertFrom-Json |
 Write-Host "Inspect the original CT and $([IO.Path]::ChangeExtension($proposal,'.png'))"
 ```
 
-**Do not treat N01 or any first-listed candidate as automatically verified.**\nCurrent v2 sorts unverified components by distance to an anatomical seed and\nROI-boundary flags. The actual distal-nose feature may appear later in the\nlist; inspect every plausible nasal-tip candidate and reconstructed FOV.\nThe v2 CT-localization method has not been verified to identify an optical\nsticker automatically. 
+**Do not treat N01 or any first-listed candidate as automatically verified.**\nCurrent v2 sorts unverified components by distance to an anatomical seed and\nROI-boundary flags. The actual distal-nose feature may appear later in the\nlist; inspect every plausible nasal-tip candidate and reconstructed FOV.\nThe v2 CT-localization method has not been verified to identify an optical\nsticker automatically. The 25-mm search radius is the existing method's
+allowed maximum and is used for **new experimental review** because a
+November 12 distal feature was flagged at the former 23-mm spherical
+search boundary while appearing intact within the expanded ROI. This
+does NOT relax CT field-of-view checking or establish sticker identity.
 Review the original CT and overlay image to identify the actual physical
 HDMM reflective attachment. The thresholded CT component centroid
 will generally not equal the calibrated optical tracking center.
