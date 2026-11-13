@@ -3,8 +3,13 @@
 The experimental `hdmm_anatomy_first.py`, `hdmm_nose_slice_profile.py`,
 and supporting local CT feature code are now bundled in this repository.
 No separate research checkout or notebook is needed **at runtime**.
-They are **not yet wired to an automatic in-app Find sticker button**.
-Only the operator-reviewed reference JSON is accepted by the live app.
+The live app now has a **Find HDMM candidates from CT** button, which runs
+the proposal off-thread, opens a review PNG, and lists CT component IDs. The
+operator must select a candidate, document an independent original-CT review,
+and click **Approve operator-reviewed CT candidate**. The Python approval
+bridge rechecks source hashes and field of view and stages a reviewed JSON in
+the app. **Set HDMM point** is still required for live prediction. This is
+not automatic identification of the physical reflector or optical center.
 
 Run from repository root with the SAME imported CT and its matching
 `detections.json`, with your DICOM Python venv active:
