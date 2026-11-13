@@ -2092,6 +2092,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SelectHdmmCtCandidate(id) => {
+            if context.hdmm_ct_approving { return Task::none(); }
             // Explicitly selecting a candidate ID is NOT a sticker approval.
             if context.hdmm_ct_proposal.as_ref()
                 .is_some_and(|p|p.candidates.iter().any(|c|c.id==id)) {
@@ -2191,9 +2192,16 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                         "Operator-reviewed CT centroid saved to {}. Check staged coordinates, then click Set HDMM point. This is NOT a calibrated optical center.",
                         approved.path.display()
                     );
-                    update(context, Message::ReviewedHdmmStickerFilePicked(
+                    let next = update(context, Message::ReviewedHdmmStickerFilePicked(
                         Some(approved.path)
-                    ))
+                    ));
+                    if context.hdmm_sticker_source_status.starts_with(
+                        "HDMM sticker geometry NOT accepted:"
+                    ) {
+                        context.hdmm_ct_status =
+                            "CT reviewed file was created, but its stage/import failed; check the exact CT provenance shown below.".into();
+                    }
+                    next
                 }
                 Err(e) => {
                     context.hdmm_ct_status =
@@ -3384,8 +3392,8 @@ fn view(context: &Context) -> Element<'_, Message> {
             text(profile_status),
             row![
                 if rigid.result.is_some() {
-                    button("Set zero").on_press(Message::ResetRigidZero)
-                } else { button("Set zero") },
+                    button("Set rigid/HDMM zero").on_press(Message::ResetRigidZero)
+                } else { button("Set rigid/HDMM zero") },
                 text(if rigid.zero_ready { "Reference set" } else { "Reference not set" }),
             ].spacing(8),
             text(position_line.clone()),
