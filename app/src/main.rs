@@ -3059,8 +3059,8 @@ fn view(context: &Context) -> Element<'_, Message> {
                 ),
             ].spacing(8),
             text("Original: baseline detector, speedups off. Hybrid: alternate board detector. Optimized: accelerated maintained detector."),
-            text("Original and Optimized use scripts shipped inside this app repo (Python runtime still needed). Hybrid is experimental and unavailable until its reviewed detector source is installed."),
-            text("Changing detector revokes mapping approval. A successful CT import never enables magnetic tracking."),
+            text("Original, Hybrid and Optimized are bundled with the app. Hybrid uses separately reviewed PCB geometry; the DICOM Python environment is still required."),
+            text("Changing detector revokes mapping approval. CT import detects magnets, chips and optional glass BB ONLY. The optical HDMM sticker is a separate, operator-reviewed search; importing CT never identifies it or enables tracking."),
             row![
                 if context.cbct_setup_checking || context.cbct_importing {
                     button("Check DICOM packages")
@@ -3276,30 +3276,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             ].spacing(8),
             text(position_line.clone()),
             text(rotation_line.clone()),
-            text("HDMM comparison (predicted from rigid pose — NOT measured HDMM):"),
-            text("Use a physically reviewed HDMM sticker reference or a magnet-rigid transferred point matching the CURRENT CT. A target-scan prediction is not a direct CT detection. Original glass BB is not the optical reflector."),
-            if context.cbct_geometry.is_some() {
-                button("Load reviewed sticker JSON")
-                    .on_press(Message::ImportReviewedHdmmSticker)
-            } else {
-                button("Load reviewed sticker JSON")
-            },
-            text(if context.hdmm_sticker_source_status.is_empty() {
-                "No reviewed sticker file loaded. Manual CT LPS entry requires independent verification."
-            } else {
-                context.hdmm_sticker_source_status.as_str()
-            }).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            row![
-                text_input("CT LPS X,Y,Z (mm)",&context.hdmm_marker_coordinate_input)
-                    .on_input(Message::UpdateHdmmMarkerCoordinates),
-                button("Set HDMM point").on_press(Message::ApplyHdmmMarkerCoordinates),
-                button("Clear").on_press(Message::ClearHdmmMarkerCoordinates),
-            ].spacing(8),
-            text(if rigid.hdmm_point_ready {
-                rigid.hdmm_current_mm.map(|mm|
-                    format!("Predicted HDMM point displacement: {mm:.3} mm; compare with the external HDMM display at the same zero/time.")
-                ).unwrap_or_else(||"HDMM point selected; awaiting accepted fit after zero.".into())
-            } else {"No measured HDMM marker coordinates entered; prediction intentionally disabled.".into()}),
+            text("HDMM sticker location is configured in the separate CT sticker review panel. Set zero here only after an accepted rigid fit, at the same stationary pose as the vendor optical HDMM zero."),
             text(format!("Tracking status: {}", rigid.status)),
             text(fit_quality.clone()),
         ].spacing(9))
@@ -3360,19 +3337,19 @@ fn view(context: &Context) -> Element<'_, Message> {
             iced::Color::from_rgb8(20, 75, 110)
         };
         let hdmm_review_hint = if rigid.hdmm_point_ready {
-            "HDMM sticker point selected; see its CT provenance in the setup section."
+            "Reviewed HDMM CT point selected. Numeric prediction is Hall-derived; optical HDMM stays external."
         } else if context.hdmm_sticker_source_status.starts_with(
             "REVIEW REQUIRED BEFORE ACTIVATING:"
         ) {
-            "Reviewed CT sticker loaded. Verify the location in this CT; then press Set HDMM point."
+            "Reviewed sticker JSON staged. Confirm its CT identity, then use Set HDMM point in the CT sticker review panel."
         } else if context.hdmm_sticker_source_status.starts_with(
             "HDMM sticker geometry NOT accepted:"
         ) {
-            "Sticker JSON rejected; check CT identity, magnet positions, and details in setup."
+            "Sticker JSON rejected; see the CT sticker review panel for details."
         } else if !context.hdmm_marker_coordinate_input.trim().is_empty() {
-            "Manual CT LPS coordinates require independent sticker verification before Set."
+            "Manual CT coordinates are unverified until explicitly Set in the CT sticker review panel."
         } else {
-            "Import geometry from the current CBCT, then load an operator-reviewed sticker JSON."
+            "HDMM sticker not configured. Use the CT sticker review panel below (the CBCT import does not run sticker detection)."
         };
         let rigid_plots = column![
             text(if rigid.input_unreliable.is_some() {
@@ -3388,16 +3365,6 @@ fn view(context: &Context) -> Element<'_, Message> {
                 .size(13)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            row![
-                if context.cbct_geometry.is_some() {
-                    button("Load reviewed sticker")
-                        .on_press(Message::ImportReviewedHdmmSticker)
-                } else { button("Load reviewed sticker") },
-                if !context.hdmm_marker_coordinate_input.trim().is_empty() {
-                    button("Set HDMM point")
-                        .on_press(Message::ApplyHdmmMarkerCoordinates)
-                } else { button("Set HDMM point") },
-            ].spacing(8),
             text(hdmm_review_hint)
                 .size(12)
                 .width(Length::Fill)
@@ -3873,7 +3840,7 @@ fn view(context: &Context) -> Element<'_, Message> {
     let tab_selector = row![
         button("Live Tracking").on_press(Message::SelectDashboardTab(DashboardTab::LiveTracking)),
         button("Sensor Traces").on_press(Message::SelectDashboardTab(DashboardTab::SensorTraces)),
-        button("Both").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
+        button("Both (stacked details)").on_press(Message::SelectDashboardTab(DashboardTab::Both)),
     ]
     .spacing(8);
 
