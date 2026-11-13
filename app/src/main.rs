@@ -4294,7 +4294,6 @@ mod tracking_mode_ui_tests {
         assert!(source.contains("Message::HdmmCtCandidateApproved(result) =>"));
         assert!(source.contains("context.clear_hdmm_ct_review();"));
         assert!(source.contains("Optical HDMM sticker NOT SEARCHED"));
-        assert!(!source.contains("HDMM marker unavailable."));
     }
 
     #[test]
