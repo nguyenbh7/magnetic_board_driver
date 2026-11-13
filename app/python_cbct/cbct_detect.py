@@ -458,8 +458,8 @@ def main():
             raise RuntimeError(
                 "Built-in Hybrid detector source is not installed. "
                 "The reviewed board methods must first be vendored into "
-                "tools/cbct_bridge/hybrid_board_detector.py using "
-                "vendor_hybrid_board_detector.py on a developer workstation. "
+                "app/python_cbct/hybrid_board_detector.py using "
+                "app/python_cbct/vendor_hybrid_board_detector.py on the desktop. "
                 "Original and Optimized remain available; no fallback was applied."
             ) from exc
         import detector_core as core
