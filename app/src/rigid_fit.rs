@@ -1925,13 +1925,35 @@ mod tests {
             #[serde(default)]
             full_record_qc:Option<serde_json::Value>,
             ct_reference:Truth,ct_bb_reference:BbReference,
+            #[serde(default)]
+            ct_point_kind:String,
             frames:Vec<Frame>,
         }
-        let Ok(source)=std::env::var("GK_NOV06_ENDPOINT_REPLAY_IN") else {return};
-        let pre_path=std::env::var("GK_NOV06_PRE_CT")
-            .expect("GK_NOV06_PRE_CT must name the SAME Nov06 A detector JSON");
-        let summary_path=std::env::var("GK_NOV06_ENDPOINT_SUMMARY_OUT")
-            .expect("GK_NOV06_ENDPOINT_SUMMARY_OUT must be a NEW local private analysis report");
+        // The November 12 two-interval study reuses exactly the November 6
+        // finite-cylinder solver/holdout/QC code. New variable aliases and
+        // study labels keep the older replay byte-for-byte compatible.
+        let nov12=std::env::var("GK_NOV12_ENDPOINT_REPLAY_IN").ok();
+        let source=match nov12.as_ref() {
+            Some(path)=>path.clone(),
+            None=>match std::env::var("GK_NOV06_ENDPOINT_REPLAY_IN") {
+                Ok(path)=>path,Err(_)=>return
+            }
+        };
+        let study=if nov12.is_some() {"GK_20261112"}else{"GK_20261106"};
+        let pre_path=if nov12.is_some() {
+            std::env::var("GK_NOV12_PRE_CT")
+                .expect("Set GK_NOV12_PRE_CT to the matching B or C detector JSON")
+        } else {
+            std::env::var("GK_NOV06_PRE_CT")
+                .expect("GK_NOV06_PRE_CT must name the SAME Nov06 A detector JSON")
+        };
+        let summary_path=if nov12.is_some() {
+            std::env::var("GK_NOV12_ENDPOINT_SUMMARY_OUT")
+                .expect("Set GK_NOV12_ENDPOINT_SUMMARY_OUT to a NEW local private report")
+        } else {
+            std::env::var("GK_NOV06_ENDPOINT_SUMMARY_OUT")
+                .expect("GK_NOV06_ENDPOINT_SUMMARY_OUT must be a NEW private report")
+        };
         assert!(!Path::new(&summary_path).exists(),"Refusing to overwrite Nov06 endpoint report");
         let data:Data=serde_json::from_str(
             &std::fs::read_to_string(&source).expect("Read PRIVATE Nov06 plateau replay")
@@ -1950,14 +1972,20 @@ mod tests {
         // the field cost of an independently CT-imposed rigid endpoint
         // against the exact same calibrated Hall measurements and model.
         // No CT pose is used as a solver seed or fitting target.
-        let pressure_path=std::env::var("GK_NOV06_BOARD_PRESSURE_OUT").ok();
+        let pressure_path=if nov12.is_some() {
+            std::env::var("GK_NOV12_BOARD_PRESSURE_OUT").ok()
+        } else {std::env::var("GK_NOV06_BOARD_PRESSURE_OUT").ok()};
         // No switch is set for the published original CT-axis control.
         // The PRE-only candidate is an OPTIONAL, separate-source replay
         // that must use NEW output paths and keeps POST CT evaluation only.
-        let axis_mode=std::env::var("GK_NOV06_PRE_AXIS_MODE").unwrap_or_default();
+        let axis_mode=std::env::var(if nov12.is_some() {
+            "GK_NOV12_PRE_AXIS_MODE"
+        } else {"GK_NOV06_PRE_AXIS_MODE"}).unwrap_or_default();
         assert!(axis_mode.is_empty() || axis_mode=="joint_dipole",
             "GK_NOV06_PRE_AXIS_MODE must be blank or joint_dipole");
-        let fold=std::env::var("GK_NOV06_PRE_AXIS_FOLD").unwrap_or_else(|_|"even".into());
+        let fold=std::env::var(if nov12.is_some() {
+            "GK_NOV12_PRE_AXIS_FOLD"
+        } else {"GK_NOV06_PRE_AXIS_FOLD"}).unwrap_or_else(|_|"even".into());
         assert!(fold=="even" || fold=="odd",
             "GK_NOV06_PRE_AXIS_FOLD must be even or odd");
         assert!(axis_mode=="joint_dipole" || fold=="even",
@@ -1967,8 +1995,10 @@ mod tests {
                 "Refuse overwrite of Nov06 private board-pressure diagnostic");
         }
         let motion_path=if is_motion {
-            let path=std::env::var("GK_NOV06_MOTION_POSES_OUT")
-                .expect("For full-motion replay, set a NEW private GK_NOV06_MOTION_POSES_OUT file");
+            let path=std::env::var(if nov12.is_some() {
+                "GK_NOV12_MOTION_POSES_OUT"
+            } else {"GK_NOV06_MOTION_POSES_OUT"})
+                .expect("Full-motion replay needs a NEW private MOTION_POSES_OUT file");
             assert!(!Path::new(&path).exists(),"Refusing to overwrite fitted private motion poses");
             Some(path)
         } else {None};
@@ -2021,7 +2051,10 @@ mod tests {
                 "gk_nov06_finite_cylinder_motion_diagnostic_v1"
             } else {"gk_nov06_finite_cylinder_endpoint_preliminary_v1"},
             "status":"RESEARCH_ONLY_NOT_VALIDATED_LIVE_GK_TRACKING",
-            "experiment":"GK_20261106",
+            "experiment":study,
+            "ct_reference_point_kind":if data.ct_point_kind.is_empty() {
+                "GLASS_BB_NOV06" } else {data.ct_point_kind.as_str()},
+            "reference_point_is_not_optically_verified":nov12.is_some(),
             "window_source":"PRE 1.0..4.5 s and POST final 8 s only; middle frames omitted",
             "source_frame_count":data.source_frame_counts_by_board,
             "endpoint_frame_count":data.frame_counts_by_board,
@@ -2228,6 +2261,10 @@ mod tests {
                                     "status":"RESEARCH_ONLY_CANDIDATE_TRAJECTORY_NOT_VALIDATED",
                                     "source_replay_format":data.format,
                                     "candidate_gain7_setting_unverified":true,
+                                    "experiment":study,
+                                    "ct_reference_point_kind":if data.ct_point_kind.is_empty() {
+                                        "GLASS_BB_NOV06" } else {data.ct_point_kind.as_str()},
+                                    "not_optical_hdmm_measurement":true,
                                     "timestamps_are_relative_to_original_device_clock":true,
                                     "mask_and_synthetic_gap_interpolation":false,
                                     "ct_A_pose_correspondence_verified":false,
@@ -2796,6 +2833,11 @@ mod tests {
                                     summary["board_pressure_diagnostic_path"]=serde_json::json!(path);
                                 }
                                 summary["finite_cylinder_pose"] = serde_json::json!({
+                                    "comparison_point_kind":if data.ct_point_kind.is_empty() {
+                                        "GLASS_BB_NOV06" } else {data.ct_point_kind.as_str()},
+                                    "reference_is_not_optically_measured":nov12.is_some(),
+                                    "reference_point_delta_lps_mm":bb_delta,
+                                    "reference_point_vector_error_vs_CT_mm":dot(bb_err,bb_err).sqrt(),
                                     "head_rotation_deg":angle,
                                     "rotation_geodesic_error_vs_CT_deg":rot_err,
                                     "magnet_centroid_translation_lps_mm":shift,
