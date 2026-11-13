@@ -394,6 +394,19 @@ struct Context {
     received_stream_frames: u64,
 }
 
+impl Context {
+    /// A candidate/approval from an earlier CT must not be reused after a new
+    /// scan or a different CBCT detector is selected.
+    fn clear_hdmm_ct_review(&mut self) {
+        self.hdmm_ct_proposal = None;
+        self.hdmm_ct_searching = false;
+        self.hdmm_ct_approving = false;
+        self.hdmm_ct_candidate_choice = None;
+        self.hdmm_ct_review_note.clear();
+        self.hdmm_ct_status.clear();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Error {
     DialogClosed,
@@ -1409,6 +1422,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.hdmm_marker_coordinate_input.clear();
                 context.hdmm_sticker_source_status.clear();
+                context.clear_hdmm_ct_review();
                 context.cbct_status = format!(
                     "Selected {}. Re-import CT; previous geometry and mapping approval cleared.",
                     variant
@@ -1476,6 +1490,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                 context.rigid_fit.invalidate_for_gk_calibration();
                 context.hdmm_marker_coordinate_input.clear();
                 context.hdmm_sticker_source_status.clear();
+                context.clear_hdmm_ct_review();
                 context.cbct_last_log.clear();
                 context.cbct_show_details = false;
                 let progress = Arc::new(std::sync::Mutex::new(cbct_geometry::ImportProgress::default()));
@@ -1503,7 +1518,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     });
                 match loaded {
                     Ok(geometry) => {
-                        context.cbct_status = "CT initial geometry imported for review; live magnetic profile unchanged.".into();
+                        context.cbct_status = "CT initial geometry imported for review. HDMM sticker NOT SEARCHED; reimport the source ZIP/folder to find sticker candidates. Live magnetic profile unchanged.".into();
                         context.cbct_geometry = Some(geometry);
                     // Preserve previously captured raw reference/background
                     // when DICOM is processed after acquisition. Review scan
@@ -1516,6 +1531,7 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
                     context.rigid_fit.invalidate_for_gk_calibration();
                     context.hdmm_marker_coordinate_input.clear();
                     context.hdmm_sticker_source_status.clear();
+                    context.clear_hdmm_ct_review();
                     }
                     Err(error) => {
                         context.cbct_status = format!("CBCT import failed: {error}");
@@ -1558,10 +1574,11 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.cbct_importing = false;
             match result {
                 Ok(geometry) => {
+                    context.clear_hdmm_ct_review();
                     context.cbct_status = if geometry.markers.is_empty() {
-                        format!("{}: 3 magnets and 48 chips detected; NO glass BB. Geometry ready for review; HDMM marker unavailable.",context.cbct_detector_variant)
+                        format!("{}: 3 magnets and 48 chips detected; NO glass BB. Geometry ready for review. Optical HDMM sticker NOT SEARCHED; use Find HDMM candidates.",context.cbct_detector_variant)
                     } else {
-                        format!("{}: initial geometry ready for review (no magnetic calibration activated).",context.cbct_detector_variant)
+                        format!("{}: initial geometry ready for review. Optical HDMM sticker NOT SEARCHED; use Find HDMM candidates. No magnetic calibration activated.",context.cbct_detector_variant)
                     };
                     context.cbct_geometry = Some(geometry);
                 context.gk_calibration.calibrated_candidate = None;
