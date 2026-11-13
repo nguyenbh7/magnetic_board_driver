@@ -3073,9 +3073,9 @@ fn view(context: &Context) -> Element<'_, Message> {
                 "DICOM Python environment not checked on this computer.".to_string()
             } else {context.cbct_setup_status.clone()}),
             row![
-                button("Import ZIP").on_press(Message::ImportCbctZip),
-                button("Import folder").on_press(Message::ImportCbctFolder),
-                button("Load JSON").on_press(Message::LoadCbctDetectionsJson),
+                button("Import CT ZIP").on_press(Message::ImportCbctZip),
+                button("Import CT folder").on_press(Message::ImportCbctFolder),
+                button("Load CT detections JSON").on_press(Message::LoadCbctDetectionsJson),
             ].spacing(8),
             text(if context.cbct_status.is_empty() {
                 "No DICOM geometry imported".to_string()
@@ -3104,11 +3104,11 @@ fn view(context: &Context) -> Element<'_, Message> {
                 if context.cbct_geometry.is_some() {
                     button("Copy CT positions").on_press(Message::CopyCbctCoordinates)
                 } else { button("Copy CT positions") },
-                button("Copy status").on_press(Message::CopyCbctStatus),
+                button("Copy CT status").on_press(Message::CopyCbctStatus),
                 if context.cbct_geometry.is_some() {
-                    button("Copy details").on_press(Message::CopyCbctDetails)
-                } else { button("Copy details") },
-                button("Copy log").on_press(Message::CopyCbctLog),
+                    button("Copy CT details").on_press(Message::CopyCbctDetails)
+                } else { button("Copy CT details") },
+                button("Copy CT log").on_press(Message::CopyCbctLog),
             ].spacing(8),
             text(context.cbct_geometry.as_ref().map(|geometry| {
                 format!("{} · {} magnets · {} sensor arrays ({} chips) · {} glass BB candidate\nUnreviewed CT geometry only — magnetic calibration and HDMM identity not verified.",
@@ -3880,7 +3880,7 @@ fn view(context: &Context) -> Element<'_, Message> {
             row![
                 text("MLX90393 sensitivity"),
                 text(mlx_status_text),
-                button("Copy status").on_press(Message::CopyMlxStatus),
+                button("Copy MLX status").on_press(Message::CopyMlxStatus),
             ]
             .spacing(16),
 
