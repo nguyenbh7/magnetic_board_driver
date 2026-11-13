@@ -1273,6 +1273,85 @@ mod tests {
         Ok(out)
     }
 
+    /// Research diagnostic ONLY: reveal which raw board/sensor/CT-world field
+    /// component drives a failed Nov12 PRE stationary calibration. This reports
+    /// exactly the residual of the existing unchanged finite-cylinder model.
+    /// Does not adjust/remap any sensor, shift the fitted pose or relax QC.
+    fn nov12_pre_calibration_residual_audit(
+        profile:&RigidProfile,
+        pre:&[[[f64;3];16];3],
+        bg:Option<&[[[f64;3];16];3]>,
+        masks:[u16;3],
+        strengths:[f64;3],
+        offsets:[[f64;3];3],
+    )->serde_json::Value {
+        let mut model=profile.clone();
+        for (m,s) in model.magnets.iter_mut().zip(strengths) {
+            m.remanence_mt=s;
+        }
+        let sources=model.magnets.iter()
+            .map(|m|quadrature(m,m.center_mm,m.axis)).collect::<Vec<_>>();
+        let mut all_sse=0.0_f64;
+        let mut all_n=0_usize;
+        let mut boards=Vec::new();
+        for board in &model.boards {
+            let id=board.raw_board_id as usize;
+            let mut sum=[0.0_f64;3];
+            let mut sse=[0.0_f64;3];
+            let mut counts=0_usize;
+            let mut sensors=Vec::new();
+            for idx in 0..16 {
+                if masks[id]&(1_u16<<idx)==0 {continue;}
+                let gain=board.sensor_gains.as_ref().map(|g|g[idx]).unwrap_or(1.0);
+                let background=bg.map(|b|b[id][idx]).unwrap_or([0.0;3]);
+                let measured=sub(
+                    scale(mat_vec(board.raw_to_world,sub(pre[id][idx],background)),
+                          1.0/gain),
+                    offsets[id],
+                );
+                let pred=predict(board.sensors_mm[idx],&sources);
+                let diff=sub(pred,measured);
+                for axis in 0..3 {
+                    sum[axis]+=diff[axis];
+                    sse[axis]+=diff[axis]*diff[axis];
+                    all_sse+=diff[axis]*diff[axis];
+                    all_n+=1;
+                }
+                counts+=1;
+                sensors.push(serde_json::json!({
+                    "sensor_id":idx,
+                    "measured_world_lps_mt":measured,
+                    "predicted_world_lps_mt":pred,
+                    "model_minus_measurement_world_lps_mt":diff,
+                    "residual_norm_mt":dot(diff,diff).sqrt(),
+                }));
+            }
+            let n=counts as f64;
+            let means=sum.map(|v|v/n);
+            boards.push(serde_json::json!({
+                "raw_board_id":id,
+                "component_count":counts*3,
+                "sensors_used":counts,
+                "rmse_mt":((sse.iter().sum::<f64>())/(3.0*n)).sqrt(),
+                "axis_rmse_lps_mt":sse.map(|v|(v/n).sqrt()),
+                "axis_mean_model_minus_observed_lps_mt":means,
+                "axis_demeaned_rmse_mt":std::array::from_fn::<_,3,_>(|j|
+                    (sse[j]/n-means[j]*means[j]).max(0.0).sqrt()),
+                "per_firmware_sensor":sensors,
+            }));
+        }
+        serde_json::json!({
+            "format":"gk_nov12_pre_calibration_residual_audit_v1",
+            "status":"DIAGNOSTIC_ONLY_QC_UNCHANGED",
+            "calibration_world_component_rmse_mt":(all_sse/all_n as f64).sqrt(),
+            "background_subtracted_as_recorded":bg.is_some(),
+            "axis_convention":"CT LPS: not raw Bx/By/Bz",
+            "only_PRE_CT_and_PRE_Hall_used":true,
+            "sensor_reassignment_or_background_adjustment_performed":false,
+            "boardwise":boards,
+        })
+    }
+
     /// Same frozen finite-cylinder amplitude/board-offset calibration for
     /// both CT-axis control and PRE-joint-axis candidate on PRE TRAIN sensors.
     /// Evaluation at zero CT PRE magnet pose uses heldout *original sensor
@@ -2170,6 +2249,17 @@ mod tests {
                         summary["signed_remanences_mt"]=serde_json::json!(strengths);
                         summary["stationary_calibration_rmse_mt"]=serde_json::json!(calibration_rmse);
                         summary["stationary_calibration_QC_pass"]=serde_json::json!(gate);
+                        if nov12.is_some() {
+                            summary["stationary_calibration_gate_max_rmse_mt"]=
+                                serde_json::json!(profile.max_rmse_mt);
+                            summary["stationary_calibration_strengths_plausible"]=
+                                serde_json::json!(plausible);
+                            summary["stationary_calibration_residual_qc"]=
+                                nov12_pre_calibration_residual_audit(
+                                    &profile,&data.calibration_stationary_raw_mt,
+                                    data.calibration_background_raw_mt.as_ref(),
+                                    masks,strengths,offsets);
+                        }
                         if !gate {
                             summary["fit_status"]=serde_json::json!(
                                 "calibration_QC_FAILED_pose_fit_not_run");
