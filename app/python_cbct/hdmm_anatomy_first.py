@@ -187,6 +187,8 @@ def anatomy_proposals(volume, affine, *, stride=STRIDE,
         "search_region_ijk":search["search_region_ijk"],
         "candidate_count":len(candidates),
         "candidates":candidates,
+        "distal_review_focus_candidate_id":choose_distal_review_focus(head, candidates),
+        "distal_review_focus_is_not_sticker_identification":True,
         "automatic_sticker_identity":False,
         "no_prior_sticker_coordinates_used":True,
         "limitations":[
@@ -199,6 +201,42 @@ def anatomy_proposals(volume, affine, *, stride=STRIDE,
     }
 
 
+
+def choose_distal_review_focus(anatomy, candidates):
+    """Choose a *PNG review focus*, NEVER infer optical sticker identity.
+
+    The slice-profile seed is often superior to the distal nasal tip. Show
+    an additional inferior, near-midline dense component prominently, even
+    when it is farther from the seed or touches the search-sphere edge.
+    No thresholds, segmentation, candidate order, or live approvals change.
+    A None result means there is no anatomically plausible review focus.
+    """
+    if anatomy.get("status") != "ANATOMY_HEURISTIC_REVIEW_REQUIRED":
+        return None
+    center = anatomy.get("nose_region_landmark_lps_mm")
+    if center is None:
+        return None
+    eligible = []
+    for c in candidates:
+        p = c.get("centroid_lps_mm")
+        if not isinstance(p, (list, tuple)) or len(p) != 3:
+            continue
+        inferior = center[2] - p[2]
+        if (8. <= inferior <= 30. and abs(p[0] - center[0]) <= 18.
+            and -20. <= p[1] - center[1] <= 10.
+            and c.get("threshold_raw_ct", 0) >= 1200.
+            and c.get("voxel_count", 0) >= 8):
+            eligible.append(c)
+    if not eligible:
+        return None
+    # Only prioritize for HUMAN review. The largest compact dense nasal-tip
+    # component can still be unrelated phantom shell or a partial sticker.
+    selected = max(eligible, key=lambda c: (
+        float(c["threshold_raw_ct"]), int(c["voxel_count"])
+    ))
+    return selected["candidate_id"]
+
+
 def render_anatomy_preview(volume, proposal, path):
     """Three orthogonal views with the anatomy seed and best unverified CT proposal."""
     head = proposal["anatomy"]
@@ -206,7 +244,13 @@ def render_anatomy_preview(volume, proposal, path):
     if center is None:
         raise ValueError("No anatomical seed to preview")
     center = np.asarray(center, float)
-    candidate = proposal["candidates"][0] if proposal["candidates"] else None
+    focus_id = proposal.get("distal_review_focus_candidate_id")
+    candidate = next(
+        (c for c in proposal.get("candidates", [])
+         if c.get("candidate_id") == focus_id), None
+    )
+    if candidate is None:
+        candidate = proposal["candidates"][0] if proposal["candidates"] else None
     target = np.asarray(candidate["centroid_ijk"], float) if candidate else center
     fig, axes = plt.subplots(2, 3, figsize=(14, 9), constrained_layout=True)
     for axis in range(3):
@@ -239,7 +283,7 @@ def render_anatomy_preview(volume, proposal, path):
             ax.set_ylabel(f"voxel axis {dims[1]}")
     fig.suptitle(
         "ANATOMY-FIRST / NOT STICKER ID — yellow X = estimated anterior shell, "
-        "cyan + = nearest bright candidate")
+        "cyan + = unverified distal review focus (or first candidate)")
     output = Path(path)
     if output.exists():
         raise FileExistsError(output)
