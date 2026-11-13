@@ -967,7 +967,7 @@ impl CbctGeometry {
             self.rigid_axes_to_lps[0][1],self.rigid_axes_to_lps[1][1],self.rigid_axes_to_lps[2][1],
             self.rigid_axes_to_lps[0][2],self.rigid_axes_to_lps[1][2],self.rigid_axes_to_lps[2][2]));
         if self.markers.is_empty() {
-            lines.push("No glass BB candidate detected; BB/HDMM marker reconstruction unavailable. Magnet/board geometry remains usable.".into());
+            lines.push("No glass BB candidate detected. This is NOT a search for the optical HDMM sticker; magnet/board geometry remains usable.".into());
         }
         lines.push("HDMM reflective sticker: NOT independently detected/identified; BB-to-HDMM correspondence requires manual confirmation if a BB is present.".into());
         lines.push("Geometry import DOES NOT load or enable a RigidProfile. The magnetic field calibration is a separate step.".into());
@@ -1014,7 +1014,7 @@ pub fn dicom_setup_instructions() -> String {
     let interpreter=venv.join(if cfg!(windows) {"Scripts/python.exe"}else{"bin/python"});
     let setup=install_root.join("scripts").join("setup_dicom_windows.ps1");
     format!(
-        "GK DICOM requirements: {}\n         Use a dedicated Python 3.11 environment; the packages are NOT needed for Hall streaming or 6-DOF fitting.\n         Windows PowerShell (recommended):\n         powershell -ExecutionPolicy Bypass -File \"{}\"\n         Manual Windows setup:\n         py -3.11 -m venv \"{}\"\n         & \"{}\" -m pip install -r \"{}\"\n         & \"{}\" \"{}\"\n         If you previously set CBCT_DETECT_SCRIPT to an old repo, remove that override.\n         Current detector: {}\n         Hybrid is not ready until its separately reviewed board algorithm is installed.",
+        "GK DICOM requirements: {}\n         Use a dedicated Python 3.11 environment; the packages are NOT needed for Hall streaming or 6-DOF fitting.\n         Windows PowerShell (recommended):\n         powershell -ExecutionPolicy Bypass -File \"{}\"\n         Manual Windows setup:\n         py -3.11 -m venv \"{}\"\n         & \"{}\" -m pip install -r \"{}\"\n         & \"{}\" \"{}\"\n         If you previously set CBCT_DETECT_SCRIPT to an old repo, remove that override.\n         Current detector: {}\n         Hybrid uses the committed app/python_cbct/hybrid_board_detector.py when available.",
         requirements.display(),setup.display(),venv.display(),
         interpreter.display(),requirements.display(),interpreter.display(),
         backend.join("check_dicom_environment.py").display(),script.display()
