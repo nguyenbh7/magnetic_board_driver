@@ -2173,6 +2173,33 @@ mod tests {
                 summary["reason"]=serde_json::json!(reason);
             }
             Ok(mut profile)=>{
+                // The November 12 no-background experiment tests original
+                // CT axes on *unseen* PRE sensors. Only alternating training
+                // sites fit three magnet strengths and one 3-vector per board;
+                // the complementary sites are never used to fit those offsets.
+                // The same evaluation is available for measured-background
+                // controls, with no change to the solver or acceptance gate.
+                if nov12.is_some() {
+                    let mut holdouts=Vec::new();
+                    for parity in 0..2 {
+                        let train=nov06_checkerboard_training_masks(masks,parity)
+                            .expect("Original CT-axis prespecified PRE train/holdout masks");
+                        let score=nov06_pre_axis_crosscheck(
+                            &profile,&data.calibration_stationary_raw_mt,
+                            data.calibration_background_raw_mt.as_ref(),train,masks
+                        ).expect("Original CT-axis PRE holdout control");
+                        holdouts.push(serde_json::json!({
+                            "training_fold":if parity==0 {"even"} else {"odd"},
+                            "training_sensor_masks":train,
+                            "heldout_sensor_masks":std::array::from_fn::<_,3,_>(|j|
+                                masks[j]&!train[j]),
+                            "field_scores":score,
+                        }));
+                    }
+                    summary["pre_original_CT_axis_even_odd_holdout_diagnostics"]=
+                        serde_json::json!(holdouts);
+                }
+
                 // TRAIN / HOLDOUT are alternated, physically prespecified
                 // checkerboard sites within each original valid sensor mask.
                 // Only TRAIN sites estimate magnetic axes and their
@@ -2249,6 +2276,16 @@ mod tests {
                         summary["signed_remanences_mt"]=serde_json::json!(strengths);
                         summary["stationary_calibration_rmse_mt"]=serde_json::json!(calibration_rmse);
                         summary["stationary_calibration_QC_pass"]=serde_json::json!(gate);
+                        if nov12.is_some() {
+                            summary["pre_fitted_constant_board_offsets_lps_mt"]=
+                                serde_json::json!(offsets);
+                            summary["pre_background_treatment"]=
+                                serde_json::json!(if data.calibration_background_raw_mt.is_some() {
+                                    "measured_per_sensor_saved_background"
+                                } else {
+                                    "no_saved_background_nine_PRE_fitted_constant_board_components"
+                                });
+                        }
                         if nov12.is_some() {
                             summary["stationary_calibration_gate_max_rmse_mt"]=
                                 serde_json::json!(profile.max_rmse_mt);
