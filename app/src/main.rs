@@ -2043,6 +2043,168 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             context.rigid_fit.reset_zero();
             Task::none()
         }
+        Message::FindHdmmCtCandidates => {
+            if context.cbct_importing || context.hdmm_ct_searching ||
+                context.hdmm_ct_approving { return Task::none(); }
+            let Some(geometry) = context.cbct_geometry.clone() else {
+                context.hdmm_ct_status =
+                    "First import the ORIGINAL CBCT ZIP or DICOM folder.".into();
+                return Task::none();
+            };
+            context.hdmm_ct_searching = true;
+            context.hdmm_ct_proposal = None;
+            context.hdmm_ct_candidate_choice = None;
+            context.hdmm_ct_review_note.clear();
+            context.hdmm_ct_status =
+                "Searching CT for unverified nose-area HDMM sticker candidates (not identifying the optical reflector)...".into();
+            Task::perform(
+                find_hdmm_ct_candidates_off_thread(geometry),
+                Message::HdmmCtCandidatesFound,
+            )
+        }
+        Message::HdmmCtCandidatesFound(result) => {
+            // A previously started worker must never attach its results to a
+            // newly imported scan, or resurrect them after source invalidation.
+            if !context.hdmm_ct_searching { return Task::none(); }
+            context.hdmm_ct_searching = false;
+            match result {
+                Ok(proposal) => {
+                    let same_scan = context.cbct_geometry.as_ref().is_some_and(|geometry|
+                        geometry.frame_uid == proposal.frame_uid &&
+                        geometry.scan_path == proposal.source_scan
+                    );
+                    if !same_scan {
+                        context.hdmm_ct_status =
+                            "Outdated HDMM search result discarded after CT change.".into();
+                        return Task::none();
+                    }
+                    context.hdmm_ct_status = format!(
+                        "CT search: {} — {} UNVERIFIED components. Review the original CT and PNG; no sticker automatically identified. {}",
+                        proposal.status,
+                        proposal.candidates.len(),
+                        if proposal.preview_path.is_some() {
+                            "Use Open CT review image before selecting a candidate."
+                        } else { "No review preview produced (anatomy search abstained)." },
+                    );
+                    context.hdmm_ct_proposal = Some(proposal);
+                }
+                Err(e) => {
+                    context.hdmm_ct_status = format!("HDMM CT candidate search FAILED: {e}");
+                }
+            }
+            Task::none()
+        }
+        Message::SelectHdmmCtCandidate(id) => {
+            // Explicitly selecting a candidate ID is NOT a sticker approval.
+            if context.hdmm_ct_proposal.as_ref()
+                .is_some_and(|p|p.candidates.iter().any(|c|c.id==id)) {
+                context.hdmm_ct_candidate_choice = Some(id);
+            }
+            Task::none()
+        }
+        Message::UpdateHdmmReviewNote(value) => {
+            context.hdmm_ct_review_note = value;
+            Task::none()
+        }
+        Message::OpenHdmmCtPreview => {
+            let Some(path) = context.hdmm_ct_proposal.as_ref()
+                .and_then(|p|p.preview_path.clone()) else {
+                context.hdmm_ct_status = "No HDMM CT preview image to open.".into();
+                return Task::none();
+            };
+            if !path.is_file() {
+                context.hdmm_ct_status =
+                    format!("HDMM preview image no longer exists: {}",path.display());
+                return Task::none();
+            }
+            let mut command = if cfg!(windows) {
+                std::process::Command::new("explorer.exe")
+            } else if cfg!(target_os="macos") {
+                std::process::Command::new("open")
+            } else {
+                std::process::Command::new("xdg-open")
+            };
+            context.hdmm_ct_status = match command.arg(&path).spawn() {
+                Ok(_) => format!("Opened CT review image: {}. Verify original CT slices as well; the review focus is NOT an optical sticker identification.",path.display()),
+                Err(e) => format!("Cannot open CT preview automatically ({e}). Open this image manually: {}",path.display()),
+            };
+            Task::none()
+        }
+        Message::CopyHdmmCtReportPath => {
+            if let Some(proposal) = context.hdmm_ct_proposal.as_ref() {
+                iced::clipboard::write(format!(
+                    "Candidate JSON: {}\nCT review PNG: {}",
+                    proposal.proposal_path.display(),
+                    proposal.preview_path.as_ref()
+                        .map(|p|p.display().to_string())
+                        .unwrap_or_else(||"none — anatomy search abstained".into())
+                ))
+            } else { Task::none() }
+        }
+        Message::ApproveHdmmCtCandidate => {
+            if context.hdmm_ct_searching || context.hdmm_ct_approving {
+                return Task::none();
+            }
+            let (Some(proposal), Some(selected_id)) = (
+                context.hdmm_ct_proposal.clone(),
+                context.hdmm_ct_candidate_choice.clone()
+            ) else {
+                context.hdmm_ct_status =
+                    "Find and independently review a candidate in the original CT first.".into();
+                return Task::none();
+            };
+            let note = context.hdmm_ct_review_note.trim().to_string();
+            if note.chars().count() < 20 {
+                context.hdmm_ct_status =
+                    "Describe the original CT evidence verifying the physical optical sticker (20+ characters).".into();
+                return Task::none();
+            }
+            if proposal.candidates.iter().any(|c|c.id==selected_id && c.edge_limited) {
+                context.hdmm_ct_status =
+                    "Selected component touches the CT/search boundary. Do NOT approve this partial candidate.".into();
+                return Task::none();
+            }
+            context.hdmm_ct_approving = true;
+            context.hdmm_ct_status =
+                "Validating selected CT candidate against exact scan and detections (operator review; not optical calibration)...".into();
+            Task::perform(
+                approve_hdmm_ct_candidate_off_thread(proposal, selected_id, note),
+                Message::HdmmCtCandidateApproved,
+            )
+        }
+        Message::HdmmCtCandidateApproved(result) => {
+            if !context.hdmm_ct_approving { return Task::none(); }
+            context.hdmm_ct_approving = false;
+            match result {
+                Ok(approved) => {
+                    let same_scan = context.cbct_geometry.as_ref().is_some_and(|geometry|
+                        geometry.frame_uid == approved.frame_uid &&
+                        geometry.scan_path == approved.source_scan
+                    );
+                    let same_proposal = context.hdmm_ct_proposal.as_ref()
+                        .is_some_and(|p|p.proposal_path==approved.proposal_path);
+                    if !same_scan || !same_proposal {
+                        context.hdmm_ct_status =
+                            "Outdated HDMM review result discarded after CT change.".into();
+                        return Task::none();
+                    }
+                    // Reuse the existing strict JSON importer; success only
+                    // stages the coordinates. A separate Set remains required.
+                    context.hdmm_ct_status = format!(
+                        "Operator-reviewed CT centroid saved to {}. Check staged coordinates, then click Set HDMM point. This is NOT a calibrated optical center.",
+                        approved.path.display()
+                    );
+                    update(context, Message::ReviewedHdmmStickerFilePicked(
+                        Some(approved.path)
+                    ))
+                }
+                Err(e) => {
+                    context.hdmm_ct_status =
+                        format!("CT sticker review REJECTED: {e}");
+                    Task::none()
+                }
+            }
+        }
         Message::UpdateHdmmMarkerCoordinates(value) => {
             // Editing a reviewed value breaks its file provenance. Invalidate
             // the active marker prediction until Set is explicitly pressed.
