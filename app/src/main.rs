@@ -2096,6 +2096,10 @@ fn update(context: &mut Context, message: Message) -> Task<Message> {
             // Explicitly selecting a candidate ID is NOT a sticker approval.
             if context.hdmm_ct_proposal.as_ref()
                 .is_some_and(|p|p.candidates.iter().any(|c|c.id==id)) {
+                if context.hdmm_ct_candidate_choice.as_deref() != Some(id.as_str()) {
+                    // A review note belongs to a specific physical candidate.
+                    context.hdmm_ct_review_note.clear();
+                }
                 context.hdmm_ct_candidate_choice = Some(id);
             }
             Task::none()
