@@ -28,7 +28,7 @@ validation.
 cd F:\GitHub\magnetic_board_driver
 git switch feature/live-rigid-body-fit
 git pull --ff-only origin feature/live-rigid-body-fit
-python -m pytest -q .\app\python_cbct\test_approve_anatomy_hdmm_sticker.py .\app\python_cbct\test_hdmm_sticker_geometry.py
+python -m pytest -q .\app\python_cbct\test_approve_anatomy_hdmm_sticker.py .\app\python_cbct\test_hdmm_sticker_geometry.py .\app\python_cbct\test_hdmm_anatomy_first.py .\app\python_cbct\test_hdmm_nose_slice_profile.py
 if ($LASTEXITCODE -ne 0) { throw 'HDMM CT review/approval tests failed' }
 cargo test -p app
 if ($LASTEXITCODE -ne 0) { throw 'Live app tests failed' }
@@ -59,22 +59,20 @@ if (-not (Test-Path $scan) -or -not (Test-Path $det)) {
 
 ## 3. Run v2 detection and independently review the sticker
 
-The research detector stays in the separate
-`hall-effect-motion-tracking` checkout. It does not silently feed
-the live app. The original anatomy-first candidate and PNG are
-saved outside the repositories' tracked source files:
+The anatomy-first v2 detector is now bundled directly in
+`magnetic_board_driver/app/python_cbct/`. No research checkout or
+collaborator notebook is needed. This command currently runs from
+PowerShell rather than an in-app automatic "Detect sticker" button.
+It produces **unreviewed** candidates and a PNG; it never activates tracking.
 
 ```powershell
-cd F:\GitHub\hall-effect-motion-tracking
-git switch a1-vgm-validation
-git pull --ff-only origin a1-vgm-validation
+cd F:\GitHub\magnetic_board_driver
 $outDir = '.\analysis_outputs\hdmm_sticker_validation'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-# Make proposal path absolute before switching back to the live-app repository.
 $outDir = (Resolve-Path $outDir).Path
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $proposal = "$outDir\next_gk_anatomy_first_$stamp.json"
-python .\tools\cbct_bridge\hdmm_anatomy_first.py propose `
+python .\app\python_cbct\hdmm_anatomy_first.py propose `
     --scan $scan --detections $det `
     --landmark-method slice-profile-v2 --out $proposal
 if ($LASTEXITCODE -ne 0) { throw 'Anatomy-first CT candidate proposal failed' }
@@ -84,7 +82,7 @@ Get-Content $proposal -Raw | ConvertFrom-Json |
 Write-Host "Inspect the original CT and $([IO.Path]::ChangeExtension($proposal,'.png'))"
 ```
 
-**Do not treat N01 or any first-listed candidate as automatically verified.**
+**Do not treat N01 or any first-listed candidate as automatically verified.**\nCurrent v2 sorts unverified components by distance to an anatomical seed and\nROI-boundary flags. The actual distal-nose feature may appear later in the\nlist; inspect every plausible nasal-tip candidate and reconstructed FOV.\nThe v2 CT-localization method has not been verified to identify an optical\nsticker automatically. 
 Review the original CT and overlay image to identify the actual physical
 HDMM reflective attachment. The thresholded CT component centroid
 will generally not equal the calibrated optical tracking center.
