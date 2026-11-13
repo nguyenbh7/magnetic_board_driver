@@ -1,3 +1,35 @@
+## Anatomy-first HDMM sticker proposals (2026-11-12)
+
+The experimental `hdmm_anatomy_first.py`, `hdmm_nose_slice_profile.py`,
+and supporting local CT feature code are now bundled in this repository.
+No separate research checkout or notebook is needed **at runtime**.
+They are **not yet wired to an automatic in-app Find sticker button**.
+Only the operator-reviewed reference JSON is accepted by the live app.
+
+Run from repository root with the SAME imported CT and its matching
+`detections.json`, with your DICOM Python venv active:
+
+```powershell
+python .\app\python_cbct\hdmm_anatomy_first.py propose `
+  --scan "C:\PATH\TO\CBCT.zip" `
+  --detections "C:\PATH\TO\detections.json" `
+  --landmark-method slice-profile-v2 `
+  --out "$HOME\Downloads\hdmm_anatomy_review_new.json"
+```
+
+The script saves a same-name `.png` CT preview. It now chooses a separate
+**inferior nasal review focus** where plausible, because the anatomically
+estimated bridge can be about 19 mm superior to the tip; this is only a
+visualization preference, **not automatic optical sticker identification**,
+not a change to any original candidate or threshold, and not proof of
+complete CT sticker coverage. Review all plausible candidates in the original
+CT and assess the reconstructed FOV. To create an importable *reviewed*
+reference, see
+[the standalone review and approval workflow](../../docs/GK_NEXT_HDMM_STICKER_LIVE_COMPARISON.md).
+
+---
+
+
 ## HDMM sticker reference and cropped-scan geometry (2026-11-10)
 
 The bundled **hdmm_sticker_geometry.py** provides three independent,
@@ -74,8 +106,9 @@ an `app.exe` file by itself is insufficient for DICOM imports.
 
 If you have an old external `CBCT_DETECT_SCRIPT` or `CBCT_PYTHON` environment
 variable, remove it so the app uses its local detector and `.venv`. Hybrid
-requires a separately reviewed board algorithm and remains unavailable even
-when all dependencies are installed; Original and Optimized work without it.
+is available only when the separately reviewed vendored
+`hybrid_board_detector.py` module is present; Original and Optimized do not
+require it.
 
 The Rust build itself uses `Cargo.toml`/`Cargo.lock` for dependencies.
 The setup script does not install Rust or cargo; neither is required for a
@@ -114,12 +147,11 @@ If `CBCT_DETECT_SCRIPT` points to an older external script, **unset it** so the
 app uses its own `app/python_cbct/cbct_detect.py`; a preflight check prevents
 quietly using an incompatible version.
 
-**Hybrid is still blocked until its reviewed alternative board functions are
-available in this repository.** The exact five functions previously existed
-only inside an external source notebook. We intentionally do not substitute
-a different or invented board detector and call it the validated Hybrid.
-The code fails explicitly rather than silently falling back. Original and
-Optimized do not require Hybrid.
+**Hybrid is now bundled** in `hybrid_board_detector.py`, extracted from
+the previously reviewed notebook by `vendor_hybrid_board_detector.py`.
+The module is ordinary Python source committed on the live app branch;
+no notebook is needed on the lab computer. Its source digest remains
+recorded for detector provenance. Original and Optimized remain available.
 
 The CT geometry remains **unreviewed**, is never authorized for clinical
 tracking, and cannot automatically approve the CT-to-firmware mapping or
