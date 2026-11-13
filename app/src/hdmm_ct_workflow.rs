@@ -111,7 +111,7 @@ pub fn find_candidates(geometry: CbctGeometry) -> Result<HdmmProposal, String> {
         || value["automatic_sticker_identity"].as_bool() != Some(false)
         || value["no_prior_sticker_coordinates_used"].as_bool() != Some(true)
         || value["landmark_method"].as_str() != Some("slice-profile-v2")
-        || value["source_frame_of_reference_uid"].as_str() != Some(&geometry.frame_uid)
+        || value["source_frame_of_reference_uid"].as_str() != Some(geometry.frame_uid.as_str())
     {
         return Err("HDMM detector returned untrusted/mismatched CT proposal provenance".into());
     }
