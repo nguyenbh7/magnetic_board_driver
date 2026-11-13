@@ -26,6 +26,8 @@ mod rigid_fit;
 mod cbct_geometry;
 mod hdmm_sticker;
 mod hdmm_live_readout;
+mod hdmm_ct_workflow;
+use hdmm_ct_workflow::{HdmmProposal, HdmmApprovedFile};
 mod gk_background;
 use gk_background::GkBackgroundFile;
 mod stage_presets;
@@ -143,6 +145,14 @@ enum Message {
     GkCalibrationExportPicked(Option<PathBuf>),
     SelectTrackingMode(TrackingMode),
     ResetRigidZero,
+    FindHdmmCtCandidates,
+    HdmmCtCandidatesFound(Result<HdmmProposal, String>),
+    SelectHdmmCtCandidate(String),
+    UpdateHdmmReviewNote(String),
+    ApproveHdmmCtCandidate,
+    HdmmCtCandidateApproved(Result<HdmmApprovedFile, String>),
+    OpenHdmmCtPreview,
+    CopyHdmmCtReportPath,
     UpdateHdmmMarkerCoordinates(String),
     ImportReviewedHdmmSticker,
     ReviewedHdmmStickerFilePicked(Option<PathBuf>),
@@ -347,6 +357,12 @@ struct Context {
     cbct_setup_checking: bool,
     hdmm_marker_coordinate_input: String,
     hdmm_sticker_source_status: String,
+    hdmm_ct_proposal: Option<HdmmProposal>,
+    hdmm_ct_searching: bool,
+    hdmm_ct_approving: bool,
+    hdmm_ct_candidate_choice: Option<String>,
+    hdmm_ct_review_note: String,
+    hdmm_ct_status: String,
     gk_calibration: GkCalibration,
     cbct_importing: bool,
     cbct_status: String,
@@ -916,6 +932,22 @@ async fn run_cbct_import_off_thread(
     async_std::task::spawn_blocking(move || {
         cbct_geometry::import_dicom_with_variant(&path,variant,progress)
     }).await
+}
+
+async fn find_hdmm_ct_candidates_off_thread(
+    geometry: cbct_geometry::CbctGeometry,
+) -> Result<HdmmProposal, String> {
+    async_std::task::spawn_blocking(move || hdmm_ct_workflow::find_candidates(geometry)).await
+}
+
+async fn approve_hdmm_ct_candidate_off_thread(
+    proposal: HdmmProposal,
+    candidate_id: String,
+    note: String,
+) -> Result<HdmmApprovedFile, String> {
+    async_std::task::spawn_blocking(move ||
+        hdmm_ct_workflow::approve_candidate(proposal, candidate_id, note)
+    ).await
 }
 
 async fn run_cbct_dependency_check_off_thread() -> Result<String,String> {
