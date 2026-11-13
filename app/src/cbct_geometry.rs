@@ -1228,6 +1228,23 @@ fn check_cbct_detector_compatibility(
     Ok(())
 }
 
+/// Resolve the same validated Python environment as the main CT importer,
+/// but always execute the app-bundled HDMM review code, not a research checkout.
+pub(crate) fn hdmm_review_backend(
+    script_name: &str,
+) -> Result<(PathBuf, std::ffi::OsString, Vec<std::ffi::OsString>), String> {
+    if !matches!(script_name,
+        "hdmm_anatomy_first.py" | "approve_anatomy_hdmm_sticker.py") {
+        return Err("Unsupported bundled HDMM review script".into());
+    }
+    let script = bundled_cbct_script().with_file_name(script_name);
+    if !script.is_file() {
+        return Err(format!("Bundled HDMM review script is missing: {}", script.display()));
+    }
+    let (python, prefix, _) = discover_cbct_python(&configured_cbct_script())?;
+    Ok((script, python, prefix))
+}
+
 /// Runs the maintained Python detector in another process, never in the live fit.
 /// Output goes to local application data (never inside a source checkout).
 pub fn import_dicom(scan: &Path, progress: Arc<Mutex<ImportProgress>>) -> Result<CbctGeometry, String> {
