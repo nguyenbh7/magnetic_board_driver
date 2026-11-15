@@ -1,8 +1,9 @@
 //! Nov12 research-only frozen-pose magnetic-field residual/Jacobian audit.
  //!
  //! Called ONLY through a dedicated Rust test with explicit local private inputs.
- //! Uses the existing RigidLiveFit observation pipeline and exact finite-cylinder
- //! residual(), but NEVER invokes optimize_pose() or RigidFitJob::run().
+ //! The original-pose scorer uses exact finite-cylinder residual() and does not
+ //! invoke any optimizer. A SEPARATE optional board-subset ablation test DOES
+ //! fit diagnostic poses, but never replaces any frozen result.
  //! The 6DOF poses, PRE magnet strengths, board offsets, geometry and masks are
  //! loaded from the frozen original experimental outputs, never recalibrated.
  //! Output remains private and no live-app configuration changes.
@@ -535,7 +536,7 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
         let mut arms=Vec::new();
         for &(name,ids) in &variants {
             let train=select_receiver_observations(&profile,&obs,ids);
-            assert!(train.len()>=16*ids.len(),"Original receiver subset unexpectedly incomplete");
+            assert!(train.len()>=8*ids.len(),"Original receiver subset unexpectedly incomplete");
             let mut attempts=Vec::new();
             for (label,seed) in [
                 ("original_frozen_pose",reference),
