@@ -65,6 +65,70 @@ fn frozen_gram(
             /base.len() as f64))
 }
 
+/// Gradient of the ORIGINAL total magnetic least-squares objective at one
+/// frozen six-DOF pose, partitioned by original receiver. This performs NO fit.
+/// J and residual share the exact finite-cylinder model, masking and LPS axes.
+/// Each board's contribution is normalized by the SAME total field component
+/// count, making the three vectors additive. Parameter scale: [mm, mm, mm,
+/// 0.01 rad, 0.01 rad, 0.01 rad]. The quantity is J^T r / N in
+/// mT^2 per scaled parameter unit; NOT displacement error or a fitted offset.
+fn frozen_board_tangent_pressure(
+    profile:&RigidProfile, observations:&[Observation], pose:[f64;6],
+)->serde_json::Value {
+    let base=residual(profile,observations,pose).expect("Finite frozen residual");
+    assert_eq!(base.len(),3*observations.len());
+    let mut columns=Vec::<Vec<f64>>::with_capacity(6);
+    for k in 0..6 {
+        let h=if k<3 {0.02} else {0.0002};
+        let mut shifted=pose;
+        shifted[k]=if pose[k]+h<=profile.upper_bounds[k] {
+            pose[k]+h
+        } else if pose[k]-h>=profile.lower_bounds[k] {
+            pose[k]-h
+        } else {
+            panic!("Frozen tangent derivative coordinate outside bounds");
+        };
+        let step=shifted[k]-pose[k];
+        let scaled=if k<3 {1.0} else {0.01};
+        let shifted_r=residual(profile,observations,shifted)
+            .expect("Finite frozen perturbed residual");
+        columns.push(shifted_r.iter().zip(&base).map(|(a,b)|
+            (a-b)/step*scaled).collect());
+    }
+    let mut gradient=[[0.0_f64;6];3];
+    let mut components=[0_usize;3];
+    for (i,obs) in observations.iter().enumerate() {
+        let ids=profile.boards.iter()
+            .filter(|b|b.sensors_mm.contains(&obs.sensor_mm))
+            .map(|b|b.raw_board_id as usize).collect::<Vec<_>>();
+        assert_eq!(ids.len(),1,"Original observation belongs to exactly one board");
+        let b=ids[0];
+        components[b]+=3;
+        for a in 0..3 {
+            let j=3*i+a;
+            for k in 0..6 {
+                gradient[b][k]+=columns[k][j]*base[j];
+            }
+        }
+    }
+    assert!(components.iter().all(|n|*n>=24));
+    let denom=base.len() as f64;
+    let board_json=(0..3).map(|b|serde_json::json!({
+        "raw_board_id":b,
+        "field_component_count":components[b],
+        "Jt_residual_over_GLOBAL_component_count_scaled_6":
+            gradient[b].map(|value|value/denom),
+    })).collect::<Vec<_>>();
+    serde_json::json!({
+        "boards":board_json,
+        "global_field_component_count":base.len(),
+        "parameter_units":["mm","mm","mm","0.01rad","0.01rad","0.01rad"],
+        "units":"mT^2 per scaled parameter unit",
+        "NO_refit_NO_offset_change":true,
+        "preselected_single_snapshot_not_window_statistics":true,
+    })
+}
+
 fn raw_frame(src:&FrozenFrame)->BoardFrame {
     let mut frame=BoardFrame::default();
     frame.board_id=src.board_id;
@@ -254,6 +318,8 @@ fn experimental_gk_nov12_frozen_pose_board_audit() {
             "observation_count":obs.len(),
             "JtJ_over_field_component_count_scaled_6x6":
                 frozen_gram(&profile,&obs,pose),
+            "per_board_frozen_pose_tangent_pressure":
+                frozen_board_tangent_pressure(&profile,&obs,pose),
             "parameter_order":["dL_mm","dP_mm","dS_mm",
                 "rx_scaled_0p01rad","ry_scaled_0p01rad","rz_scaled_0p01rad"],
             "rotation_scale_rad_per_unit":0.01,
@@ -303,6 +369,18 @@ fn frozen_board_scorer_reproduces_global_field_cost_on_synthetic_measurements() 
     let b=scored["boards"].as_array().unwrap();
     assert_eq!(b.len(),3);
     assert!(b.iter().all(|x|x["sensor_count"].as_u64()==Some(16)));
+    let pressure=frozen_board_tangent_pressure(&profile,&obs,pose);
+    assert_eq!(pressure["NO_refit_NO_offset_change"],true);
+    assert_eq!(pressure["global_field_component_count"].as_u64(),Some(144));
+    let board_grad=pressure["boards"].as_array().unwrap();
+    assert_eq!(board_grad.len(),3);
+    assert!(board_grad.iter().all(|x|x["field_component_count"].as_u64()==Some(48)));
+    for item in board_grad {
+        let g=item["Jt_residual_over_GLOBAL_component_count_scaled_6"]
+            .as_array().unwrap();
+        assert_eq!(g.len(),6);
+        assert!(g.iter().all(|x|x.as_f64().unwrap().is_finite()));
+    }
     let gram=frozen_gram(&profile,&obs,pose);
     for i in 0..6 {
         assert!(gram[i][i].is_finite() && gram[i][i]>=0.0);
