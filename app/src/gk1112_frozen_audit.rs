@@ -392,6 +392,42 @@ fn frozen_board_scorer_reproduces_global_field_cost_on_synthetic_measurements() 
 }
 
 
+/// Diagnostic pose-optimization holdout: four predeclared channel indices
+/// per board are excluded from the snapshot pose fit, but were NOT withheld
+/// from the original PRE magnet-strength/board-offset calibration. This is
+/// within-motion spatial generalization, NOT independent calibration validation.
+/// Original input observations and their frame-dependent mask are preserved.
+fn spatial_holdout_three_receivers(
+    profile:&RigidProfile, all:&[Observation], residue_mod4:usize,
+)->(Vec<Observation>,Vec<Observation>) {
+    assert!(residue_mod4<4);
+    let mut train=Vec::new();
+    let mut heldout=Vec::new();
+    let mut trained=[0_usize;3];
+    let mut withheld=[0_usize;3];
+    for obs in all {
+        let hits=profile.boards.iter()
+            .flat_map(|board|board.sensors_mm.iter().enumerate()
+                .filter(move |(_,site)|**site==obs.sensor_mm)
+                .map(move |(sensor,_)|(board.raw_board_id as usize,sensor)))
+            .collect::<Vec<_>>();
+        assert_eq!(hits.len(),1,"Observed field has one original firmware sensor");
+        let (board,sensor)=hits[0];
+        if sensor%4==residue_mod4 {
+            heldout.push(obs.clone());
+            withheld[board]+=1;
+        } else {
+            train.push(obs.clone());
+            trained[board]+=1;
+        }
+    }
+    assert!(trained.iter().all(|n|*n>=8),
+        "Each original receiver must retain >=8 spatial-training sensors");
+    assert!(withheld.iter().all(|n|*n>=3),
+        "Each original receiver must contribute >=3 spatial-heldout sensors");
+    (train,heldout)
+}
+
 /// Independent diagnostic ONLY: re-optimize selected ORIGINAL measurement
 /// snapshots on predeclared board subsets. No calibration, CT truth or HDMM
 /// enters an objective; no original trajectory is overwritten or modified.
@@ -517,11 +553,16 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
         (dot(t,t).sqrt(),angle,dot(dp,dp).sqrt())
     }
     let marker=frozen.initial_magnet_centroid_pre_lps_mm; // Only magnet centroid; NOT optical HDMM.
-    let variants:[(&str,&[usize]);4]=[
-        ("all_0_1_2",&[0,1,2]),
-        ("side_1_2",&[1,2]),
-        ("superior_left_0_1",&[0,1]),
-        ("superior_right_0_2",&[0,2]),
+    let variants:[(&str,&[usize],Option<usize>);6]=[
+        ("all_0_1_2",&[0,1,2],None),
+        ("side_1_2",&[1,2],None),
+        ("superior_left_0_1",&[0,1],None),
+        ("superior_right_0_2",&[0,2],None),
+        // All three boards remain present: hold out 4/16 fixed ORIGINAL
+        // firmware sensor positions per board in the diagnostic pose FIT.
+        // PRE calibration remains frozen and used all original PRE sensors.
+        ("three_board_sensor_holdout_mod4_0",&[0,1,2],Some(0)),
+        ("three_board_sensor_holdout_mod4_2",&[0,1,2],Some(2)),
     ];
     let mut output=Vec::<serde_json::Value>::new();
     for (requested,sample) in requests.iter().zip(samples.into_iter()) {
@@ -534,9 +575,19 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
             "Frozen full-three-board forward score does not reproduce original fit");
         let original_all=score_per_receiver(&profile,&obs,reference);
         let mut arms=Vec::new();
-        for &(name,ids) in &variants {
-            let train=select_receiver_observations(&profile,&obs,ids);
+        for &(name,ids,heldout_residue) in &variants {
+            let (train,heldout)=if let Some(residue)=heldout_residue {
+                spatial_holdout_three_receivers(&profile,&obs,residue)
+            }else{
+                (select_receiver_observations(&profile,&obs,ids),Vec::new())
+            };
             assert!(train.len()>=8*ids.len(),"Original receiver subset unexpectedly incomplete");
+            let frozen_heldout_rmse=if heldout.is_empty(){None}else{
+                let errors=residual(&profile,&heldout,reference)
+                    .expect("Original frozen pose at prespecified heldout sensors");
+                Some((errors.iter().map(|x|x*x).sum::<f64>()
+                    /errors.len() as f64).sqrt())
+            };
             let mut attempts=Vec::new();
             for (label,seed) in [
                 ("original_frozen_pose",reference),
@@ -560,6 +611,20 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
                                     /(3*obs.len()) as f64).sqrt(),
                             "all_board_receiver_RMSE_mt":
                                 score_per_receiver(&profile,&obs,fit.pose),
+                            "three_board_spatial_heldout_rmse_mt":if heldout.is_empty(){
+                                None
+                            }else{
+                                let errors=residual(&profile,&heldout,fit.pose)
+                                    .expect("Original untrained pose-fit sensors");
+                                Some((errors.iter().map(|x|x*x).sum::<f64>()
+                                    /errors.len() as f64).sqrt())
+                            },
+                            "translation_component_near_original_bound":(0..3).any(|j|
+                                (fit.pose[j]-profile.lower_bounds[j]).abs()<0.2 ||
+                                (fit.pose[j]-profile.upper_bounds[j]).abs()<0.2),
+                            "rotation_component_near_original_bound":(3..6).any(|j|
+                                (fit.pose[j]-profile.lower_bounds[j]).abs()<0.00174533 ||
+                                (fit.pose[j]-profile.upper_bounds[j]).abs()<0.00174533),
                             "centroid_pose_difference_vs_original_mm":centroid_sep,
                             "rotation_difference_vs_original_deg":angle,
                             "centroid_point_difference_vs_original_mm":projected_sep,
@@ -576,6 +641,10 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
                 "subset":name,
                 "raw_board_ids":ids,
                 "original_measurement_count":train.len(),
+                "spatial_holdout_original_firmware_index_mod4":heldout_residue,
+                "spatial_heldout_sensor_count":heldout.len(),
+                "original_frozen_heldout_rmse_mt":frozen_heldout_rmse,
+                "spatial_holdout_PRE_calibration_used_original_sensors":true,
                 "attempts":attempts,
             }));
         }
@@ -594,6 +663,7 @@ fn experimental_gk_nov12_predeclared_board_subset_ablation() {
         "new_diagnostic_pose_fits_performed":true,
         "original_frozen_trajectory_modified":false,
         "PRE_frozen_strengths_offsets_CT_geometry_masks":true,
+        "within_motion_spatial_holdout_not_independent_PRE_calibration_validation":true,
         "CT_POST_and_HDMM_not_used_in_objective":true,
         "original_hall_three_board_fit_not_replaced":true,
         "comparison_point_kind":"magnet_centroid_NOT_optical_sticker",
@@ -643,4 +713,28 @@ fn subset_receiver_score_matches_original_all_board_score_synthetic(){
     let direct=global.iter().map(|v|v*v).sum::<f64>()/global.len() as f64;
     assert!((by_board-direct).abs()<1e-10);
     assert!(board.iter().all(|v|v.is_finite()));
+}
+
+
+#[test]
+fn spatial_holdout_keeps_all_three_receivers_synthetic() {
+    let profile=RigidProfile::a1_reference().expect("Reference profile");
+    let all=profile.boards.iter().flat_map(|board|
+        board.sensors_mm.iter().map(|site|Observation {
+            sensor_mm:*site, measured_mt:[0.0;3],
+        })).collect::<Vec<_>>();
+    for residue in [0,2] {
+        let (training,heldout)=spatial_holdout_three_receivers(&profile,&all,residue);
+        assert_eq!(training.len(),36);
+        assert_eq!(heldout.len(),12);
+        for board in &profile.boards {
+            assert_eq!(training.iter().filter(|o|
+                board.sensors_mm.contains(&o.sensor_mm)).count(),12);
+            assert_eq!(heldout.iter().filter(|o|
+                board.sensors_mm.contains(&o.sensor_mm)).count(),4);
+        }
+        for observation in &training {
+            assert!(!heldout.iter().any(|o|o.sensor_mm==observation.sensor_mm));
+        }
+    }
 }
