@@ -229,7 +229,7 @@ fn experimental_gk_nov12_frozen_pose_board_audit() {
         assert!((computed-pose.field_rmse_mt).abs()<2e-5,
                 "Exact Rust forward residual no longer reproduces original accepted pose RMSE");
         for (i,requested) in requests.iter().enumerate() {
-            if (time-requested).abs()<.2
+            if (time-requested).abs()<0.2
                 && samples[i].as_ref().is_none_or(|old|
                     (old.0-requested).abs()>(time-requested).abs()) {
                 samples[i]=Some((time,pose.pose_mm_rad,job.observations.clone()));
