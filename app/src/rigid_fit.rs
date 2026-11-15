@@ -3630,3 +3630,8 @@ mod tests {
         assert!(interpolate(&q,250).is_none());
     }
 }
+
+// Separate research-only frozen-pose scorer. Compiled only for cargo test.
+#[cfg(test)]
+#[path = "gk1112_frozen_audit.rs"]
+mod gk1112_frozen_audit;
