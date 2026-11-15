@@ -282,3 +282,32 @@ fn experimental_gk_nov12_frozen_pose_board_audit() {
     println!("FROZEN Nov12 board audit: {} original poses; no refit -> {}",
              next,out);
 }
+
+
+#[test]
+fn frozen_board_scorer_reproduces_global_field_cost_on_synthetic_measurements() {
+    // This test intentionally loads NO Nov12 patient or acquisition data.
+    let profile=RigidProfile::a1_reference().expect("Bundled synthetic/reference profile");
+    let mut obs=Vec::new();
+    for board in &profile.boards {
+        for sensor in &board.sensors_mm {
+            obs.push(Observation {sensor_mm:*sensor,measured_mt:[0.0;3]});
+        }
+    }
+    let pose=profile.initial_pose;
+    let exact=residual(&profile,&obs,pose).expect("Reference model residual");
+    let expected=(exact.iter().map(|v|v*v).sum::<f64>()
+        /exact.len() as f64).sqrt();
+    let scored=scored_frozen(&profile,&obs,pose);
+    assert!((scored["global_rmse_mt"].as_f64().unwrap()-expected).abs()<1e-12);
+    let b=scored["boards"].as_array().unwrap();
+    assert_eq!(b.len(),3);
+    assert!(b.iter().all(|x|x["sensor_count"].as_u64()==Some(16)));
+    let gram=frozen_gram(&profile,&obs,pose);
+    for i in 0..6 {
+        assert!(gram[i][i].is_finite() && gram[i][i]>=0.0);
+        for j in 0..6 {
+            assert!((gram[i][j]-gram[j][i]).abs()<1e-10);
+        }
+    }
+}
