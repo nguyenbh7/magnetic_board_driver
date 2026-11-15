@@ -389,3 +389,257 @@ fn frozen_board_scorer_reproduces_global_field_cost_on_synthetic_measurements() 
         }
     }
 }
+
+
+/// Independent diagnostic ONLY: re-optimize selected ORIGINAL measurement
+/// snapshots on predeclared board subsets. No calibration, CT truth or HDMM
+/// enters an objective; no original trajectory is overwritten or modified.
+/// Unlike experimental_gk_nov12_frozen_pose_board_audit, this TEST DOES
+/// perform new subset pose fits and must not be called a frozen-pose scorer.
+#[test]
+fn experimental_gk_nov12_predeclared_board_subset_ablation() {
+    let Ok(replay_path)=std::env::var("GK_NOV12_FROZEN_REPLAY_IN") else {
+        return; // normal cargo test requires no private acquisition data
+    };
+    let pose_path=std::env::var("GK_NOV12_FROZEN_POSES_IN")
+        .expect("Frozen subset audit needs original poses");
+    let summary_path=std::env::var("GK_NOV12_FROZEN_SUMMARY_IN")
+        .expect("Frozen subset audit needs original summary");
+    let ct_path=std::env::var("GK_NOV12_FROZEN_PRE_CT")
+        .expect("Frozen subset audit needs original PRE CT");
+    let dest=std::env::var("GK_NOV12_FROZEN_ABLATION_OUT")
+        .expect("Set NEW private receiver ablation output file");
+    assert!(!Path::new(&dest).exists(),"Refuse overwriting private ablation output");
+
+    let replay:FrozenReplay=serde_json::from_str(
+        &std::fs::read_to_string(&replay_path).expect("Read original replay"))
+        .expect("Parse original replay");
+    let frozen:FrozenTrack=serde_json::from_str(
+        &std::fs::read_to_string(&pose_path).expect("Read original full-motion poses"))
+        .expect("Parse original full-motion poses");
+    let summary:serde_json::Value=serde_json::from_str(
+        &std::fs::read_to_string(&summary_path).expect("Read original summary"))
+        .expect("Parse original summary");
+    assert_eq!(replay.format,"gk_nov06_private_motion_replay_v1");
+    assert_eq!(frozen.source_replay_format,replay.format);
+    assert!(replay.calibration_background_raw_mt.is_none());
+    assert_eq!(summary["stationary_calibration_QC_pass"],true);
+    assert_eq!(summary["fit_rejected"],0);
+    assert_eq!(summary["PRE_magnetic_axis_variant"],"original_CT_unsigned_axes");
+    assert_eq!(summary["full_motion_accepted_poses"].as_u64().unwrap() as usize,
+        frozen.poses.len());
+    let geom=crate::cbct_geometry::CbctGeometry::from_detector_json(
+        &std::fs::read_to_string(&ct_path).expect("Read original PRE CT detector"),
+        "Nov12 subset audit PRE CT".into(),"research only".into()
+    ).expect("Parse original PRE CT geometry");
+    let mut profile=geom.experimental_candidate_profile_with_reviewed_cad()
+        .expect("No original CT-firmware model for subset audit");
+    assert!(profile.origin_mm.iter()
+        .zip(frozen.initial_magnet_centroid_pre_lps_mm)
+        .all(|(a,b)|(*a-b).abs()<1e-6));
+    let strengths:[f64;3]=serde_json::from_value(
+        summary["signed_remanences_mt"].clone()).expect("Frozen magnet strengths");
+    let offsets:[[f64;3];3]=serde_json::from_value(
+        summary["pre_fitted_constant_board_offsets_lps_mt"].clone())
+        .expect("Frozen per-board offsets");
+    for (magnet,value) in profile.magnets.iter_mut().zip(strengths) {
+        magnet.remanence_mt=value;
+    }
+    for board in &mut profile.boards {
+        board.background_mt=offsets[board.raw_board_id as usize];
+    }
+    let mut masks=[0_u16;3];
+    assert_eq!(replay.endpoint_masks.len(),3);
+    for mask in &replay.endpoint_masks {
+        assert!((mask.board_id as usize)<3);
+        masks[mask.board_id as usize]=mask.valid_mask;
+    }
+    assert!(masks.iter().all(|m|m.count_ones()>=8));
+
+    let mut live=RigidLiveFit::default();
+    live.set_experimental_gk_profile(profile.clone(),None);
+    live.set_presence(BoardPresence {board_mask:0b111,sensor_masks:masks});
+
+    // Same fixed times for all subjects in each interval; never selected
+    // for a better HDMM fit or smaller boardwise residual.
+    let requests:Vec<f64>=if pose_path.contains("B_to_C"){
+        vec![2.0,55.0,62.0,66.0,85.0]
+    }else{vec![2.0,10.0,65.0,95.0,104.9]};
+    let mut samples=vec![None::<(f64,[f64;6],Vec<Observation>)>;requests.len()];
+    let mut next=0_usize;
+    for source in &replay.frames {
+        let frame=raw_frame(source);
+        let Some(job)=live.receive_frame(&frame,source.frame_id%10==0) else {
+            continue;
+        };
+        live.busy=false; // retain ORIGINAL measured snapshots; never fit here
+        assert!(next<frozen.poses.len(),"More replay attempts than saved poses");
+        let saved=&frozen.poses[next];
+        let time=job.time_us as f64/1e6;
+        assert!(saved.fitted && (saved.t_s-time).abs()<1e-5,
+                "Original replay timestamps/acceptance differ");
+        for (i,target) in requests.iter().enumerate(){
+            if (time-target).abs()<0.2 && samples[i].as_ref().is_none_or(|old|
+                (old.0-target).abs()>(time-target).abs()){
+                samples[i]=Some((time,saved.pose_mm_rad,job.observations.clone()));
+            }
+        }
+        next+=1;
+    }
+    assert_eq!(next,frozen.poses.len(),"Original replay had unexpected gaps");
+
+    fn select_receiver_observations(
+        profile:&RigidProfile,all:&[Observation], selected:&[usize],
+    )->Vec<Observation>{
+        let sites=profile.boards.iter()
+            .filter(|b|selected.contains(&(b.raw_board_id as usize)))
+            .flat_map(|b|b.sensors_mm.iter().copied())
+            .collect::<Vec<_>>();
+        all.iter().filter(|o|sites.contains(&o.sensor_mm))
+            .cloned().collect::<Vec<_>>()
+    }
+    fn pose_delta(
+        profile:&RigidProfile, reference:[f64;6], candidate:[f64;6],
+        point:[f64;3],
+    )->(f64,f64,f64) {
+        let t=sub(
+            [candidate[0],candidate[1],candidate[2]],
+            [reference[0],reference[1],reference[2]]);
+        let rot=mul_matrix(
+            rodrigues([candidate[3],candidate[4],candidate[5]]),
+            transpose(rodrigues([reference[3],reference[4],reference[5]])));
+        let angle=((rot[0][0]+rot[1][1]+rot[2][2]-1.0)/2.0)
+            .clamp(-1.,1.).acos()*RAD_TO_DEG;
+        let p0=rigid_point_at_pose(profile,reference,point);
+        let p1=rigid_point_at_pose(profile,candidate,point);
+        let dp=sub(p1,p0);
+        (dot(t,t).sqrt(),angle,dot(dp,dp).sqrt())
+    }
+    let marker=frozen.initial_magnet_centroid_pre_lps_mm; // Only magnet centroid; NOT optical HDMM.
+    let variants:[(&str,&[usize]);4]=[
+        ("all_0_1_2",&[0,1,2]),
+        ("side_1_2",&[1,2]),
+        ("superior_left_0_1",&[0,1]),
+        ("superior_right_0_2",&[0,2]),
+    ];
+    let mut output=Vec::<serde_json::Value>::new();
+    for (requested,sample) in requests.iter().zip(samples.into_iter()) {
+        let (time,reference,obs)=sample
+            .expect("Predeclared original Hall measurement snapshot unavailable");
+        let scored=scored_frozen(&profile,&obs,reference);
+        let saved_rmse=frozen.poses.iter().find(|p|
+            (p.t_s-time).abs()<1e-5).unwrap().field_rmse_mt;
+        assert!((scored["global_rmse_mt"].as_f64().unwrap()-saved_rmse).abs()<2e-5,
+            "Frozen full-three-board forward score does not reproduce original fit");
+        let original_all=score_per_receiver(&profile,&obs,reference);
+        let mut arms=Vec::new();
+        for &(name,ids) in &variants {
+            let train=select_receiver_observations(&profile,&obs,ids);
+            assert!(train.len()>=16*ids.len(),"Original receiver subset unexpectedly incomplete");
+            let mut attempts=Vec::new();
+            for (label,seed) in [
+                ("original_frozen_pose",reference),
+                ("original_profile_initial_pose",profile.initial_pose)
+            ] {
+                let answer=optimize_pose(&profile,&train,seed);
+                let row=match answer {
+                    Some(fit)=>{
+                        let (centroid_sep,angle,projected_sep)=
+                            pose_delta(&profile,reference,fit.pose,marker);
+                        serde_json::json!({
+                            "seed":label,
+                            "returned":true,
+                            "original_gate_pass_on_TRAIN":
+                                fit.rmse_mt<=profile.max_rmse_mt,
+                            "train_rmse_mt":fit.rmse_mt,
+                            "all_board_rmse_mt":(
+                                residual(&profile,&obs,fit.pose)
+                                    .expect("Full-board score of subset fit")
+                                    .iter().map(|x|x*x).sum::<f64>()
+                                    /(3*obs.len()) as f64).sqrt(),
+                            "all_board_receiver_RMSE_mt":
+                                score_per_receiver(&profile,&obs,fit.pose),
+                            "centroid_pose_difference_vs_original_mm":centroid_sep,
+                            "rotation_difference_vs_original_deg":angle,
+                            "centroid_point_difference_vs_original_mm":projected_sep,
+                            "pose_mm_rad":fit.pose,
+                        })
+                    }
+                    None=>serde_json::json!({
+                        "seed":label,"returned":false,
+                    }),
+                };
+                attempts.push(row);
+            }
+            arms.push(serde_json::json!({
+                "subset":name,
+                "raw_board_ids":ids,
+                "original_measurement_count":train.len(),
+                "attempts":attempts,
+            }));
+        }
+        output.push(serde_json::json!({
+            "requested_time_s":requested,
+            "actual_time_s":time,
+            "original_saved_pose_mm_rad":reference,
+            "original_saved_global_rmse_mt":saved_rmse,
+            "original_all_board_receiver_RMSE_mt":original_all,
+            "ablation_arms":arms,
+        }));
+    }
+    let result=serde_json::json!({
+        "format":"gk_nov12_test_only_fixed_calibration_receiver_subset_pose_ablation_v1",
+        "research_only":true,
+        "new_diagnostic_pose_fits_performed":true,
+        "original_frozen_trajectory_modified":false,
+        "PRE_frozen_strengths_offsets_CT_geometry_masks":true,
+        "CT_POST_and_HDMM_not_used_in_objective":true,
+        "original_hall_three_board_fit_not_replaced":true,
+        "comparison_point_kind":"magnet_centroid_NOT_optical_sticker",
+        "original_frozen_pose_path_PRIVATE":pose_path,
+        "requested_times_prespecified_s":requests,
+        "snapshots":output,
+        "finite_seeds_and_subsets_cannot_prove_true_pose_or_global_uniqueness":true,
+    });
+    if let Some(parent)=Path::new(&dest).parent(){
+        std::fs::create_dir_all(parent).expect("Create separate private subset report");
+    }
+    std::fs::write(&dest,serde_json::to_string_pretty(&result).unwrap()+"\n")
+        .expect("Write private subset ablation without modifying source data");
+    println!("Nov12 subset ablations: {} fixed snapshots -> {}",
+             result["snapshots"].as_array().unwrap().len(),dest);
+}
+
+/// Independent per-board RMSE at an arbitrary candidate pose, on ALL original
+/// receiver observations, including those held out from subset optimization.
+fn score_per_receiver(
+    profile:&RigidProfile,obs:&[Observation],pose:[f64;6],
+)->[f64;3]{
+    let r=residual(profile,obs,pose).expect("Subset score forward model");
+    let mut sq=[0.0_f64;3];
+    let mut n=[0_usize;3];
+    for (i,o) in obs.iter().enumerate() {
+        let b=profile.boards.iter().find(|b|
+            b.sensors_mm.contains(&o.sensor_mm))
+            .expect("A scored observation has original receiver")
+            .raw_board_id as usize;
+        n[b]+=3;
+        for k in 0..3 {sq[b]+=r[3*i+k]*r[3*i+k];}
+    }
+    std::array::from_fn(|b|{
+        if n[b]>0 {(sq[b]/n[b] as f64).sqrt()} else {f64::NAN}
+    })
+}
+
+#[test]
+fn subset_receiver_score_matches_original_all_board_score_synthetic(){
+    let profile=RigidProfile::a1_reference().expect("Reference profile");
+    let obs=profile.boards.iter().flat_map(|b|b.sensors_mm.iter().map(|p|
+        Observation{sensor_mm:*p,measured_mt:[0.0;3]})).collect::<Vec<_>>();
+    let board=score_per_receiver(&profile,&obs,profile.initial_pose);
+    let global=residual(&profile,&obs,profile.initial_pose).unwrap();
+    let by_board=board.iter().map(|v|v*v).sum::<f64>()/3.0;
+    let direct=global.iter().map(|v|v*v).sum::<f64>()/global.len() as f64;
+    assert!((by_board-direct).abs()<1e-10);
+    assert!(board.iter().all(|v|v.is_finite()));
+}
