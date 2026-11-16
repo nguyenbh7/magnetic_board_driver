@@ -199,7 +199,7 @@ impl TemperatureCompensation {
     #[bitmatch]
     pub fn from_u8_slice(val: &[u8; 2]) -> Self {
         #[bitmatch]
-        let "????_?t??" = val[1];
+        let "????_?t??" = val[0];
         #[bitmatch]
         match t {
             "1" => Self::Enabled,
