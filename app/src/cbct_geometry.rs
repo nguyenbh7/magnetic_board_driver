@@ -834,16 +834,24 @@ impl CbctGeometry {
     /// Magnetic remanences here are placeholders; callers MUST fit them from
     /// current background-subtracted stationary measurements before activation.
     pub fn experimental_candidate_profile(&self) -> Result<crate::rigid_fit::RigidProfile, String> {
-        self.experimental_candidate_profile_internal(false)
+        self.experimental_candidate_profile_internal(false, 6.35)
     }
 
     /// Must ONLY be invoked after the app's explicit CAD-mapping approval.
     pub fn experimental_candidate_profile_with_reviewed_cad(&self)
         -> Result<crate::rigid_fit::RigidProfile,String> {
-        self.experimental_candidate_profile_internal(true)
+        self.experimental_candidate_profile_internal(true, 6.35)
     }
 
-    fn experimental_candidate_profile_internal(&self, allow_reviewed_cad: bool)
+    /// Explicit Nov12 research geometry: operator confirmed all magnets are
+    /// 5/16 x 1/8 inch. This does not approve a live profile, magnetization
+    /// direction, grade, strength or CT-to-firmware mapping.
+    pub fn experimental_nov12_all_thin_profile_with_reviewed_cad(&self)
+        -> Result<crate::rigid_fit::RigidProfile,String> {
+        self.experimental_candidate_profile_internal(true, 3.175)
+    }
+
+    fn experimental_candidate_profile_internal(&self, allow_reviewed_cad: bool, superior_thickness: f64)
         -> Result<crate::rigid_fit::RigidProfile,String> {
         use crate::rigid_fit::{RigidBoard, RigidMagnet, RigidProfile};
         let reg=self.register_ct_boards_v2_internal(allow_reviewed_cad)?;
@@ -854,15 +862,14 @@ impl CbctGeometry {
             background_mt:[0.0;3],
             sensor_gains:None,
         }).collect::<Vec<_>>();
-        // Current physical GK magnets: 5/16-inch diameter. The superior
-        // magnet is 1/4-inch thick; side magnets are 1/8-inch. These are
-        // hardware dimensions, not CT bounding-box guesses. Verify if the
-        // magnets are changed before the next experiment.
+        // Historical profile keeps its original thick-superior assumption.
+        // The explicit Nov12 research profile uses operator-confirmed all-thin
+        // dimensions. Never infer another acquisition's hardware from Nov12.
         let mut magnets=Vec::with_capacity(3);
         for (name, thickness) in [
             ("magnet_left",3.175_f64),
             ("magnet_right",3.175_f64),
-            ("magnet_superior",6.35_f64)
+            ("magnet_superior",superior_thickness)
         ] {
             let m=self.magnets.iter().find(|m|m.name==name)
                 .ok_or_else(||format!("Missing magnet {name}"))?;
@@ -1786,6 +1793,23 @@ mod tests {
         let profile=geometry.experimental_candidate_profile_with_reviewed_cad().unwrap();
         assert_eq!(profile.boards.len(),3);
         assert_eq!(profile.magnets.len(),3);
+        let nov12=geometry.experimental_nov12_all_thin_profile_with_reviewed_cad().unwrap();
+        assert_eq!(profile.magnets.iter().map(|m|m.thickness_mm).collect::<Vec<_>>(),
+                   vec![3.175,3.175,6.35]);
+        assert_eq!(nov12.magnets.iter().map(|m|m.thickness_mm).collect::<Vec<_>>(),
+                   vec![3.175,3.175,3.175]);
+        for (old,new) in profile.magnets.iter().zip(&nov12.magnets) {
+            assert_eq!(new.diameter_mm,7.9375);
+            assert_eq!(old.center_mm,new.center_mm);
+            assert_eq!(old.axis,new.axis);
+            assert_eq!(old.remanence_mt,new.remanence_mt);
+        }
+        assert_eq!(format!("{:?}",profile.boards),format!("{:?}",nov12.boards));
+        assert_eq!(profile.origin_mm,nov12.origin_mm);
+        assert_eq!(profile.initial_pose,nov12.initial_pose);
+        assert_eq!(profile.lower_bounds,nov12.lower_bounds);
+        assert_eq!(profile.upper_bounds,nov12.upper_bounds);
+        assert_eq!(profile.max_rmse_mt,nov12.max_rmse_mt);
         assert_eq!(geometry.arrays[0].pcb_center_lps_mm,None);
     }
 

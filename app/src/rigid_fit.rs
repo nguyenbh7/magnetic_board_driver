@@ -1137,6 +1137,41 @@ fn optimize_pose(profile: &RigidProfile, observations: &[Observation], initial: 
 mod tests {
     use super::*;
 
+    // Research replay only: do not expose this switch to live tracking.
+    fn nov12_hypothetical_thin_superior(profile: &mut RigidProfile) {
+        assert_eq!(profile.magnets.len(), 3);
+        assert_eq!(profile.magnets[0].thickness_mm, 3.175);
+        assert_eq!(profile.magnets[1].thickness_mm, 3.175);
+        assert_eq!(profile.magnets[2].diameter_mm, 7.9375);
+        assert_eq!(profile.magnets[2].thickness_mm, 6.35);
+        profile.magnets[2].thickness_mm = 3.175;
+    }
+
+    #[test]
+    fn nov12_hypothetical_thin_changes_only_superior_thickness() {
+        let mut p = RigidProfile::a1_reference().unwrap();
+        p.magnets[0].thickness_mm = 3.175;
+        p.magnets[1].thickness_mm = 3.175;
+        p.magnets[2].diameter_mm = 7.9375;
+        p.magnets[2].thickness_mm = 6.35;
+        let before = p.clone();
+        nov12_hypothetical_thin_superior(&mut p);
+        assert_eq!(p.magnets[2].thickness_mm, 3.175);
+        for i in 0..3 {
+            assert_eq!(p.magnets[i].center_mm, before.magnets[i].center_mm);
+            assert_eq!(p.magnets[i].axis, before.magnets[i].axis);
+            assert_eq!(p.magnets[i].diameter_mm, before.magnets[i].diameter_mm);
+            assert_eq!(p.magnets[i].remanence_mt, before.magnets[i].remanence_mt);
+            if i < 2 { assert_eq!(p.magnets[i].thickness_mm, before.magnets[i].thickness_mm); }
+        }
+        assert_eq!(format!("{:?}", p.boards), format!("{:?}", before.boards));
+        assert_eq!(p.origin_mm, before.origin_mm);
+        assert_eq!(p.max_rmse_mt, before.max_rmse_mt);
+        assert_eq!(p.initial_pose, before.initial_pose);
+        assert_eq!(p.lower_bounds, before.lower_bounds);
+        assert_eq!(p.upper_bounds, before.upper_bounds);
+    }
+
     /// Independent PRE-only linear proxy for the three magnetic axes. All CT
     /// magnet centers and Hall site geometry remain fixed. The model uses
     /// 9 free dipole-moment coefficients and subtracts a separate mean LPS
@@ -2124,13 +2159,22 @@ mod tests {
         // used for the successful Oct30 experimental A arm. If its provenance
         // or CT-to-firmware checks fail, report that blockage, not a fallback
         // to a differently mapped geometry.
-        let profile=geom.experimental_candidate_profile_with_reviewed_cad();
+        let hypothetical_thin = nov12.is_some() &&
+            std::env::var("GK_NOV12_HYPOTHETICAL_THIN_SUPERIOR").ok().as_deref() == Some("1");
+        let profile=if hypothetical_thin {
+            geom.experimental_nov12_all_thin_profile_with_reviewed_cad()
+        } else {
+            geom.experimental_candidate_profile_with_reviewed_cad()
+        };
         let mut summary=serde_json::json!({
             "format":if is_motion {
                 "gk_nov06_finite_cylinder_motion_diagnostic_v1"
             } else {"gk_nov06_finite_cylinder_endpoint_preliminary_v1"},
             "status":"RESEARCH_ONLY_NOT_VALIDATED_LIVE_GK_TRACKING",
             "experiment":study,
+            "superior_geometry_hypothesis":if hypothetical_thin {
+                "HYPOTHETICAL_7.9375_X_3.175_MM_NOT_PHYSICALLY_VERIFIED"
+            } else {"ORIGINAL_7.9375_X_6.35_MM"},
             "ct_reference_point_kind":if data.ct_point_kind.is_empty() {
                 "GLASS_BB_NOV06" } else {data.ct_point_kind.as_str()},
             "reference_point_is_not_optically_verified":nov12.is_some(),
