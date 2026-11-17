@@ -23,6 +23,7 @@ use sensor_trace::SensorTraceState;
 use sensor_trace_plot::{sensor_trace_plot, TraceRangeGuides};
 mod live_fit;
 mod rigid_fit;
+mod stage_replay;
 mod cbct_geometry;
 mod hdmm_sticker;
 mod hdmm_live_readout;
@@ -4510,6 +4511,13 @@ mod tracking_mode_ui_tests {
 }
 
 pub fn main() -> iced::Result {
+    // Explicit offline research subcommand only (`app stage-replay ...`).
+    // Starting the GUI with no arguments is unchanged, and the live app never
+    // calls stage_replay or selects its all-thin research profile.
+    if std::env::args().nth(1).as_deref() == Some("stage-replay") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(stage_replay::run_cli(&args));
+    }
     iced::application(Context::default, update, view)
         .subscription(|context: &Context| {
             let mut subscriptions = Vec::new();

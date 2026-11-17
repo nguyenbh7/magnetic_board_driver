@@ -1394,7 +1394,7 @@ pub fn import_dicom_with_variant(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1692,7 +1692,7 @@ mod tests {
         assert!(geometry.experimental_candidate_profile().is_err());
     }
 
-    fn synthetic_reviewed_cad_report() -> serde_json::Value {
+    pub(crate) fn synthetic_reviewed_cad_report() -> serde_json::Value {
         let mut json:serde_json::Value=serde_json::from_str(&sample()).unwrap();
         let specs=[
             ("array_superior",[100.0,-75.0,28.0],[1.,0.,0.],[0.,0.,-1.]),

@@ -771,6 +771,26 @@ fn rigid_point_at_pose(profile:&RigidProfile,pose:[f64;6],point:[f64;3]) -> [f64
                 sub(point,profile.origin_mm)))
 }
 
+/// Test-only forward model for synthetic fixtures: world-frame (LPS) fields
+/// of the profile's magnets at `pose`, per raw board and firmware sensor.
+/// Uses the same quadrature/prediction as the production solver.
+#[cfg(test)]
+pub(crate) fn forward_board_fields_mt(profile:&RigidProfile,pose:[f64;6]) -> [[[f64;3];16];3] {
+    let rotation = rodrigues([pose[3],pose[4],pose[5]]);
+    let sources = profile.magnets.iter().map(|m| {
+        let center = add(add(profile.origin_mm,[pose[0],pose[1],pose[2]]),
+                         mat_vec(rotation,sub(m.center_mm,profile.origin_mm)));
+        quadrature(m,center,mat_vec(rotation,m.axis))
+    }).collect::<Vec<_>>();
+    let mut out = [[[0.0;3];16];3];
+    for b in &profile.boards {
+        for i in 0..16 {
+            out[b.raw_board_id as usize][i] = predict(b.sensors_mm[i],&sources);
+        }
+    }
+    out
+}
+
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] { [a[0]+b[0],a[1]+b[1],a[2]+b[2]] }
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] { [a[0]-b[0],a[1]-b[1],a[2]-b[2]] }
