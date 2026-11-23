@@ -27,10 +27,12 @@ pub const SENSORS_PER_BOARD: usize = 16;
 /// KiCad X had previously been interpreted from the opposite PCB viewing side.
 /// In the physical calibration view with JST connectors toward the user/front:
 ///
+/// ```text
 ///      3   7  11  15
 ///      2   6  10  14
 ///      1   5   9  13
 ///      0   4   8  12
+/// ```
 ///
 /// Firmware coordinates use -Y for the front/JST edge. Acquisition/address
 /// index advances along +Y first; adding four moves one column toward +X.
